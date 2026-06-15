@@ -397,6 +397,36 @@ CON_COMMAND_F(bc_replay_view,
                                 MotionRecorder::GetReplayViewMode()));
 }
 
+CON_COMMAND_F(bc_subtick_view_delta,
+              "bc_subtick_view_delta <0|1>  Toggle replay subtick pitch/yaw delta injection.",
+              FCVAR_NONE)
+{
+    using namespace BotController;
+
+    if (args.ArgC() >= 2)
+    {
+        if (std::strcmp(args.Arg(1), "1") == 0 ||
+            std::strcmp(args.Arg(1), "on") == 0)
+        {
+            InputInjector::SetReplaySubtickViewDeltas(true);
+        }
+        else if (std::strcmp(args.Arg(1), "0") == 0 ||
+                 std::strcmp(args.Arg(1), "off") == 0)
+        {
+            InputInjector::SetReplaySubtickViewDeltas(false);
+        }
+        else
+        {
+            Commands::PrintToCaller(context,
+                                    "usage: bc_subtick_view_delta <0|1>\n");
+            return;
+        }
+    }
+
+    Commands::PrintToCaller(context, "[BC] subtick_view_delta=%s\n",
+                            InputInjector::ReplaySubtickViewDeltas() ? "on" : "off");
+}
+
 CON_COMMAND_F(bc_status,
               "bc_status  Print hook status and every per-slot lock.",
               FCVAR_NONE)
@@ -443,6 +473,9 @@ CON_COMMAND_F(bc_status,
                             "[BC] replay_view: %s\n",
                             MotionRecorder::ReplayViewModeName(
                                 MotionRecorder::GetReplayViewMode()));
+    Commands::PrintToCaller(context,
+                            "[BC] subtick_view_delta: %s\n",
+                            InputInjector::ReplaySubtickViewDeltas() ? "on" : "off");
 
     // All lock
     int nAll = BotControllerState::CountAll();

@@ -28,6 +28,12 @@ namespace BotController
 
         const char *Status();
 
+        // Whether replay should inject subtick pitch_delta/yaw_delta into
+        // usercmd. Disabled by default because offline demo pawn snapshots do
+        // not prove they are aligned to CBaseUserCmdPB base viewangles.
+        void SetReplaySubtickViewDeltas(bool enabled);
+        bool ReplaySubtickViewDeltas();
+
         // Resolved address of the hooked function.
         void *ProcessUsercmdAddress();
 

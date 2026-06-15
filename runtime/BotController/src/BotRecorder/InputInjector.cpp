@@ -59,6 +59,17 @@ namespace BotController
 
         static std::atomic<uint64_t> g_hookCalls{0};
         static std::atomic<int> g_lastSlot{-1};
+        static std::atomic<bool> g_replaySubtickViewDeltas{false};
+
+        void SetReplaySubtickViewDeltas(bool enabled)
+        {
+            g_replaySubtickViewDeltas.store(enabled, std::memory_order_relaxed);
+        }
+
+        bool ReplaySubtickViewDeltas()
+        {
+            return g_replaySubtickViewDeltas.load(std::memory_order_relaxed);
+        }
 
         // services -> player slot via pawn ptr at services+56, then m_hController.
         static int ServicesToSlot(void *services)
@@ -258,6 +269,7 @@ namespace BotController
                     /* ? Throw-window diagnostic */
                     int dbgStBtn = -1;
                     float dbgStPressed = -1.0f, dbgStWhen = -1.0f;
+                    const bool injectViewDeltas = ReplaySubtickViewDeltas();
                     for (int i = 0; i < n; ++i)
                     {
                         CSubtickMoveStep *m = base->add_subtick_moves();
@@ -265,9 +277,9 @@ namespace BotController
                         m->set_button(out[i].button);
                         if (out[i].button != 0) // digital press/release
                             m->set_pressed(out[i].pressed != 0.0f);
-                        if (out[i].pitchDelta != 0.0f)
+                        if (injectViewDeltas && out[i].pitchDelta != 0.0f)
                             m->set_pitch_delta(out[i].pitchDelta);
-                        if (out[i].yawDelta != 0.0f)
+                        if (injectViewDeltas && out[i].yawDelta != 0.0f)
                             m->set_yaw_delta(out[i].yawDelta);
                         if (out[i].analogForward != 0.0f)
                             m->set_analog_forward_delta(out[i].analogForward);
