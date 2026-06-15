@@ -58,6 +58,17 @@ namespace BotController
         constexpr int kMaxSlots = 64;
         constexpr int kMaxSubtickPerTick = 36;
 
+        enum class ReplaySnapMode : int
+        {
+            Hard = 0, // current behavior: write pre/post movement snapshots every tick
+            Soft = 1, // seed/correct movement only when starting or badly drifting
+            Off = 2,  // replay usercmd/subtick/view only; no movement snapshot correction
+        };
+
+        void SetReplaySnapMode(ReplaySnapMode mode);
+        ReplaySnapMode GetReplaySnapMode();
+        const char *ReplaySnapModeName(ReplaySnapMode mode);
+
         // ---- recording ----
         bool StartRecord(int slot); // clears old buffer, begins capture
         bool StopRecord(int slot);  // stops

@@ -133,6 +133,28 @@ namespace BotController
             }
             return "off";
         }
+
+        static bool ParseReplaySnapMode(const char *s, MotionRecorder::ReplaySnapMode &out)
+        {
+            if (!s)
+                return false;
+            if (std::strcmp(s, "hard") == 0 || std::strcmp(s, "1") == 0)
+            {
+                out = MotionRecorder::ReplaySnapMode::Hard;
+                return true;
+            }
+            if (std::strcmp(s, "soft") == 0)
+            {
+                out = MotionRecorder::ReplaySnapMode::Soft;
+                return true;
+            }
+            if (std::strcmp(s, "off") == 0 || std::strcmp(s, "0") == 0)
+            {
+                out = MotionRecorder::ReplaySnapMode::Off;
+                return true;
+            }
+            return false;
+        }
     }
 }
 
@@ -307,6 +329,29 @@ CON_COMMAND_F(bc_view_debug,
                                 MotionRecorder::ViewDebugTarget(), name, sizeof(name)));
 }
 
+CON_COMMAND_F(bc_replay_snap,
+              "bc_replay_snap [hard|soft|off]  Set replay movement snapshot correction mode.",
+              FCVAR_NONE)
+{
+    using namespace BotController;
+
+    if (args.ArgC() >= 2)
+    {
+        MotionRecorder::ReplaySnapMode mode;
+        if (!Commands::ParseReplaySnapMode(args.Arg(1), mode))
+        {
+            Commands::PrintToCaller(context,
+                                    "usage: bc_replay_snap [hard|soft|off]\n");
+            return;
+        }
+        MotionRecorder::SetReplaySnapMode(mode);
+    }
+
+    Commands::PrintToCaller(context, "[BC] replay_snap=%s\n",
+                            MotionRecorder::ReplaySnapModeName(
+                                MotionRecorder::GetReplaySnapMode()));
+}
+
 CON_COMMAND_F(bc_status,
               "bc_status  Print hook status and every per-slot lock.",
               FCVAR_NONE)
@@ -345,6 +390,10 @@ CON_COMMAND_F(bc_status,
                             Commands::ViewDebugName(
                                 MotionRecorder::ViewDebugTarget(),
                                 viewDebugName, sizeof(viewDebugName)));
+    Commands::PrintToCaller(context,
+                            "[BC] replay_snap: %s\n",
+                            MotionRecorder::ReplaySnapModeName(
+                                MotionRecorder::GetReplaySnapMode()));
 
     // All lock
     int nAll = BotControllerState::CountAll();

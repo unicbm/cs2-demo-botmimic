@@ -66,6 +66,10 @@ namespace BotController
         static std::atomic<int> g_viewDebugTarget{-1};
         static int g_viewDebugLastSeaCursor[kMaxSlots] = {0};
         static int g_viewDebugSeaCalls[kMaxSlots] = {0};
+        static std::atomic<int> g_replaySnapMode{static_cast<int>(ReplaySnapMode::Hard)};
+
+        static constexpr float kSoftSnapDistance = 64.0f;
+        static constexpr float kSoftSnapVerticalDistance = 48.0f;
 
         static bool ValidSlot(int s) { return s >= 0 && s < kMaxSlots; }
 
@@ -80,6 +84,43 @@ namespace BotController
         static float AngleDelta(float to, float from)
         {
             return NormalizeDeg(to - from);
+        }
+
+        static ReplaySnapMode ActiveReplaySnapMode()
+        {
+            switch (g_replaySnapMode.load(std::memory_order_relaxed))
+            {
+            case static_cast<int>(ReplaySnapMode::Soft):
+                return ReplaySnapMode::Soft;
+            case static_cast<int>(ReplaySnapMode::Off):
+                return ReplaySnapMode::Off;
+            default:
+                return ReplaySnapMode::Hard;
+            }
+        }
+
+        const char *ReplaySnapModeName(ReplaySnapMode mode)
+        {
+            switch (mode)
+            {
+            case ReplaySnapMode::Hard:
+                return "hard";
+            case ReplaySnapMode::Soft:
+                return "soft";
+            case ReplaySnapMode::Off:
+                return "off";
+            }
+            return "hard";
+        }
+
+        void SetReplaySnapMode(ReplaySnapMode mode)
+        {
+            g_replaySnapMode.store(static_cast<int>(mode), std::memory_order_relaxed);
+        }
+
+        ReplaySnapMode GetReplaySnapMode()
+        {
+            return ActiveReplaySnapMode();
         }
 
         static bool ShouldViewDebug(int slot)
@@ -152,6 +193,37 @@ namespace BotController
                 out.originZ = *reinterpret_cast<float *>(n + tg::kNode_AbsOrigin + 8);
             }
             return true;
+        }
+
+        static bool SnapshotPositionIsFinite(const MovementSnapshot &s)
+        {
+            return std::isfinite(s.originX) && std::isfinite(s.originY) &&
+                   std::isfinite(s.originZ);
+        }
+
+        static bool ShouldApplyMovementSnap(ReplaySnapMode mode, int cursor,
+                                            void *services, const MovementSnapshot &target)
+        {
+            if (mode == ReplaySnapMode::Hard)
+                return true;
+            if (mode == ReplaySnapMode::Off)
+                return false;
+
+            if (cursor <= 0)
+                return true;
+            if (!SnapshotPositionIsFinite(target))
+                return false;
+
+            MovementSnapshot live{};
+            if (!ReadSnapshot(services, live) || !SnapshotPositionIsFinite(live))
+                return true;
+
+            const float dx = live.originX - target.originX;
+            const float dy = live.originY - target.originY;
+            const float dz = live.originZ - target.originZ;
+            const float dist2 = dx * dx + dy * dy;
+            return dist2 > (kSoftSnapDistance * kSoftSnapDistance) ||
+                   std::fabs(dz) > kSoftSnapVerticalDistance;
         }
 
         // ---- recording ----
@@ -676,26 +748,41 @@ namespace BotController
                     return; // commit handler will stop/loop
                 t = p.ticks[cur];
             }
-            DebugReplayView("pre", slot, ReplayCursor(slot), t);
-            WriteMoveData(moveData, t.pre);
-            WriteAnglesVelToPawn(services, t.pre);
+            const int cursor = ReplayCursor(slot);
+            const ReplaySnapMode snapMode = ActiveReplaySnapMode();
+            const bool snapMovement =
+                ShouldApplyMovementSnap(snapMode, cursor, services, t.pre);
+
+            DebugReplayView("pre", slot, cursor, t);
+            if (snapMovement)
+            {
+                WriteMoveData(moveData, t.pre);
+                WriteAnglesVelToPawn(services, t.pre);
+            }
+            else if (snapMode != ReplaySnapMode::Off)
+            {
+                WriteViewAnglesToPawn(services, t.pre);
+            }
             auto *sv = reinterpret_cast<char *>(services);
             // Feed recorded buttons so the engine's Duck()/ladder logic runs
             *reinterpret_cast<uint64_t *>(sv + tg::kServices_Buttons) = t.pre.buttons;
             *reinterpret_cast<uint64_t *>(sv + tg::kServices_Buttons1) = t.pre.buttons1;
             *reinterpret_cast<uint64_t *>(sv + tg::kServices_Buttons2) = t.pre.buttons2;
-            void *pawn = *reinterpret_cast<void **>(sv + tg::kServices_Pawn);
-            if (pawn)
+            if (snapMovement)
             {
-                auto *pp = reinterpret_cast<char *>(pawn);
-                *reinterpret_cast<uint8_t *>(pp + tg::kEnt_MoveType) = t.pre.moveType;
-                void *node = *reinterpret_cast<void **>(pp + tg::kEnt_GameSceneNode);
-                if (node)
+                void *pawn = *reinterpret_cast<void **>(sv + tg::kServices_Pawn);
+                if (pawn)
                 {
-                    auto *n = reinterpret_cast<char *>(node);
-                    *reinterpret_cast<float *>(n + tg::kNode_AbsOrigin + 0) = t.pre.originX;
-                    *reinterpret_cast<float *>(n + tg::kNode_AbsOrigin + 4) = t.pre.originY;
-                    *reinterpret_cast<float *>(n + tg::kNode_AbsOrigin + 8) = t.pre.originZ;
+                    auto *pp = reinterpret_cast<char *>(pawn);
+                    *reinterpret_cast<uint8_t *>(pp + tg::kEnt_MoveType) = t.pre.moveType;
+                    void *node = *reinterpret_cast<void **>(pp + tg::kEnt_GameSceneNode);
+                    if (node)
+                    {
+                        auto *n = reinterpret_cast<char *>(node);
+                        *reinterpret_cast<float *>(n + tg::kNode_AbsOrigin + 0) = t.pre.originX;
+                        *reinterpret_cast<float *>(n + tg::kNode_AbsOrigin + 4) = t.pre.originY;
+                        *reinterpret_cast<float *>(n + tg::kNode_AbsOrigin + 8) = t.pre.originZ;
+                    }
                 }
             }
         }
@@ -708,6 +795,8 @@ namespace BotController
                 return;
             ReplayState &p = g_rep[slot];
             if (!p.playing.load(std::memory_order_acquire))
+                return;
+            if (ActiveReplaySnapMode() != ReplaySnapMode::Hard)
                 return;
             ReplayTick t{};
             {
@@ -774,29 +863,38 @@ namespace BotController
 
             DebugReplayView("commit", slot, cur, t);
             auto *sv = reinterpret_cast<char *>(services);
-            void *pawn = *reinterpret_cast<void **>(sv + tg::kServices_Pawn);
-            if (pawn)
+            const ReplaySnapMode snapMode = ActiveReplaySnapMode();
+            const bool hardSnap = snapMode == ReplaySnapMode::Hard;
+            if (hardSnap)
             {
-                auto *pp = reinterpret_cast<char *>(pawn);
-                *reinterpret_cast<uint8_t *>(pp + tg::kEnt_MoveType) = t.post.moveType;
-                *reinterpret_cast<uint8_t *>(pp + tg::kEnt_ActualMoveType) = t.post.actualMoveType;
-                // Merge ground + ducking bits from the recording, keep the rest live.
-                uint32_t live = *reinterpret_cast<uint32_t *>(pp + tg::kEnt_Flags);
-                uint32_t mask = tg::kFL_OnGround | tg::kFL_Ducking;
-                live = (live & ~mask) | (t.post.entityFlags & mask);
-                *reinterpret_cast<uint32_t *>(pp + tg::kEnt_Flags) = live;
+                void *pawn = *reinterpret_cast<void **>(sv + tg::kServices_Pawn);
+                if (pawn)
+                {
+                    auto *pp = reinterpret_cast<char *>(pawn);
+                    *reinterpret_cast<uint8_t *>(pp + tg::kEnt_MoveType) = t.post.moveType;
+                    *reinterpret_cast<uint8_t *>(pp + tg::kEnt_ActualMoveType) = t.post.actualMoveType;
+                    // Merge ground + ducking bits from the recording, keep the rest live.
+                    uint32_t live = *reinterpret_cast<uint32_t *>(pp + tg::kEnt_Flags);
+                    uint32_t mask = tg::kFL_OnGround | tg::kFL_Ducking;
+                    live = (live & ~mask) | (t.post.entityFlags & mask);
+                    *reinterpret_cast<uint32_t *>(pp + tg::kEnt_Flags) = live;
+                }
             }
-            WriteViewAnglesToPawn(services, t.post);
+            if (snapMode != ReplaySnapMode::Off)
+                WriteViewAnglesToPawn(services, t.post);
 
-            // Overwrite duck/ladder state
-            *reinterpret_cast<float *>(sv + tg::kServices_DuckAmount) = t.post.duckAmount;
-            *reinterpret_cast<float *>(sv + tg::kServices_DuckSpeed) = t.post.duckSpeed;
-            *reinterpret_cast<float *>(sv + tg::kServices_LadderNormal + 0) = t.post.ladderNormalX;
-            *reinterpret_cast<float *>(sv + tg::kServices_LadderNormal + 4) = t.post.ladderNormalY;
-            *reinterpret_cast<float *>(sv + tg::kServices_LadderNormal + 8) = t.post.ladderNormalZ;
-            *reinterpret_cast<uint8_t *>(sv + tg::kServices_Ducked) = t.post.ducked;
-            *reinterpret_cast<uint8_t *>(sv + tg::kServices_Ducking) = t.post.ducking;
-            *reinterpret_cast<uint8_t *>(sv + tg::kServices_DesiresDuck) = t.post.desiresDuck;
+            if (hardSnap)
+            {
+                // Overwrite duck/ladder state only in hard snapshot mode.
+                *reinterpret_cast<float *>(sv + tg::kServices_DuckAmount) = t.post.duckAmount;
+                *reinterpret_cast<float *>(sv + tg::kServices_DuckSpeed) = t.post.duckSpeed;
+                *reinterpret_cast<float *>(sv + tg::kServices_LadderNormal + 0) = t.post.ladderNormalX;
+                *reinterpret_cast<float *>(sv + tg::kServices_LadderNormal + 4) = t.post.ladderNormalY;
+                *reinterpret_cast<float *>(sv + tg::kServices_LadderNormal + 8) = t.post.ladderNormalZ;
+                *reinterpret_cast<uint8_t *>(sv + tg::kServices_Ducked) = t.post.ducked;
+                *reinterpret_cast<uint8_t *>(sv + tg::kServices_Ducking) = t.post.ducking;
+                *reinterpret_cast<uint8_t *>(sv + tg::kServices_DesiresDuck) = t.post.desiresDuck;
+            }
 
             p.cursor.store(cur + 1, std::memory_order_relaxed);
 
