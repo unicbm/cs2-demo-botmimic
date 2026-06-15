@@ -1,6 +1,6 @@
 use crate::model::{
-    ConversionManifest, ConvertedFile, ParsedDemo, ParsedPlayerTick, Side, CS2BM_ABI,
-    CS2REC_VERSION,
+    ConversionManifest, ConvertedFile, ConvertedRound, EconomyClass, ParsedDemo, ParsedPlayerTick,
+    Side, TeamEconomy, CS2BM_ABI, CS2REC_VERSION,
 };
 use crate::quality::{analyze_demo, AnalysisOptions};
 use crate::rec_writer::write_rec_file;
@@ -14,9 +14,11 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Debug)]
 pub struct ConvertOptions {
     pub output_dir: PathBuf,
+    pub output_stem: Option<String>,
     pub side: Side,
     pub selected_rounds: Option<BTreeSet<u32>>,
     pub include_suspicious: bool,
+    pub cut_before_bomb_plant: bool,
     pub analysis: AnalysisOptions,
 }
 
@@ -25,11 +27,13 @@ pub struct ConversionReport {
     pub root: PathBuf,
     pub manifest_path: PathBuf,
     pub files_written: usize,
+    pub manifest: ConversionManifest,
 }
 
 pub fn export_demo(parsed: &ParsedDemo, options: &ConvertOptions) -> Result<ConversionReport> {
     let analysis = analyze_demo(parsed, options.analysis);
-    let root = options.output_dir.join(&parsed.stem);
+    let output_stem = options.output_stem.as_deref().unwrap_or(&parsed.stem);
+    let root = options.output_dir.join(output_stem);
     fs::create_dir_all(&root).map_err(|e| io_error(&root, e))?;
 
     let mut manifest = ConversionManifest {
@@ -38,6 +42,7 @@ pub fn export_demo(parsed: &ParsedDemo, options: &ConvertOptions) -> Result<Conv
         tick_rate: parsed.tick_rate,
         abi: CS2BM_ABI,
         format_version: CS2REC_VERSION,
+        rounds: Vec::new(),
         files: Vec::new(),
     };
     let mut log = Vec::new();
@@ -64,13 +69,44 @@ pub fn export_demo(parsed: &ParsedDemo, options: &ConvertOptions) -> Result<Conv
             continue;
         }
 
+        let (end_tick, cut_reason) = if options.cut_before_bomb_plant {
+            cut_before_bomb_plant(parsed, round.start_tick, round.end_tick)
+        } else {
+            (round.end_tick, None)
+        };
+        if end_tick <= round.start_tick {
+            log.push(format!(
+                "skip round {}: cut window empty after {:?}",
+                round.round, cut_reason
+            ));
+            continue;
+        }
+        let pistol_round = is_pistol_round(round.round);
+        let t_economy = team_economy(
+            parsed,
+            round.round,
+            round.start_tick,
+            end_tick,
+            2,
+            pistol_round,
+        );
+        let ct_economy = team_economy(
+            parsed,
+            round.round,
+            round.start_tick,
+            end_tick,
+            3,
+            pistol_round,
+        );
+        let first_file_index = manifest.files.len();
+
         let round_rows: Vec<_> = parsed
             .rows
             .iter()
             .filter(|row| {
                 row.round == round.round
                     && row.tick >= round.start_tick
-                    && row.tick <= round.end_tick
+                    && row.tick <= end_tick
                     && row.is_alive
                     && row.steam_id != 0
                     && options.side.matches_team(row.team_num)
@@ -121,6 +157,27 @@ pub fn export_demo(parsed: &ParsedDemo, options: &ConvertOptions) -> Result<Conv
                 preload_weapon_def_indices: preload_weapon_def_indices(&player_rows, &rec),
             });
         }
+
+        let files = manifest.files.len() - first_file_index;
+        if files > 0 {
+            let duration_seconds = if parsed.tick_rate > 0.0 {
+                ((end_tick - round.start_tick).max(0) as f32) / parsed.tick_rate
+            } else {
+                0.0
+            };
+            manifest.rounds.push(ConvertedRound {
+                round: round.round,
+                start_tick: round.start_tick,
+                end_tick,
+                original_end_tick: round.end_tick,
+                duration_seconds,
+                pistol_round,
+                cut_reason,
+                t_economy,
+                ct_economy,
+                files,
+            });
+        }
     }
 
     let manifest_path = root.join("manifest.json");
@@ -135,7 +192,155 @@ pub fn export_demo(parsed: &ParsedDemo, options: &ConvertOptions) -> Result<Conv
         root,
         manifest_path,
         files_written: manifest.files.len(),
+        manifest,
     })
+}
+
+fn cut_before_bomb_plant(
+    parsed: &ParsedDemo,
+    start_tick: i32,
+    end_tick: i32,
+) -> (i32, Option<String>) {
+    let first_plant_tick = parsed
+        .bomb_beginplant_ticks
+        .iter()
+        .chain(parsed.bomb_planted_ticks.iter())
+        .copied()
+        .filter(|tick| *tick > start_tick && *tick <= end_tick)
+        .min();
+    match first_plant_tick {
+        Some(tick) => (
+            tick.saturating_sub(1),
+            Some(format!("before_bomb_plant_tick_{tick}")),
+        ),
+        None => (end_tick, None),
+    }
+}
+
+fn team_economy(
+    parsed: &ParsedDemo,
+    round: u32,
+    start_tick: i32,
+    end_tick: i32,
+    team_num: u8,
+    pistol_round: bool,
+) -> TeamEconomy {
+    let mut first_rows: BTreeMap<u64, &ParsedPlayerTick> = BTreeMap::new();
+    for row in &parsed.rows {
+        if row.round != round
+            || row.tick < start_tick
+            || row.tick > end_tick
+            || row.team_num != team_num
+            || !row.is_alive
+            || row.steam_id == 0
+        {
+            continue;
+        }
+        first_rows.entry(row.steam_id).or_insert(row);
+    }
+
+    let mut round_start_equipment_value = 0_u32;
+    let mut equipment_value_total = 0_u32;
+    let mut money_saved_total = 0_u32;
+    let mut cash_spent_this_round = 0_u32;
+    for row in first_rows.values() {
+        let inferred = infer_inventory_value(&row.inventory_as_ids);
+        let start_value = row.round_start_equip_value.max(inferred);
+        let total_value = row.equipment_value_total.max(start_value);
+        round_start_equipment_value = round_start_equipment_value.saturating_add(start_value);
+        equipment_value_total = equipment_value_total.saturating_add(total_value);
+        money_saved_total = money_saved_total.saturating_add(row.money_saved_total);
+        cash_spent_this_round = cash_spent_this_round.saturating_add(row.cash_spent_this_round);
+    }
+
+    let class = classify_economy(
+        first_rows.len(),
+        round_start_equipment_value.max(equipment_value_total),
+        pistol_round,
+    );
+    TeamEconomy {
+        side: Side::team_dir(team_num).to_string(),
+        players: first_rows.len(),
+        round_start_equipment_value,
+        equipment_value_total,
+        money_saved_total,
+        cash_spent_this_round,
+        class,
+    }
+}
+
+fn classify_economy(players: usize, team_equipment_value: u32, pistol_round: bool) -> EconomyClass {
+    if pistol_round {
+        return EconomyClass::Pistol;
+    }
+    if players == 0 {
+        return EconomyClass::Unknown;
+    }
+    let per_player = team_equipment_value as f32 / players as f32;
+    if per_player < 1_400.0 {
+        EconomyClass::Eco
+    } else if per_player < 3_600.0 {
+        EconomyClass::Force
+    } else {
+        EconomyClass::Full
+    }
+}
+
+fn infer_inventory_value(defs: &[i32]) -> u32 {
+    defs.iter()
+        .map(|def| weapon_value(normalize_weapon_def_index(*def)))
+        .sum()
+}
+
+fn weapon_value(def: i32) -> u32 {
+    match def {
+        1 => 700,
+        2 => 300,
+        3 => 500,
+        4 => 200,
+        7 => 2700,
+        8 => 3300,
+        9 => 4750,
+        10 => 2050,
+        11 => 5000,
+        13 => 1800,
+        14 => 5200,
+        16 => 3100,
+        17 => 1050,
+        19 => 2350,
+        23 => 1500,
+        24 => 1200,
+        25 => 2000,
+        26 => 1400,
+        27 => 1300,
+        28 => 1700,
+        29 => 1100,
+        30 => 500,
+        31 => 200,
+        32 => 200,
+        33 => 1500,
+        34 => 1250,
+        35 => 1050,
+        36 => 300,
+        38 => 5000,
+        39 => 3000,
+        40 => 1700,
+        43 => 200,
+        44 => 300,
+        45 => 300,
+        46 => 400,
+        47 => 50,
+        48 => 600,
+        60 => 2900,
+        61 => 200,
+        63 => 500,
+        64 => 600,
+        _ => 0,
+    }
+}
+
+fn is_pistol_round(round: u32) -> bool {
+    round == 0 || round == 12
 }
 
 fn first_weapon_def_index(rec: &crate::model::Cs2Rec) -> i32 {

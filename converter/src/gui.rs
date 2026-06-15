@@ -42,6 +42,7 @@ struct ConverterApp {
     output_dir: String,
     side: Side,
     include_suspicious: bool,
+    cut_before_bomb_plant: bool,
     max_round_seconds: f32,
     parsed: Option<ParsedDemo>,
     analysis: Option<DemoAnalysis>,
@@ -59,6 +60,7 @@ impl Default for ConverterApp {
             output_dir: "output".to_string(),
             side: Side::Both,
             include_suspicious: false,
+            cut_before_bomb_plant: true,
             max_round_seconds: 240.0,
             parsed: None,
             analysis: None,
@@ -121,6 +123,8 @@ impl eframe::App for ConverterApp {
                     });
                 let suspicious_label = self.t("Allow suspicious rounds", "允许导出可疑回合");
                 ui.checkbox(&mut self.include_suspicious, suspicious_label);
+                let cut_label = self.t("Cut before C4 plant", "C4 安放前截断");
+                ui.checkbox(&mut self.cut_before_bomb_plant, cut_label);
                 ui.label(self.t("Max round seconds", "最大回合秒数"));
                 ui.add(
                     egui::DragValue::new(&mut self.max_round_seconds)
@@ -260,9 +264,11 @@ impl ConverterApp {
         };
         let options = ConvertOptions {
             output_dir: PathBuf::from(self.output_dir.trim()),
+            output_stem: None,
             side: self.side,
             selected_rounds: Some(self.selected_rounds.clone()),
             include_suspicious: self.include_suspicious,
+            cut_before_bomb_plant: self.cut_before_bomb_plant,
             analysis: AnalysisOptions {
                 max_round_seconds: self.max_round_seconds,
                 ..AnalysisOptions::default()

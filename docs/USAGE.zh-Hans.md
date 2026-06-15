@@ -19,6 +19,8 @@ cargo run --release -- gui
 4. 保持默认勾选推荐回合。
 5. 导出。
 
+默认会在 C4 开始安放前截断，只导出开局路线。CLI 需要整回合时加 `--full-round`。
+
 输出目录里最重要的是：
 
 ```text
@@ -49,6 +51,12 @@ cargo run --release -- convert --demo <demo.dem> --output <输出目录>
 cargo run --release -- convert --demo <demo.dem> --output <输出目录> --rounds 0,1,2,5-8
 ```
 
+批量生成 Mirage 回合池：
+
+```powershell
+cargo run --release -- convert-pool --demo-dir <demo根目录> --output <输出目录>\mirage_pool --map de_mirage --recursive
+```
+
 校验输出：
 
 ```powershell
@@ -75,6 +83,14 @@ cs2bm_run_manifest "<输出目录>\<demo名字>\manifest.json" 0
 ```text
 cs2bm_run_manifest "<输出目录>\<demo名字>\manifest.json" 12
 ```
+
+使用 Mirage 回合池自动匹配经济：
+
+```text
+cs2bm_run_pool "<输出目录>\mirage_pool\pool_manifest.json" 0
+```
+
+round 0 和 round 12 固定只匹配 demo 的 round 0/12 手枪局；其他回合按双方当前装备价值匹配相近路线。
 
 常用检查：
 

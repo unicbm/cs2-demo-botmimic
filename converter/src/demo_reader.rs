@@ -27,6 +27,10 @@ mod demoparser_impl {
             "buttons",
             "item_def_idx",
             "inventory_as_ids",
+            "round_start_equip_value",
+            "equipment_value_total",
+            "money_saved_total",
+            "cash_spent_this_round",
             "team_num",
             "is_alive",
             "is_airborne",
@@ -57,7 +61,11 @@ mod demoparser_impl {
             wanted_other_props: vec![],
             wanted_prop_states: AHashMap::default(),
             wanted_ticks: vec![],
-            wanted_events: vec!["round_freeze_end".to_string()],
+            wanted_events: vec![
+                "round_freeze_end".to_string(),
+                "bomb_beginplant".to_string(),
+                "bomb_planted".to_string(),
+            ],
             parse_ents: true,
             parse_projectiles: false,
             parse_grenades: false,
@@ -134,6 +142,13 @@ mod demoparser_impl {
                     .into_iter()
                     .map(|v| v as i32)
                     .collect(),
+                round_start_equip_value: get_u32(&columns, "round_start_equip_value", idx)
+                    .unwrap_or_default(),
+                equipment_value_total: get_u32(&columns, "equipment_value_total", idx)
+                    .unwrap_or_default(),
+                money_saved_total: get_u32(&columns, "money_saved_total", idx).unwrap_or_default(),
+                cash_spent_this_round: get_u32(&columns, "cash_spent_this_round", idx)
+                    .unwrap_or_default(),
                 entity_flags: explicit_flags.unwrap_or(if is_airborne { 0 } else { 1 }),
                 move_type: get_u32(&columns, "move_type", idx).unwrap_or(2) as u8,
             });
@@ -149,6 +164,12 @@ mod demoparser_impl {
             .collect::<Vec<_>>();
         round_freeze_end_ticks.sort_unstable();
         round_freeze_end_ticks.dedup();
+        let mut bomb_beginplant_ticks = event_ticks(&output.game_events, "bomb_beginplant");
+        let mut bomb_planted_ticks = event_ticks(&output.game_events, "bomb_planted");
+        bomb_beginplant_ticks.sort_unstable();
+        bomb_beginplant_ticks.dedup();
+        bomb_planted_ticks.sort_unstable();
+        bomb_planted_ticks.dedup();
 
         Ok(ParsedDemo {
             path: path.display().to_string(),
@@ -156,8 +177,18 @@ mod demoparser_impl {
             map,
             tick_rate,
             round_freeze_end_ticks,
+            bomb_beginplant_ticks,
+            bomb_planted_ticks,
             rows,
         })
+    }
+
+    fn event_ticks(events: &[parser::second_pass::game_events::GameEvent], name: &str) -> Vec<i32> {
+        events
+            .iter()
+            .filter(|event| event.name == name)
+            .map(|event| event.tick)
+            .collect()
     }
 
     fn estimate_tick_rate(rows: &[ParsedPlayerTick]) -> Option<f32> {

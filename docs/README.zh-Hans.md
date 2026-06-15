@@ -43,6 +43,8 @@ GUI 里按这个流程：
 5. 默认勾选推荐回合即可。
 6. 点击导出。
 
+默认导出的 rec 会在 C4 开始安放前截断，先专注“开局路线”。如果要整回合导出，CLI 可以加 `--full-round`。
+
 导出后会生成类似这样的目录：
 
 ```text
@@ -53,6 +55,17 @@ output/<demo名字>/round01/...
 ```
 
 `manifest.json` 是播放时最方便使用的入口文件。
+
+## 批量生成 Mirage 回合池
+
+如果你有很多 demo，可以先生成一个 Mirage 回合池，让插件按双方经济自动挑相似回合：
+
+```powershell
+cd cs2-demo-botmimic\converter
+cargo run --release -- convert-pool --demo-dir "<demo根目录>" --output "..\output\mirage_pool" --map de_mirage --recursive
+```
+
+输出目录里会有 `pool_manifest.json`，以及每个 demo 自己的 manifest 和 `.cs2rec` 文件。
 
 ## 第二步：进游戏播放
 
@@ -80,6 +93,14 @@ cs2bm_run_manifest "<输出目录>\<demo名字>\manifest.json" 0
 ```text
 cs2bm_run_manifest "<输出目录>\<demo名字>\manifest.json" 12
 ```
+
+如果使用 Mirage 回合池：
+
+```text
+cs2bm_run_pool "<输出目录>\mirage_pool\pool_manifest.json" 0
+```
+
+round 0 和 round 12 只会匹配 demo 的 round 0/12 手枪局；其他回合会按双方当前装备价值粗略匹配 eco / force / full。
 
 查看状态：
 

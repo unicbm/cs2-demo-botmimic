@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 use cs2_demo_botmimic_converter::demo_reader::read_demo;
 use cs2_demo_botmimic_converter::export::{export_demo, parse_round_list, ConvertOptions};
 use cs2_demo_botmimic_converter::model::Side;
+use cs2_demo_botmimic_converter::pool::{build_round_pool, BuildPoolOptions};
 use cs2_demo_botmimic_converter::quality::{analyze_demo, AnalysisOptions};
 use cs2_demo_botmimic_converter::rec_writer::read_rec_file;
 use std::collections::BTreeMap;
@@ -22,6 +23,22 @@ enum Command {
         demo: PathBuf,
         #[arg(long, default_value_t = 240.0)]
         max_round_seconds: f32,
+    },
+    ConvertPool {
+        #[arg(long)]
+        demo_dir: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long, default_value = "de_mirage")]
+        map: String,
+        #[arg(long)]
+        recursive: bool,
+        #[arg(long)]
+        include_suspicious: bool,
+        #[arg(long, default_value_t = 240.0)]
+        max_round_seconds: f32,
+        #[arg(long)]
+        full_round: bool,
     },
     InspectRound {
         #[arg(long)]
@@ -44,6 +61,8 @@ enum Command {
         include_suspicious: bool,
         #[arg(long, default_value_t = 240.0)]
         max_round_seconds: f32,
+        #[arg(long)]
+        full_round: bool,
     },
     Validate {
         #[arg(long)]
@@ -144,6 +163,7 @@ fn run() -> cs2_demo_botmimic_converter::Result<()> {
             rounds,
             include_suspicious,
             max_round_seconds,
+            full_round,
         } => {
             let parsed = read_demo(&demo)?;
             let selected_rounds = rounds.as_deref().map(parse_round_list).transpose()?;
@@ -151,9 +171,11 @@ fn run() -> cs2_demo_botmimic_converter::Result<()> {
                 &parsed,
                 &ConvertOptions {
                     output_dir: output,
+                    output_stem: None,
                     side,
                     selected_rounds,
                     include_suspicious,
+                    cut_before_bomb_plant: !full_round,
                     analysis: AnalysisOptions {
                         max_round_seconds,
                         ..AnalysisOptions::default()
@@ -166,6 +188,33 @@ fn run() -> cs2_demo_botmimic_converter::Result<()> {
                 report.root.display()
             );
             println!("manifest {}", report.manifest_path.display());
+        }
+        Command::ConvertPool {
+            demo_dir,
+            output,
+            map,
+            recursive,
+            include_suspicious,
+            max_round_seconds,
+            full_round,
+        } => {
+            let report = build_round_pool(&BuildPoolOptions {
+                demo_dir,
+                output_dir: output,
+                map,
+                recursive,
+                include_suspicious,
+                cut_before_bomb_plant: !full_round,
+                analysis: AnalysisOptions {
+                    max_round_seconds,
+                    ..AnalysisOptions::default()
+                },
+            })?;
+            println!(
+                "pool demos_seen={} demos_matched={} candidates={} failures={}",
+                report.demos_seen, report.demos_matched, report.candidates, report.failures
+            );
+            println!("pool manifest {}", report.manifest_path.display());
         }
         Command::Validate { input } => {
             let mut count = 0_usize;

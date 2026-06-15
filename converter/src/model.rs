@@ -130,6 +130,8 @@ pub struct ParsedDemo {
     pub map: String,
     pub tick_rate: f32,
     pub round_freeze_end_ticks: Vec<i32>,
+    pub bomb_beginplant_ticks: Vec<i32>,
+    pub bomb_planted_ticks: Vec<i32>,
     pub rows: Vec<ParsedPlayerTick>,
 }
 
@@ -151,6 +153,10 @@ pub struct ParsedPlayerTick {
     pub buttons: u64,
     pub item_def_idx: i32,
     pub inventory_as_ids: Vec<i32>,
+    pub round_start_equip_value: u32,
+    pub equipment_value_total: u32,
+    pub money_saved_total: u32,
+    pub cash_spent_this_round: u32,
     pub entity_flags: u32,
     pub move_type: u8,
 }
@@ -212,7 +218,44 @@ pub struct ConversionManifest {
     pub tick_rate: f32,
     pub abi: i32,
     pub format_version: u32,
+    pub rounds: Vec<ConvertedRound>,
     pub files: Vec<ConvertedFile>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ConvertedRound {
+    pub round: u32,
+    pub start_tick: i32,
+    pub end_tick: i32,
+    pub original_end_tick: i32,
+    pub duration_seconds: f32,
+    pub pistol_round: bool,
+    pub cut_reason: Option<String>,
+    pub t_economy: TeamEconomy,
+    pub ct_economy: TeamEconomy,
+    pub files: usize,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct TeamEconomy {
+    pub side: String,
+    pub players: usize,
+    pub round_start_equipment_value: u32,
+    pub equipment_value_total: u32,
+    pub money_saved_total: u32,
+    pub cash_spent_this_round: u32,
+    pub class: EconomyClass,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EconomyClass {
+    Pistol,
+    Eco,
+    Force,
+    #[default]
+    Full,
+    Unknown,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -226,4 +269,26 @@ pub struct ConvertedFile {
     pub subticks: usize,
     pub first_weapon_def_index: i32,
     pub preload_weapon_def_indices: Vec<i32>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RoundPoolManifest {
+    pub format_version: u32,
+    pub abi: i32,
+    pub map: String,
+    pub candidates: Vec<RoundPoolCandidate>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RoundPoolCandidate {
+    pub manifest: String,
+    pub demo_stem: String,
+    pub demo_path: String,
+    pub source_round: u32,
+    pub pistol_round: bool,
+    pub t_economy: TeamEconomy,
+    pub ct_economy: TeamEconomy,
+    pub duration_seconds: f32,
+    pub cut_reason: Option<String>,
+    pub files: usize,
 }

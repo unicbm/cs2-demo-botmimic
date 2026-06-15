@@ -63,6 +63,10 @@ mod tests {
             buttons: 1,
             item_def_idx: weapon,
             inventory_as_ids: Vec::new(),
+            round_start_equip_value: 0,
+            equipment_value_total: 0,
+            money_saved_total: 0,
+            cash_spent_this_round: 0,
             entity_flags: 1,
             move_type: 2,
         }

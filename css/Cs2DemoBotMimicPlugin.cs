@@ -44,6 +44,11 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
     private int _sequenceIndex;
     private bool _sequencePrepared;
     private int _sequencePreparedRound = -1;
+    private bool _poolActive;
+    private string _poolManifestPath = string.Empty;
+    private RoundPoolManifest? _poolManifest;
+    private int _poolRoundIndex;
+    private readonly HashSet<string> _poolUsedCandidates = new();
     private bool _weaponAlignEnabled = true;
     private bool _weaponAlignFrameQueued;
     private HandoffMode _handoffMode = HandoffMode.DeathOrContact;
@@ -107,6 +112,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         _sequencePrepared = false;
         _sequencePreparedRound = -1;
         _armed = false;
+        _poolActive = false;
 
         command.ReplyToCommand(
             $"cs2bm: sequence armed, {rounds.Length - _sequenceIndex} rounds from round {startRound}; next round_start prepares bots, round_freeze_end starts playback");
@@ -121,6 +127,59 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         _sequencePrepared = false;
         _sequencePreparedRound = -1;
         command.ReplyToCommand("cs2bm: sequence stopped");
+    }
+
+    [ConsoleCommand("cs2bm_run_pool", "cs2bm_run_pool <pool_manifest.json> [start-round]")]
+    public void RunPoolCommand(CCSPlayerController? player, CommandInfo command)
+    {
+        if (!CheckAbi(command))
+            return;
+        if (command.ArgCount < 2)
+        {
+            command.ReplyToCommand("usage: cs2bm_run_pool <pool_manifest.json> [start-round]");
+            return;
+        }
+
+        var poolPath = command.GetArg(1);
+        if (!TryReadPoolManifest(poolPath, out var pool, out var readError))
+        {
+            command.ReplyToCommand($"cs2bm: failed to read pool manifest: {readError}");
+            return;
+        }
+
+        var startRound = 0;
+        if (command.ArgCount >= 3 &&
+            (!int.TryParse(command.GetArg(2), out startRound) || startRound < 0))
+        {
+            command.ReplyToCommand("cs2bm: start round must be a non-negative integer");
+            return;
+        }
+
+        StopAndUnloadLoaded();
+        _sequenceActive = false;
+        _sequencePrepared = false;
+        _sequencePreparedRound = -1;
+        _poolManifestPath = poolPath;
+        _poolManifest = pool;
+        _poolRoundIndex = startRound;
+        _poolUsedCandidates.Clear();
+        _poolActive = pool.Candidates.Count > 0;
+
+        command.ReplyToCommand(
+            _poolActive
+                ? $"cs2bm: pool armed, candidates={pool.Candidates.Count}, next round={_poolRoundIndex}; round_freeze_end selects by economy"
+                : "cs2bm: pool manifest has no candidates");
+    }
+
+    [ConsoleCommand("cs2bm_stop_pool", "cs2bm_stop_pool")]
+    public void StopPoolCommand(CCSPlayerController? player, CommandInfo command)
+    {
+        _poolActive = false;
+        _poolManifest = null;
+        _poolManifestPath = string.Empty;
+        _poolRoundIndex = 0;
+        _poolUsedCandidates.Clear();
+        command.ReplyToCommand("cs2bm: pool stopped");
     }
 
     [ConsoleCommand("cs2bm_weapon_align", "cs2bm_weapon_align <0|1>")]
@@ -237,6 +296,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         _sequenceActive = false;
         _sequencePrepared = false;
         _sequencePreparedRound = -1;
+        _poolActive = false;
         _armed = true;
         _armedLoop = loop;
         _armedLabel = $"round={round} manifest={manifestPath}";
@@ -294,6 +354,10 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
 
         _armed = false;
         _sequenceActive = false;
+        _poolActive = false;
+        _poolManifest = null;
+        _poolManifestPath = string.Empty;
+        _poolUsedCandidates.Clear();
         _sequencePrepared = false;
         _sequencePreparedRound = -1;
         _lastEnsuredWeaponDef.Clear();
@@ -355,8 +419,11 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         var sequence = _sequenceActive && _sequenceIndex < _sequenceRounds.Length
             ? $" sequence_next={_sequenceRounds[_sequenceIndex]}"
             : string.Empty;
+        var pool = _poolActive
+            ? $" pool_next={_poolRoundIndex}"
+            : string.Empty;
         command.ReplyToCommand(
-            $"cs2bm: abi={BotMimicNative.AbiVersion} slot={slot} playing={state.Playing} cursor={state.Cursor} total={state.Total} handoff={FormatHandoffMode(_handoffMode)} partial={_partialReplayEnabled}{sequence}");
+            $"cs2bm: abi={BotMimicNative.AbiVersion} slot={slot} playing={state.Playing} cursor={state.Cursor} total={state.Total} handoff={FormatHandoffMode(_handoffMode)} partial={_partialReplayEnabled}{sequence}{pool}");
     }
 
     [GameEventHandler]
@@ -374,6 +441,12 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         if (_sequenceActive)
         {
             StartPreparedSequenceRound();
+            return HookResult.Continue;
+        }
+
+        if (_poolActive)
+        {
+            StartNextPoolRound();
             return HookResult.Continue;
         }
 
@@ -478,6 +551,189 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         _sequenceIndex++;
         if (_sequenceIndex >= _sequenceRounds.Length)
             _sequenceActive = false;
+    }
+
+    private void StartNextPoolRound()
+    {
+        var pool = _poolManifest;
+        if (pool == null || pool.Candidates.Count == 0)
+        {
+            _poolActive = false;
+            Server.PrintToConsole("cs2bm: pool stopped, no candidates");
+            return;
+        }
+
+        if (!TryChoosePoolCandidate(pool, _poolRoundIndex, out var candidate, out var reason) ||
+            candidate == null)
+        {
+            Server.PrintToConsole($"cs2bm: pool skipped round {_poolRoundIndex}: {reason}");
+            _poolRoundIndex++;
+            return;
+        }
+
+        var poolDir = Path.GetDirectoryName(Path.GetFullPath(_poolManifestPath)) ?? ".";
+        var manifestPath = Path.IsPathRooted(candidate.Manifest)
+            ? candidate.Manifest
+            : Path.GetFullPath(Path.Combine(poolDir, candidate.Manifest.Replace('/', Path.DirectorySeparatorChar)));
+        var load = LoadRound(manifestPath, candidate.SourceRound);
+        if (!load.Ok)
+        {
+            Server.PrintToConsole(
+                $"cs2bm: pool failed round {_poolRoundIndex}: {load.Message}; candidate={candidate.DemoStem} r{candidate.SourceRound}");
+            _poolRoundIndex++;
+            return;
+        }
+
+        PreloadLoadedReplays();
+        var play = StartLoaded(loop: false);
+        var key = PoolCandidateKey(candidate);
+        _poolUsedCandidates.Add(key);
+        if (_poolUsedCandidates.Count > Math.Max(64, pool.Candidates.Count / 2))
+            _poolUsedCandidates.Clear();
+
+        Server.PrintToConsole(
+            $"cs2bm: pool round {_poolRoundIndex} -> {candidate.DemoStem} r{candidate.SourceRound} ({reason}); {load.Message}; {play}");
+        _poolRoundIndex++;
+    }
+
+    private bool TryChoosePoolCandidate(
+        RoundPoolManifest pool,
+        int roundIndex,
+        out RoundPoolCandidate? selected,
+        out string reason)
+    {
+        selected = null;
+        var pistolRound = IsPistolRoundIndex(roundIndex);
+        var tEconomy = SnapshotCurrentTeamEconomy(CsTeam.Terrorist, pistolRound);
+        var ctEconomy = SnapshotCurrentTeamEconomy(CsTeam.CounterTerrorist, pistolRound);
+
+        long bestScore = long.MaxValue;
+        foreach (var candidate in pool.Candidates)
+        {
+            if (candidate.PistolRound != pistolRound)
+                continue;
+            if (pistolRound && candidate.SourceRound is not 0 and not 12)
+                continue;
+            if (!pistolRound && candidate.SourceRound is 0 or 12)
+                continue;
+
+            var score = ScorePoolCandidate(candidate, tEconomy, ctEconomy, roundIndex);
+            if (score >= bestScore)
+                continue;
+            bestScore = score;
+            selected = candidate;
+        }
+
+        if (selected == null)
+        {
+            reason = pistolRound
+                ? "no pistol candidates from source round 0/12"
+                : "no non-pistol candidates";
+            return false;
+        }
+
+        reason =
+            $"target T={tEconomy.Class}:{tEconomy.EquipmentValue} CT={ctEconomy.Class}:{ctEconomy.EquipmentValue}, score={bestScore}";
+        return true;
+    }
+
+    private long ScorePoolCandidate(
+        RoundPoolCandidate candidate,
+        TeamEconomySnapshot targetT,
+        TeamEconomySnapshot targetCt,
+        int roundIndex)
+    {
+        var score = 0L;
+        score += Math.Abs((long)candidate.TEconomy.BestEquipmentValue - targetT.EquipmentValue);
+        score += Math.Abs((long)candidate.CtEconomy.BestEquipmentValue - targetCt.EquipmentValue);
+        score += EconomyClassPenalty(candidate.TEconomy.Class, targetT.Class);
+        score += EconomyClassPenalty(candidate.CtEconomy.Class, targetCt.Class);
+        score += Math.Abs(candidate.SourceRound - (roundIndex % 24)) * 25L;
+        if (_poolUsedCandidates.Contains(PoolCandidateKey(candidate)))
+            score += 10_000L;
+        score += StableHash(PoolCandidateKey(candidate), roundIndex) % 997;
+        return score;
+    }
+
+    private TeamEconomySnapshot SnapshotCurrentTeamEconomy(CsTeam team, bool pistolRound)
+    {
+        var bots = FindReplayTargets()
+            .Where(bot => bot.Team == team && bot.PawnIsAlive)
+            .ToList();
+        uint equipment = 0;
+        foreach (var bot in bots)
+        {
+            var pawn = bot.PlayerPawn.Value;
+            if (pawn.WeaponServices == null)
+                continue;
+
+            foreach (var handle in pawn.WeaponServices.MyWeapons)
+            {
+                var weapon = handle.Value;
+                if (weapon == null || !weapon.IsValid)
+                    continue;
+                equipment += WeaponClassValue(weapon.DesignerName);
+            }
+        }
+
+        var economyClass = ClassifyEconomy(bots.Count, equipment, pistolRound);
+        return new TeamEconomySnapshot(equipment, economyClass);
+    }
+
+    private static string ClassifyEconomy(int players, uint equipment, bool pistolRound)
+    {
+        if (pistolRound)
+            return "pistol";
+        if (players <= 0)
+            return "unknown";
+        var perPlayer = equipment / Math.Max(1.0f, players);
+        if (perPlayer < 1_400.0f)
+            return "eco";
+        if (perPlayer < 3_600.0f)
+            return "force";
+        return "full";
+    }
+
+    private static long EconomyClassPenalty(string candidate, string target)
+    {
+        if (candidate.Equals(target, StringComparison.OrdinalIgnoreCase))
+            return 0;
+        if (candidate.Equals("unknown", StringComparison.OrdinalIgnoreCase) ||
+            target.Equals("unknown", StringComparison.OrdinalIgnoreCase))
+            return 2_000;
+        return Math.Abs(EconomyClassRank(candidate) - EconomyClassRank(target)) switch
+        {
+            1 => 4_000,
+            _ => 9_000
+        };
+    }
+
+    private static int EconomyClassRank(string value)
+    {
+        return value.ToLowerInvariant() switch
+        {
+            "pistol" => 0,
+            "eco" => 1,
+            "force" => 2,
+            "full" => 3,
+            _ => 2
+        };
+    }
+
+    private static bool IsPistolRoundIndex(int round) => round is 0 or 12;
+
+    private static string PoolCandidateKey(RoundPoolCandidate candidate)
+        => $"{candidate.Manifest}|{candidate.SourceRound}";
+
+    private static int StableHash(string value, int seed)
+    {
+        unchecked
+        {
+            var hash = 23 + seed;
+            foreach (var ch in value)
+                hash = hash * 31 + ch;
+            return hash & 0x7fffffff;
+        }
     }
 
     private static bool CheckAbi(CommandInfo command)
@@ -1199,6 +1455,55 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         return className.Length > 0;
     }
 
+    private static uint WeaponClassValue(string className)
+    {
+        return className.ToLowerInvariant() switch
+        {
+            "weapon_deagle" => 700,
+            "weapon_elite" => 300,
+            "weapon_fiveseven" => 500,
+            "weapon_glock" => 200,
+            "weapon_ak47" => 2700,
+            "weapon_aug" => 3300,
+            "weapon_awp" => 4750,
+            "weapon_famas" => 2050,
+            "weapon_g3sg1" => 5000,
+            "weapon_galilar" => 1800,
+            "weapon_m249" => 5200,
+            "weapon_m4a1" => 3100,
+            "weapon_mac10" => 1050,
+            "weapon_p90" => 2350,
+            "weapon_mp5sd" => 1500,
+            "weapon_ump45" => 1200,
+            "weapon_xm1014" => 2000,
+            "weapon_bizon" => 1400,
+            "weapon_mag7" => 1300,
+            "weapon_negev" => 1700,
+            "weapon_sawedoff" => 1100,
+            "weapon_tec9" => 500,
+            "weapon_taser" => 200,
+            "weapon_hkp2000" => 200,
+            "weapon_mp7" => 1500,
+            "weapon_mp9" => 1250,
+            "weapon_nova" => 1050,
+            "weapon_p250" => 300,
+            "weapon_scar20" => 5000,
+            "weapon_sg556" => 3000,
+            "weapon_ssg08" => 1700,
+            "weapon_flashbang" => 200,
+            "weapon_hegrenade" => 300,
+            "weapon_smokegrenade" => 300,
+            "weapon_molotov" => 400,
+            "weapon_decoy" => 50,
+            "weapon_incgrenade" => 600,
+            "weapon_m4a1_silencer" => 2900,
+            "weapon_usp_silencer" => 200,
+            "weapon_cz75a" => 500,
+            "weapon_revolver" => 600,
+            _ => 0
+        };
+    }
+
     private static bool TryReadWeaponPlan(
         string path,
         out int firstWeaponDefIndex,
@@ -1387,6 +1692,43 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         }
     }
 
+    private static bool TryReadPoolManifest(
+        string manifestPath,
+        out RoundPoolManifest manifest,
+        out string error)
+    {
+        manifest = new RoundPoolManifest();
+        error = string.Empty;
+
+        try
+        {
+            var json = File.ReadAllText(manifestPath);
+            manifest = JsonSerializer.Deserialize<RoundPoolManifest>(
+                           json,
+                           new JsonSerializerOptions
+                           {
+                               PropertyNameCaseInsensitive = true
+                           })
+                       ?? throw new InvalidOperationException("pool manifest JSON is empty");
+            return true;
+        }
+        catch (FileNotFoundException)
+        {
+            error = $"file does not exist: {manifestPath}";
+            return false;
+        }
+        catch (DirectoryNotFoundException)
+        {
+            error = $"directory does not exist: {manifestPath}";
+            return false;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
     private static ConversionManifest ReadManifest(string manifestPath)
     {
         var json = File.ReadAllText(manifestPath);
@@ -1412,6 +1754,8 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         int[] PreloadWeaponDefIndices);
 
     private readonly record struct PendingWeaponAlign(int WeaponDefIndex, bool ForceSwitch);
+
+    private readonly record struct TeamEconomySnapshot(uint EquipmentValue, string Class);
 
     private enum ReplayWeaponSlot
     {
@@ -1495,6 +1839,80 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
     {
         [JsonPropertyName("files")]
         public List<ManifestFile> Files { get; set; } = new();
+    }
+
+    private sealed class RoundPoolManifest
+    {
+        [JsonPropertyName("format_version")]
+        public int FormatVersion { get; set; }
+
+        [JsonPropertyName("abi")]
+        public int Abi { get; set; }
+
+        [JsonPropertyName("map")]
+        public string Map { get; set; } = string.Empty;
+
+        [JsonPropertyName("candidates")]
+        public List<RoundPoolCandidate> Candidates { get; set; } = new();
+    }
+
+    private sealed class RoundPoolCandidate
+    {
+        [JsonPropertyName("manifest")]
+        public string Manifest { get; set; } = string.Empty;
+
+        [JsonPropertyName("demo_stem")]
+        public string DemoStem { get; set; } = string.Empty;
+
+        [JsonPropertyName("demo_path")]
+        public string DemoPath { get; set; } = string.Empty;
+
+        [JsonPropertyName("source_round")]
+        public int SourceRound { get; set; }
+
+        [JsonPropertyName("pistol_round")]
+        public bool PistolRound { get; set; }
+
+        [JsonPropertyName("t_economy")]
+        public PoolTeamEconomy TEconomy { get; set; } = new();
+
+        [JsonPropertyName("ct_economy")]
+        public PoolTeamEconomy CtEconomy { get; set; } = new();
+
+        [JsonPropertyName("duration_seconds")]
+        public float DurationSeconds { get; set; }
+
+        [JsonPropertyName("cut_reason")]
+        public string? CutReason { get; set; }
+
+        [JsonPropertyName("files")]
+        public int Files { get; set; }
+    }
+
+    private sealed class PoolTeamEconomy
+    {
+        [JsonPropertyName("side")]
+        public string Side { get; set; } = string.Empty;
+
+        [JsonPropertyName("players")]
+        public int Players { get; set; }
+
+        [JsonPropertyName("round_start_equipment_value")]
+        public uint RoundStartEquipmentValue { get; set; }
+
+        [JsonPropertyName("equipment_value_total")]
+        public uint EquipmentValueTotal { get; set; }
+
+        [JsonPropertyName("money_saved_total")]
+        public uint MoneySavedTotal { get; set; }
+
+        [JsonPropertyName("cash_spent_this_round")]
+        public uint CashSpentThisRound { get; set; }
+
+        [JsonPropertyName("class")]
+        public string Class { get; set; } = "unknown";
+
+        public uint BestEquipmentValue => Math.Max(RoundStartEquipmentValue, EquipmentValueTotal);
     }
 
     private sealed class ManifestFile

@@ -276,6 +276,10 @@ mod tests {
             buttons: 0,
             item_def_idx: -1,
             inventory_as_ids: Vec::new(),
+            round_start_equip_value: 0,
+            equipment_value_total: 0,
+            money_saved_total: 0,
+            cash_spent_this_round: 0,
             entity_flags: 1,
             move_type: 2,
         }
@@ -289,6 +293,8 @@ mod tests {
             map: "de_test".to_string(),
             tick_rate: 64.0,
             round_freeze_end_ticks: Vec::new(),
+            bomb_beginplant_ticks: Vec::new(),
+            bomb_planted_ticks: Vec::new(),
             rows: vec![row(1, 0, 2, 1), row(1, 640, 3, 2)],
         };
         let analysis = analyze_demo(&parsed, AnalysisOptions::default());
@@ -310,6 +316,8 @@ mod tests {
             map: "de_test".to_string(),
             tick_rate: 64.0,
             round_freeze_end_ticks: Vec::new(),
+            bomb_beginplant_ticks: Vec::new(),
+            bomb_planted_ticks: Vec::new(),
             rows: vec![frozen],
         };
 
@@ -353,6 +361,8 @@ mod tests {
             map: "de_test".to_string(),
             tick_rate: 64.0,
             round_freeze_end_ticks: Vec::new(),
+            bomb_beginplant_ticks: Vec::new(),
+            bomb_planted_ticks: Vec::new(),
             rows,
         };
 
@@ -379,6 +389,8 @@ mod tests {
             map: "de_test".to_string(),
             tick_rate: 64.0,
             round_freeze_end_ticks: vec![150],
+            bomb_beginplant_ticks: Vec::new(),
+            bomb_planted_ticks: Vec::new(),
             rows,
         };
 

@@ -47,6 +47,8 @@ GUI flow:
 5. Keep the recommended rounds selected.
 6. Export.
 
+By default, exported replays stop before the C4 plant begins. This keeps the first version focused on opening routes; full-round export is still available from the CLI with `--full-round`.
+
 The output looks like this:
 
 ```text
@@ -57,6 +59,17 @@ output/<demo-name>/round01/...
 ```
 
 `manifest.json` is the easiest file to use for playback.
+
+## Build A Mirage Round Pool
+
+If you have many demos, you can build a replay pool and let the plugin choose a similar round by economy:
+
+```powershell
+cd cs2-demo-botmimic\converter
+cargo run --release -- convert-pool --demo-dir "<demo-root>" --output "..\output\mirage_pool" --map de_mirage --recursive
+```
+
+This writes `pool_manifest.json` plus normal per-demo manifests and `.cs2rec` files under the output folder.
 
 ## Play In CS2
 
@@ -80,6 +93,14 @@ To start from a specific round:
 ```text
 cs2bm_run_manifest "<output-dir>\<demo-name>\manifest.json" 12
 ```
+
+For a Mirage pool:
+
+```text
+cs2bm_run_pool "<output-dir>\mirage_pool\pool_manifest.json" 0
+```
+
+Round 0 and round 12 only match pistol-round candidates from demo round 0 or 12. Other rounds are matched by each side's current equipment value.
 
 Useful checks:
 
