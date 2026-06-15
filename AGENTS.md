@@ -44,7 +44,7 @@ Keep module boundaries clear:
 
 - `CS2BM_ABI` / expected ABI values must stay synchronized across Rust manifest generation, C# wrapper, and native runtime.
 - Never assign replay control to real human players. Safe candidates are strict CS2 bots or slots known to be bot-managed by the local bot-hider/shared-state path.
-- `cs2bm_handoff death_or_contact all` is the intended safe default: replay controls opening movement, then releases control after contact/death.
+- `cs2bm_handoff death_or_contact slot` is the intended safe default: replay controls opening movement, then releases only the contacted/dead replay slot after contact/death. Use `all` only for explicit experiments where one trigger should release every replaying bot.
 - On stop, unload, finish, or handoff, release replay state: stop replay, clear input injection, unlock weapon locks, clear pending weapon alignment, and reset bot brain state that would bias native AI.
 - Weapon alignment is intentionally soft. Do not delete/replace conflicting primary or secondary slot weapons during live replay; that has caused unstable entities and crashes. Prefer round-start inventory preset work for future stronger alignment.
 - Avoid teleport-as-primary-playback. Movement replay should flow through the runtime movement hooks with snapshots used for state seeding/correction.

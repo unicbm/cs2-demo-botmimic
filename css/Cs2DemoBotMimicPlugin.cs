@@ -52,7 +52,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
     private bool _weaponAlignEnabled = true;
     private bool _weaponAlignFrameQueued;
     private HandoffMode _handoffMode = HandoffMode.DeathOrContact;
-    private bool _handoffAllSlots = true;
+    private bool _handoffAllSlots;
     private bool _partialReplayEnabled = true;
 
     public override void Load(bool hotReload)
@@ -423,7 +423,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
             ? $" pool_next={_poolRoundIndex}"
             : string.Empty;
         command.ReplyToCommand(
-            $"cs2bm: abi={BotMimicNative.AbiVersion} slot={slot} playing={state.Playing} cursor={state.Cursor} total={state.Total} handoff={FormatHandoffMode(_handoffMode)} partial={_partialReplayEnabled}{sequence}{pool}");
+            $"cs2bm: abi={BotMimicNative.AbiVersion} slot={slot} playing={state.Playing} cursor={state.Cursor} total={state.Total} handoff={FormatHandoffMode(_handoffMode)} scope={(_handoffAllSlots ? "all" : "slot")} partial={_partialReplayEnabled}{sequence}{pool}");
     }
 
     [GameEventHandler]
@@ -465,7 +465,8 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         if (HandoffIncludesDeath(_handoffMode) && HasActiveReplaySlots())
         {
             var triggerSlot = GetDeathHandoffSlot(@event);
-            HandoffActiveReplays("player_death", triggerSlot);
+            if (triggerSlot >= 0)
+                HandoffActiveReplays($"player_death_slot{triggerSlot}", triggerSlot);
         }
 
         return HookResult.Continue;
@@ -956,6 +957,9 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
 
     private void HandoffActiveReplays(string reason, int triggerSlot = -1)
     {
+        if (triggerSlot < 0 && !_handoffAllSlots)
+            return;
+
         var stopped = 0;
         var slots = (!_handoffAllSlots && triggerSlot >= 0)
             ? [triggerSlot]
@@ -977,13 +981,18 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
             Server.PrintToConsole($"cs2bm: handoff stopped {stopped} replay slot(s), reason={reason}");
     }
 
-    private static int GetDeathHandoffSlot(EventPlayerDeath @event)
+    private int GetDeathHandoffSlot(EventPlayerDeath @event)
     {
-        if (@event.Userid is { IsValid: true } victim)
+        if (@event.Userid is { IsValid: true } victim && IsReplaySlotPlaying(victim.Slot))
             return victim.Slot;
-        if (@event.Attacker is { IsValid: true } attacker)
+        if (@event.Attacker is { IsValid: true } attacker && IsReplaySlotPlaying(attacker.Slot))
             return attacker.Slot;
         return -1;
+    }
+
+    private static bool IsReplaySlotPlaying(int slot)
+    {
+        return slot >= 0 && BotMimicNative.GetReplayState(slot).Playing;
     }
 
     private bool ReplayHasPassedHandoffGrace(int slot)
