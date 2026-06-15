@@ -102,6 +102,17 @@ cs2bm_run_pool "<输出目录>\mirage_pool\pool_manifest.json" 0
 
 round 0 和 round 12 只会匹配 demo 的 round 0/12 手枪局；其他回合会按双方当前装备价值粗略匹配 eco / force / full。
 
+可选：一条命令换职业队 bot：
+
+```text
+team vitality spirit
+team vitality ct
+cs2bm_teams
+cs2bm_team_reload
+```
+
+`team <T队> <CT队>` 会一次性添加两边 bot、设置队名和队标；`team <队伍> <t|ct>` 只换一边。想自定义队伍时，把 `css/teams.example.json` 复制到 CSS 插件 DLL 同目录并改名为 `teams.json`。
+
 查看状态：
 
 ```text

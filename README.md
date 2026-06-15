@@ -102,6 +102,17 @@ cs2bm_run_pool "<output-dir>\mirage_pool\pool_manifest.json" 0
 
 Round 0 and round 12 only match pistol-round candidates from demo round 0 or 12. Other rounds are matched by each side's current equipment value.
 
+Optional team setup:
+
+```text
+team vitality spirit
+team vitality ct
+cs2bm_teams
+cs2bm_team_reload
+```
+
+`team <t-team> <ct-team>` adds named bots, team names, and team logos in one command. Put a custom `teams.json` next to the CSS plugin DLL to override the built-in examples; `css/teams.example.json` shows the format.
+
 Useful checks:
 
 ```text
