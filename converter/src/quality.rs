@@ -1,5 +1,6 @@
+use crate::model::ParsedPlayerTick;
 use crate::model::{DemoAnalysis, ParsedDemo, RoundStatus, RoundSummary};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Copy, Debug)]
 pub struct AnalysisOptions {
@@ -26,14 +27,16 @@ pub fn analyze_demo(parsed: &ParsedDemo, options: AnalysisOptions) -> DemoAnalys
     for (round, indices) in by_round {
         let round_min_tick = indices.iter().map(|idx| parsed.rows[*idx].tick).min();
         let round_max_tick = indices.iter().map(|idx| parsed.rows[*idx].tick).max();
-        let freeze_end_tick = match (round_min_tick, round_max_tick) {
+        let freeze_end_ticks = match (round_min_tick, round_max_tick) {
             (Some(min_tick), Some(max_tick)) => parsed
                 .round_freeze_end_ticks
                 .iter()
                 .copied()
-                .find(|tick| *tick >= min_tick && *tick <= max_tick),
-            _ => None,
+                .filter(|tick| *tick >= min_tick && *tick <= max_tick)
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
         };
+        let round_floor_tick = choose_round_floor(parsed, round, &indices, &freeze_end_ticks);
         let active: Vec<_> = indices
             .iter()
             .copied()
@@ -44,7 +47,7 @@ pub fn analyze_demo(parsed: &ParsedDemo, options: AnalysisOptions) -> DemoAnalys
             .collect();
         let has_active_window = !active.is_empty();
         let source = if has_active_window { active } else { indices };
-        let source = apply_round_start_floor(parsed, &source, freeze_end_tick);
+        let source = apply_round_start_floor(parsed, &source, round_floor_tick);
         let Some(window) = select_stable_window(parsed, &source) else {
             continue;
         };
@@ -86,7 +89,7 @@ pub fn analyze_demo(parsed: &ParsedDemo, options: AnalysisOptions) -> DemoAnalys
         if window.valid_rows < 2 {
             problems.push(format!("valid player rows {} < 2", window.valid_rows));
         }
-        if !has_active_window && freeze_end_tick.is_none() {
+        if !has_active_window && round_floor_tick.is_none() {
             problems.push("missing active/freeze-end window; used raw round rows".to_string());
         }
 
@@ -122,11 +125,9 @@ pub fn analyze_demo(parsed: &ParsedDemo, options: AnalysisOptions) -> DemoAnalys
 fn apply_round_start_floor(
     parsed: &ParsedDemo,
     indices: &[usize],
-    freeze_end_tick: Option<i32>,
+    start_floor_tick: Option<i32>,
 ) -> Vec<usize> {
-    let Some(start_tick) =
-        freeze_end_tick.or_else(|| infer_round_start_from_movement(parsed, indices))
-    else {
+    let Some(start_tick) = start_floor_tick else {
         return indices.to_vec();
     };
     let filtered = indices
@@ -139,6 +140,78 @@ fn apply_round_start_floor(
     } else {
         filtered
     }
+}
+
+fn choose_round_floor(
+    parsed: &ParsedDemo,
+    round: u32,
+    indices: &[usize],
+    freeze_end_ticks: &[i32],
+) -> Option<i32> {
+    let event_floor = if is_pistol_round(round) {
+        choose_pistol_freeze_end(parsed, indices, freeze_end_ticks)
+    } else {
+        freeze_end_ticks.first().copied()
+    };
+
+    event_floor
+        .or_else(|| infer_latest_freeze_transition_floor(parsed, indices))
+        .or_else(|| infer_round_start_from_movement(parsed, indices))
+}
+
+fn choose_pistol_freeze_end(
+    parsed: &ParsedDemo,
+    indices: &[usize],
+    freeze_end_ticks: &[i32],
+) -> Option<i32> {
+    freeze_end_ticks
+        .iter()
+        .copied()
+        .max_by_key(|tick| (freeze_end_quality(parsed, indices, *tick), *tick))
+}
+
+fn freeze_end_quality(parsed: &ParsedDemo, indices: &[usize], tick: i32) -> i32 {
+    let pre_window = seconds_to_ticks(parsed, 35.0);
+    let post_window = seconds_to_ticks(parsed, 12.0);
+    let before = count_players_in_window(
+        parsed,
+        indices,
+        tick.saturating_sub(pre_window),
+        tick,
+        PlayerWindowKind::Freeze,
+    );
+    let after = count_players_in_window(
+        parsed,
+        indices,
+        tick,
+        tick.saturating_add(post_window),
+        PlayerWindowKind::Active,
+    );
+
+    (after.total().min(10) as i32 * 1_000)
+        + (after.balanced_score() as i32 * 100)
+        + (before.total().min(10) as i32 * 10)
+}
+
+fn infer_latest_freeze_transition_floor(parsed: &ParsedDemo, indices: &[usize]) -> Option<i32> {
+    let max_gap = seconds_to_ticks(parsed, 45.0);
+    let freeze_by_tick = count_players_by_tick(parsed, indices, PlayerWindowKind::Freeze);
+    let active_by_tick = count_players_by_tick(parsed, indices, PlayerWindowKind::Active);
+    let mut latest = None;
+
+    for (freeze_tick, freeze_players) in freeze_by_tick {
+        if freeze_players.total() < 6 {
+            continue;
+        }
+        let active_tick = active_by_tick
+            .range((freeze_tick + 1)..=freeze_tick.saturating_add(max_gap))
+            .find_map(|(tick, players)| (players.total() >= 6).then_some(*tick));
+        if let Some(active_tick) = active_tick {
+            latest = Some(active_tick);
+        }
+    }
+
+    latest
 }
 
 fn infer_round_start_from_movement(parsed: &ParsedDemo, indices: &[usize]) -> Option<i32> {
@@ -157,6 +230,95 @@ fn infer_round_start_from_movement(parsed: &ParsedDemo, indices: &[usize]) -> Op
     by_tick
         .into_iter()
         .find_map(|(tick, moving_players)| (moving_players >= 3).then_some(tick))
+}
+
+#[derive(Clone, Copy, Debug)]
+enum PlayerWindowKind {
+    Freeze,
+    Active,
+}
+
+#[derive(Clone, Debug, Default)]
+struct TeamPlayerSet {
+    t: BTreeSet<u64>,
+    ct: BTreeSet<u64>,
+}
+
+impl TeamPlayerSet {
+    fn add(&mut self, row: &ParsedPlayerTick) {
+        match row.team_num {
+            2 => {
+                self.t.insert(row.steam_id);
+            }
+            3 => {
+                self.ct.insert(row.steam_id);
+            }
+            _ => {}
+        }
+    }
+
+    fn total(&self) -> usize {
+        self.t.len() + self.ct.len()
+    }
+
+    fn balanced_score(&self) -> usize {
+        self.t.len().min(5) + self.ct.len().min(5)
+    }
+}
+
+fn count_players_in_window(
+    parsed: &ParsedDemo,
+    indices: &[usize],
+    start_tick: i32,
+    end_tick: i32,
+    kind: PlayerWindowKind,
+) -> TeamPlayerSet {
+    let mut players = TeamPlayerSet::default();
+    for idx in indices {
+        let row = &parsed.rows[*idx];
+        if row.tick < start_tick || row.tick > end_tick || !row_qualifies_for_window(row, kind) {
+            continue;
+        }
+        players.add(row);
+    }
+    players
+}
+
+fn count_players_by_tick(
+    parsed: &ParsedDemo,
+    indices: &[usize],
+    kind: PlayerWindowKind,
+) -> BTreeMap<i32, TeamPlayerSet> {
+    let mut by_tick = BTreeMap::new();
+    for idx in indices {
+        let row = &parsed.rows[*idx];
+        if !row_qualifies_for_window(row, kind) {
+            continue;
+        }
+        by_tick
+            .entry(row.tick)
+            .or_insert_with(TeamPlayerSet::default)
+            .add(row);
+    }
+    by_tick
+}
+
+fn row_qualifies_for_window(row: &ParsedPlayerTick, kind: PlayerWindowKind) -> bool {
+    if !row.is_alive || row.steam_id == 0 || !matches!(row.team_num, 2 | 3) {
+        return false;
+    }
+    match kind {
+        PlayerWindowKind::Freeze => row.is_freeze_period,
+        PlayerWindowKind::Active => row.round_in_progress && !row.is_freeze_period,
+    }
+}
+
+fn seconds_to_ticks(parsed: &ParsedDemo, seconds: f32) -> i32 {
+    (parsed.tick_rate.max(1.0) * seconds).round() as i32
+}
+
+fn is_pistol_round(round: u32) -> bool {
+    round == 0 || round == 12
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -397,5 +559,77 @@ mod tests {
         let analysis = analyze_demo(&parsed, AnalysisOptions::default());
 
         assert_eq!(analysis.rounds[0].start_tick, 200);
+    }
+
+    #[test]
+    fn pistol_round_uses_late_freeze_end_to_skip_warmup_activity() {
+        let mut rows = Vec::new();
+        for steam_id in 1..=5 {
+            rows.push(row(0, 100, 2, steam_id));
+            let mut frozen = row(0, 1_900, 2, steam_id);
+            frozen.is_freeze_period = true;
+            frozen.round_in_progress = false;
+            rows.push(frozen);
+            rows.push(row(0, 2_100, 2, steam_id));
+        }
+        for steam_id in 6..=10 {
+            rows.push(row(0, 100, 3, steam_id));
+            let mut frozen = row(0, 1_900, 3, steam_id);
+            frozen.is_freeze_period = true;
+            frozen.round_in_progress = false;
+            rows.push(frozen);
+            rows.push(row(0, 2_100, 3, steam_id));
+        }
+        let parsed = ParsedDemo {
+            path: "x.dem".to_string(),
+            stem: "x".to_string(),
+            map: "de_test".to_string(),
+            tick_rate: 64.0,
+            round_freeze_end_ticks: vec![500, 2_000],
+            bomb_beginplant_ticks: Vec::new(),
+            bomb_planted_ticks: Vec::new(),
+            rows,
+        };
+
+        let analysis = analyze_demo(&parsed, AnalysisOptions::default());
+
+        assert_eq!(analysis.rounds[0].start_tick, 2_100);
+    }
+
+    #[test]
+    fn pistol_round_infers_freeze_transition_when_event_is_missing() {
+        let mut rows = Vec::new();
+        for steam_id in 1..=5 {
+            rows.push(row(12, 100, 2, steam_id));
+            let mut frozen = row(12, 1_000, 3, steam_id);
+            frozen.is_freeze_period = true;
+            frozen.round_in_progress = false;
+            rows.push(frozen);
+            rows.push(row(12, 1_300, 3, steam_id));
+        }
+        for steam_id in 6..=10 {
+            rows.push(row(12, 100, 3, steam_id));
+            let mut frozen = row(12, 1_000, 2, steam_id);
+            frozen.is_freeze_period = true;
+            frozen.round_in_progress = false;
+            rows.push(frozen);
+            rows.push(row(12, 1_300, 2, steam_id));
+        }
+        let parsed = ParsedDemo {
+            path: "x.dem".to_string(),
+            stem: "x".to_string(),
+            map: "de_test".to_string(),
+            tick_rate: 64.0,
+            round_freeze_end_ticks: Vec::new(),
+            bomb_beginplant_ticks: Vec::new(),
+            bomb_planted_ticks: Vec::new(),
+            rows,
+        };
+
+        let analysis = analyze_demo(&parsed, AnalysisOptions::default());
+
+        assert_eq!(analysis.rounds[0].start_tick, 1_300);
+        assert_eq!(analysis.rounds[0].t_players, 5);
+        assert_eq!(analysis.rounds[0].ct_players, 5);
     }
 }
