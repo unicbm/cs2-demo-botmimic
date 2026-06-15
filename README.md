@@ -75,7 +75,7 @@ This writes `pool_manifest.json` plus normal per-demo manifests and `.cs2rec` fi
 
 Make sure your local CS2 server has loaded:
 
-- the Metamod runtime plugin: `BotLocker`
+- the Metamod runtime plugin: `BotController`
 - the CounterStrikeSharp plugin: `Cs2DemoBotMimic`
 
 In the server console:
@@ -116,6 +116,7 @@ cs2bm_team_reload
 Useful checks:
 
 ```text
+bc_status
 cs2bm_status 0
 cs2bm_bots
 ```
@@ -144,7 +145,7 @@ For normal use, export the recommended rounds only.
 
 - Windows x64 local CS2 is the primary target.
 - The server should run the same map and have enough bots.
-- v1 focuses on smooth tick-level replay. Full subtick/usercmd reconstruction is future work.
+- v2 writes BotController-compatible tick snapshots. Full offline subtick/usercmd reconstruction is future work.
 - Some weapon/loadout details are still limited by CS2 slot behavior, especially default pistols.
 - This is for local servers, research, content creation, and plugin development. It is not intended for matchmaking or cheating.
 
@@ -160,7 +161,7 @@ cargo run --release -- convert --demo <demo.dem> --output <output-dir>
 Repository layout:
 
 - `converter/`: Rust GUI/CLI converter.
-- `runtime/BotMimicRuntime/`: CS2 Metamod runtime.
+- `runtime/BotController/`: CS2 Metamod runtime.
 - `css/`: CounterStrikeSharp control plugin.
 - `docs/`: extra docs.
 - `third_party/`: vendored third-party source and license notes.
@@ -169,7 +170,7 @@ Repository layout:
 
 Thanks to:
 
-- [XBribo/CS2-Bot-Locker](https://github.com/XBribo/CS2-Bot-Locker): CS2 bot hooks, replay, and weapon-locking ideas. This project's runtime is based on that work.
+- [XBribo/CS2-Bot-Controller](https://github.com/XBribo/CS2-Bot-Controller) and [CS2-Bot-Locker](https://github.com/XBribo/CS2-Bot-Locker): CS2 bot hooks, replay, recording, input injection, and weapon-locking ideas. This project uses the BotController runtime architecture.
 - [LaihoE/demoparser](https://github.com/LaihoE/demoparser): Rust CS2 demo parser used by the converter.
 - [csgowiki/minidemo-encoder](https://github.com/csgowiki/minidemo-encoder): inspiration for the demo-to-replay tooling workflow used in the CS:GO BotMimic/minidemo ecosystem.
 - The Metamod:Source and CounterStrikeSharp communities.

@@ -1,13 +1,13 @@
-# `.cs2rec` v1 Format
+# `.cs2rec` v2 Format
 
-All values are little-endian.
+All values are little-endian. v2 is the only supported format after the BotController migration.
 
 ## Header
 
 | Field | Type | Notes |
 | --- | --- | --- |
 | magic | 8 bytes | `CS2BMREC` |
-| version | `u32` | `1` |
+| version | `u32` | `2` |
 | tick_rate | `f32` | Demo tickrate estimate |
 | round | `u32` | `total_rounds_played` window |
 | side | `u8` | `2=T`, `3=CT`, `0=unknown` |
@@ -18,18 +18,20 @@ All values are little-endian.
 | map | `u16 len + utf8` | Map name |
 | player_name | `u16 len + utf8` | Demo player name |
 
-## ReplayTick
+## ReplayTickV2
 
 Each tick stores:
 
-- `pre: MovementSnapshot`
-- `post: MovementSnapshot`
+- `pre: MovementSnapshotV2`
+- `post: MovementSnapshotV2`
 - `weapon_def_index: i32`
 - `num_subtick: u32`
 
 The sum of all `num_subtick` values must equal header `subtick_count`.
 
-## MovementSnapshot
+## MovementSnapshotV2
+
+This layout matches BotController ABI 10 (`92` bytes with `Pack=4`).
 
 | Field | Type |
 | --- | --- |
@@ -40,8 +42,17 @@ The sum of all `num_subtick` values must equal header `subtick_count`.
 | move_type | `u8` |
 | pad | 3 bytes |
 | buttons | `u64` |
+| buttons1 | `u64` |
+| buttons2 | `u64` |
+| duck_amount | `f32` |
+| duck_speed | `f32` |
+| ladder_normal | `f32[3]` |
+| ducked | `u8` |
+| ducking | `u8` |
+| desires_duck | `u8` |
+| actual_move_type | `u8` |
 
-## SubtickMove
+## SubtickMoveV2
 
 | Field | Type |
 | --- | --- |
@@ -53,4 +64,4 @@ The sum of all `num_subtick` values must equal header `subtick_count`.
 | pitch_delta | `f32` |
 | yaw_delta | `f32` |
 
-v1 converter may emit zero subticks. Runtime must accept that and replay tick snapshots.
+The current offline converter may emit zero subticks. BotController accepts empty subtick arrays and replays tick snapshots plus reconstructed button edge states.

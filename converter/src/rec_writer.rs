@@ -146,6 +146,17 @@ fn write_snapshot<W: Write>(writer: &mut W, snapshot: &MovementSnapshot) -> Resu
         .write_all(&[0, 0, 0])
         .map_err(|e| Error::InvalidRec(e.to_string()))?;
     write_u64(writer, snapshot.buttons)?;
+    write_u64(writer, snapshot.buttons1)?;
+    write_u64(writer, snapshot.buttons2)?;
+    write_f32(writer, snapshot.duck_amount)?;
+    write_f32(writer, snapshot.duck_speed)?;
+    for value in snapshot.ladder_normal {
+        write_f32(writer, value)?;
+    }
+    write_u8(writer, snapshot.ducked)?;
+    write_u8(writer, snapshot.ducking)?;
+    write_u8(writer, snapshot.desires_duck)?;
+    write_u8(writer, snapshot.actual_move_type)?;
     Ok(())
 }
 
@@ -169,6 +180,18 @@ fn read_snapshot<R: Read>(reader: &mut R) -> Result<MovementSnapshot> {
         .read_exact(&mut pad)
         .map_err(|e| Error::InvalidRec(e.to_string()))?;
     let buttons = read_u64(reader)?;
+    let buttons1 = read_u64(reader)?;
+    let buttons2 = read_u64(reader)?;
+    let duck_amount = read_f32(reader)?;
+    let duck_speed = read_f32(reader)?;
+    let mut ladder_normal = [0.0_f32; 3];
+    for value in &mut ladder_normal {
+        *value = read_f32(reader)?;
+    }
+    let ducked = read_u8(reader)?;
+    let ducking = read_u8(reader)?;
+    let desires_duck = read_u8(reader)?;
+    let actual_move_type = read_u8(reader)?;
     Ok(MovementSnapshot {
         origin,
         velocity,
@@ -176,6 +199,15 @@ fn read_snapshot<R: Read>(reader: &mut R) -> Result<MovementSnapshot> {
         entity_flags,
         move_type,
         buttons,
+        buttons1,
+        buttons2,
+        duck_amount,
+        duck_speed,
+        ladder_normal,
+        ducked,
+        ducking,
+        desires_duck,
+        actual_move_type,
     })
 }
 
@@ -300,6 +332,15 @@ mod tests {
             entity_flags: 1,
             move_type: 2,
             buttons: 33,
+            buttons1: 1,
+            buttons2: 2,
+            duck_amount: 1.0,
+            duck_speed: 8.0,
+            ladder_normal: [0.0, 0.0, 1.0],
+            ducked: 1,
+            ducking: 1,
+            desires_duck: 1,
+            actual_move_type: 2,
         };
         let rec = Cs2Rec {
             header: Cs2RecHeader {

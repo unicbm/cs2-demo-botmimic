@@ -1,0 +1,127 @@
+// Motion recording & replay
+
+#pragma once
+
+#include <cstdint>
+
+namespace BotController
+{
+    // State of the player at one boundary of a movement tick. Captured twice
+    // per tick: pre (before the mover runs) and post (after).
+#pragma pack(push, 4)
+    struct MovementSnapshot
+    {
+        float originX, originY, originZ; // scene node m_vecAbsOrigin
+        float velX, velY, velZ;          // m_vecAbsVelocity
+        float pitch, yaw, roll;          // view angles
+        uint32_t entityFlags;            // m_fFlags (bit0 = FL_ONGROUND, bit1 = FL_DUCKING)
+        uint8_t moveType;                // m_MoveType (MoveType_t)
+        uint8_t _pad[3];                 // keep 4-byte alignment explicit
+        uint64_t buttons;                // services button states[0] (pressed)
+        uint64_t buttons1;               // states[1]
+        uint64_t buttons2;               // states[2]
+        float duckAmount;                // m_flDuckAmount (0=stand, 1=full crouch)
+        float duckSpeed;                 // m_flDuckSpeed
+        float ladderNormalX;             // m_vecLadderNormal (ladder anim facing)
+        float ladderNormalY;
+        float ladderNormalZ;
+        uint8_t ducked;         // m_bDucked
+        uint8_t ducking;        // m_bDucking
+        uint8_t desiresDuck;    // m_bDesiresDuck
+        uint8_t actualMoveType; // m_nActualMoveType (networked, ladder anim)
+    };
+
+    // One recorded server tick. numSubtick subtick moves follow this tick in
+    // the parallel SubtickMove buffer
+    struct ReplayTick
+    {
+        MovementSnapshot pre;
+        MovementSnapshot post;
+        int32_t weaponDefIndex; // active weapon item-def index, -1 = none
+        uint32_t numSubtick;    // subtick moves for this tick, 0..36
+    };
+
+    struct SubtickMove
+    {
+        float when;          // [0,1) time within the tick
+        uint32_t button;     // 0 = analog, else engine button bit
+        float pressed;       // digital: 1=down 0=up (stored as float)
+        float analogForward; // analog_forward_delta
+        float analogLeft;    // analog_left_delta
+        float pitchDelta;    // pitch_delta
+        float yawDelta;      // yaw_delta
+    };
+#pragma pack(pop)
+
+    namespace MotionRecorder
+    {
+        constexpr int kMaxSlots = 64;
+        constexpr int kMaxSubtickPerTick = 36;
+
+        // ---- recording ----
+        bool StartRecord(int slot); // clears old buffer, begins capture
+        bool StopRecord(int slot);  // stops
+        bool IsRecording(int slot);
+        int RecordedTickCount(int slot);    // <0 on bad slot
+        int RecordedSubtickCount(int slot); // <0 on bad slot
+
+        // ProcessMovement hook: capture pre snapshot
+        void OnCapturePre(int slot, void *services, void *cmd);
+        // ProcessMovement hook: capture post snapshot + commit the tick
+        void OnCapturePost(int slot, void *services, void *cmd);
+        // PlayerRunCommand hook: stash this tick's subtick moves (pending).
+        void OnCaptureSubticks(int slot, const SubtickMove *moves, int count);
+
+        // Track which WeaponServices* maps to this recording slot
+        void SetLiveWs(int slot, void *ws);
+        void *LiveWs(int slot);
+        // SelectItem tap: update the slot's current weapon def index.
+        void SetCurrentDef(int slot, int defIndex);
+
+        // Copy recorded data out to caller buffers; returns elements written.
+        int CopyTicks(int slot, ReplayTick *out, int maxTicks);
+        int CopySubticks(int slot, SubtickMove *out, int maxSubticks);
+
+        // ---- replay ----
+        // Load parallel arrays into a slot's replay buffer
+        bool LoadReplay(int slot, const ReplayTick *ticks, int tickCount,
+                        const SubtickMove *subs, int subCount);
+        bool StartReplay(int slot, bool loop); // play from tick 0
+        bool StopReplay(int slot);             // stop + clear injection
+        bool IsReplaying(int slot);
+        int ReplayCursor(int slot); // current tick index, <0 if idle
+        int ReplayTotal(int slot);  // loaded tick count
+
+        // Current tick being applied this server tick
+        bool CurrentReplayTick(int slot, ReplayTick &out);
+        // Copy the current tick's subtick moves into out
+        // Returns count, or -1 if not replaying.
+        int CurrentReplaySubticks(int slot, SubtickMove *out, int maxOut);
+
+        // Buttons of the tick about to be simulated
+        bool CurrentReplayInputButtons(int slot, uint64_t &b0, uint64_t &b1,
+                                       uint64_t &b2);
+
+        // Switch a bot to the weapon with this def index.
+        bool SwitchBotWeaponByDef(int slot, int defIndex);
+
+        // Def index of the weapon the bot currently holds (live engine read),
+        // same normalization as recorded WeaponDefIndex (knife -> kKnifeDef).
+        // -1 if no ws / no active weapon. For C# to reconcile replay weapon.
+        int BotActiveWeaponDef(int slot);
+
+        // Entity index to write into cmd.weaponselect this replay tick
+        int CurrentReplayWeaponSelect(int slot);
+
+        // ---- replay write hooks ----
+        // ProcessMovement (pre): write pre snapshot into CMoveData + pawn angles + entity moveType
+        void OnReplayPre(int slot, void *services, void *moveData);
+        // FinishMove (pre): write post snapshot into CMoveData + force
+        // scene-node origin resync (+1000 on Z).
+        void OnReplayFinishMove(int slot, void *services, void *moveData);
+        // FinishMove (post): commit post moveType/flags, advance cursor.
+        void OnReplayCommit(int slot, void *services);
+
+        void ClearAll(); // wipe all record + replay buffers (on unload)
+    }
+}

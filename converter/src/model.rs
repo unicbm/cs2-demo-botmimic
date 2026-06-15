@@ -3,7 +3,7 @@ use std::fmt;
 use std::str::FromStr;
 
 pub const CS2BM_ABI: i32 = 10;
-pub const CS2REC_VERSION: u32 = 1;
+pub const CS2REC_VERSION: u32 = 2;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -68,6 +68,15 @@ pub struct MovementSnapshot {
     pub entity_flags: u32,
     pub move_type: u8,
     pub buttons: u64,
+    pub buttons1: u64,
+    pub buttons2: u64,
+    pub duck_amount: f32,
+    pub duck_speed: f32,
+    pub ladder_normal: [f32; 3],
+    pub ducked: u8,
+    pub ducking: u8,
+    pub desires_duck: u8,
+    pub actual_move_type: u8,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -163,6 +172,12 @@ pub struct ParsedPlayerTick {
 
 impl ParsedPlayerTick {
     pub fn snapshot(&self) -> MovementSnapshot {
+        const FL_DUCKING: u32 = 1 << 1;
+        const IN_DUCK: u64 = 1 << 2;
+
+        let ducking = (self.entity_flags & FL_DUCKING) != 0 || (self.buttons & IN_DUCK) != 0;
+        let duck_byte = u8::from(ducking);
+
         MovementSnapshot {
             origin: self.origin,
             velocity: self.velocity,
@@ -170,6 +185,15 @@ impl ParsedPlayerTick {
             entity_flags: self.entity_flags,
             move_type: self.move_type,
             buttons: self.buttons,
+            buttons1: 0,
+            buttons2: 0,
+            duck_amount: if ducking { 1.0 } else { 0.0 },
+            duck_speed: if ducking { 8.0 } else { 0.0 },
+            ladder_normal: [0.0, 0.0, 0.0],
+            ducked: duck_byte,
+            ducking: duck_byte,
+            desires_duck: duck_byte,
+            actual_move_type: self.move_type,
         }
     }
 }

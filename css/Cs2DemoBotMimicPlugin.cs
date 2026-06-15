@@ -15,7 +15,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
     public override string ModuleName => "CS2 Demo BotMimic";
     public override string ModuleVersion => "0.1.0";
     public override string ModuleAuthor => "unicbm";
-    public override string ModuleDescription => "Loads .cs2rec files into the BotMimic Metamod runtime.";
+    public override string ModuleDescription => "Loads .cs2rec files into the BotController Metamod runtime.";
 
     private static readonly byte[] RecMagic =
     [
@@ -220,7 +220,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
             _lastReplayWeaponDef.Clear();
             _lastLockedWeaponTarget.Clear();
             foreach (var slot in _loadedSlots)
-                BotMimicNative.UnlockWeaponSlot(slot);
+                BotControllerNative.UnlockWeaponSlot(slot);
         }
 
         command.ReplyToCommand($"cs2bm: weapon_align={_weaponAlignEnabled}");
@@ -383,7 +383,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         }
 
         var path = command.GetArg(2);
-        var ok = BotMimicNative.LoadReplayFromFile(slot, path);
+        var ok = BotControllerNative.LoadReplayFromFile(slot, path);
         if (ok)
         {
             RememberLoadedSlot(slot);
@@ -392,7 +392,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
 
         command.ReplyToCommand(ok
             ? $"cs2bm: loaded slot {slot}: {path}"
-            : $"cs2bm: failed to load slot {slot}: {path}");
+            : $"cs2bm: failed to load slot {slot}: {path} ({BotControllerNative.LastLoadError})");
     }
 
     [ConsoleCommand("cs2bm_load_round", "cs2bm_load_round <manifest.json> <round>")]
@@ -453,7 +453,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
             PreloadReplayWeaponsForSlot(slot, replay);
         _lastEnsuredWeaponDef.Remove(slot);
 
-        var ok = BotMimicNative.StartReplay(slot, loop);
+        var ok = BotControllerNative.StartReplay(slot, loop);
         if (ok)
             MarkReplayStarted(slot);
         command.ReplyToCommand(ok
@@ -466,7 +466,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
     {
         if (!CheckAbi(command) || !TryParseSlot(command, out var slot))
             return;
-        var ok = BotMimicNative.StopReplay(slot);
+        var ok = BotControllerNative.StopReplay(slot);
         ReleaseReplaySlot(slot, "manual_stop");
         command.ReplyToCommand(ok
             ? $"cs2bm: stopped slot {slot}"
@@ -478,7 +478,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
     {
         foreach (var slot in _loadedSlots.ToArray())
         {
-            BotMimicNative.StopReplay(slot);
+            BotControllerNative.StopReplay(slot);
             ReleaseReplaySlot(slot, "manual_stop_all");
         }
 
@@ -505,7 +505,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
     {
         if (!CheckAbi(command) || !TryParseSlot(command, out var slot))
             return;
-        var ok = BotMimicNative.UnloadReplay(slot);
+        var ok = BotControllerNative.UnloadReplay(slot);
         if (ok)
         {
             _loadedSlots.Remove(slot);
@@ -545,7 +545,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
     {
         if (!CheckAbi(command) || !TryParseSlot(command, out var slot))
             return;
-        var state = BotMimicNative.GetReplayState(slot);
+        var state = BotControllerNative.GetReplayState(slot);
         var sequence = _sequenceActive && _sequenceIndex < _sequenceRounds.Length
             ? $" sequence_next={_sequenceRounds[_sequenceIndex]}"
             : string.Empty;
@@ -553,7 +553,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
             ? $" pool_next={_poolRoundIndex}"
             : string.Empty;
         command.ReplyToCommand(
-            $"cs2bm: abi={BotMimicNative.AbiVersion} slot={slot} playing={state.Playing} cursor={state.Cursor} total={state.Total} handoff={FormatHandoffMode(_handoffMode)} scope={(_handoffAllSlots ? "all" : "slot")} partial={_partialReplayEnabled}{sequence}{pool}");
+            $"cs2bm: abi={BotControllerNative.AbiVersion} slot={slot} playing={state.Playing} cursor={state.Cursor} total={state.Total} handoff={FormatHandoffMode(_handoffMode)} scope={(_handoffAllSlots ? "all" : "slot")} partial={_partialReplayEnabled}{sequence}{pool}");
     }
 
     [GameEventHandler]
@@ -609,7 +609,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
 
         foreach (var slot in _loadedSlots.ToArray())
         {
-            var state = BotMimicNative.GetReplayState(slot);
+            var state = BotControllerNative.GetReplayState(slot);
             if (!state.Playing)
             {
                 if (_lastPlayingSlots.Contains(slot))
@@ -629,7 +629,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
 
             if (!_weaponAlignEnabled)
                 continue;
-            if (!BotMimicNative.TryGetReplayTick(slot, out var tick))
+            if (!BotControllerNative.TryGetReplayTick(slot, out var tick))
                 continue;
 
             ApplyReplayWeaponPreset(slot, tick.WeaponDefIndex, allowSlotReplacement: true, force: false);
@@ -872,11 +872,11 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
 
     private static bool CheckAbi(CommandInfo command)
     {
-        if (BotMimicNative.IsCompatible)
+        if (BotControllerNative.IsCompatible)
             return true;
 
         command.ReplyToCommand(
-            $"cs2bm: ABI mismatch, runtime={BotMimicNative.AbiVersion}, expected={BotMimicNative.ExpectedAbiVersion}");
+            $"cs2bm: ABI mismatch, runtime={BotControllerNative.AbiVersion}, expected={BotControllerNative.ExpectedAbiVersion}");
         return false;
     }
 
@@ -982,7 +982,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
                 ? file.Path
                 : Path.GetFullPath(Path.Combine(manifestDir, file.Path.Replace('/', Path.DirectorySeparatorChar)));
 
-            if (!BotMimicNative.LoadReplayFromFile(slot, recPath))
+            if (!BotControllerNative.LoadReplayFromFile(slot, recPath))
                 return false;
 
             RememberLoadedSlot(slot);
@@ -1024,7 +1024,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
             _lastReplayWeaponDef.Remove(slot);
             _lastLockedWeaponTarget.Remove(slot);
 
-            if (BotMimicNative.StartReplay(slot, loop))
+            if (BotControllerNative.StartReplay(slot, loop))
             {
                 MarkReplayStarted(slot);
                 ok++;
@@ -1037,9 +1037,9 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
     {
         foreach (var slot in _loadedSlots.ToArray())
         {
-            BotMimicNative.StopReplay(slot);
+            BotControllerNative.StopReplay(slot);
             ReleaseReplaySlot(slot, "unload_all");
-            BotMimicNative.UnloadReplay(slot);
+            BotControllerNative.UnloadReplay(slot);
         }
         _loadedSlots.Clear();
         _loadedReplays.Clear();
@@ -1070,7 +1070,8 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         _lastLockedWeaponTarget.Remove(slot);
         _pendingWeaponAlign.Remove(slot);
         _rebuiltInventorySlots.Remove(slot);
-        BotMimicNative.UnlockWeaponSlot(slot);
+        BotControllerNative.UnlockReplayControl(slot);
+        BotControllerNative.UnlockWeaponSlot(slot);
         ResetBotBrainForHandoff(slot);
         Server.PrintToConsole($"cs2bm: released slot={slot} reason={reason}");
     }
@@ -1079,7 +1080,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
     {
         foreach (var slot in _loadedSlots)
         {
-            if (BotMimicNative.GetReplayState(slot).Playing)
+            if (BotControllerNative.GetReplayState(slot).Playing)
                 return true;
         }
         return false;
@@ -1096,10 +1097,10 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
             : _loadedSlots.ToArray();
         foreach (var slot in slots)
         {
-            if (!BotMimicNative.GetReplayState(slot).Playing)
+            if (!BotControllerNative.GetReplayState(slot).Playing)
                 continue;
 
-            BotMimicNative.StopReplay(slot);
+            BotControllerNative.StopReplay(slot);
             ReleaseReplaySlot(slot, reason);
             stopped++;
 
@@ -1122,7 +1123,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
 
     private static bool IsReplaySlotPlaying(int slot)
     {
-        return slot >= 0 && BotMimicNative.GetReplayState(slot).Playing;
+        return slot >= 0 && BotControllerNative.GetReplayState(slot).Playing;
     }
 
     private bool ReplayHasPassedHandoffGrace(int slot)
@@ -1252,7 +1253,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
              !_lastLockedWeaponTarget.TryGetValue(slot, out var lastTarget) ||
              lastTarget != target))
         {
-            if (BotMimicNative.LockWeaponSlot(slot, target))
+            if (BotControllerNative.LockWeaponSlot(slot, target))
                 _lastLockedWeaponTarget[slot] = target;
         }
 
@@ -1266,7 +1267,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
                 replaceConflictingSlot: false);
         }
 
-        BotMimicNative.SwitchBotWeapon(slot, normalized);
+        BotControllerNative.SwitchBotWeapon(slot, normalized);
         _lastReplayWeaponDef[slot] = normalized;
     }
 
@@ -1353,7 +1354,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
 
         _lastEnsuredWeaponDef[slot] = normalized;
         if (forceSwitch)
-            BotMimicNative.SwitchBotWeapon(slot, normalized);
+            BotControllerNative.SwitchBotWeapon(slot, normalized);
 
         Server.PrintToConsole($"cs2bm: aligned slot={slot} def={normalized} item={className}");
     }
@@ -1663,7 +1664,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
                 return false;
 
             var version = reader.ReadUInt32();
-            if (version != 1)
+            if (version != BotControllerNative.RecFormatVersion)
                 return false;
 
             _ = reader.ReadSingle(); // tickrate
@@ -1681,7 +1682,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
             var preload = new List<int>();
             for (var i = 0; i < tickCount; i++)
             {
-                stream.Seek(52 + 52, SeekOrigin.Current);
+                stream.Seek(BotControllerNative.MovementSnapshotByteSize + BotControllerNative.MovementSnapshotByteSize, SeekOrigin.Current);
                 var def = NormalizeWeaponDefIndex(reader.ReadInt32());
                 if (IsKnownWeaponDefIndex(def) && firstWeaponDefIndex < 0)
                     firstWeaponDefIndex = def;

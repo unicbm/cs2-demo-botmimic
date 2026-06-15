@@ -71,7 +71,7 @@ cargo run --release -- convert-pool --demo-dir "<demo根目录>" --output "..\ou
 
 先确保 CS2 本地服务器已经加载：
 
-- Metamod runtime：`BotLocker`
+- Metamod runtime：`BotController`
 - CounterStrikeSharp 插件：`Cs2DemoBotMimic`
 
 进入服务器后，在控制台输入：
@@ -116,6 +116,7 @@ cs2bm_team_reload
 查看状态：
 
 ```text
+bc_status
 cs2bm_status 0
 cs2bm_bots
 ```
@@ -144,7 +145,7 @@ cs2bm_stop_all
 
 - 目前主要面向 Windows x64 本地 CS2 环境。
 - 需要同一张地图，并且服务器里要有足够的 bot。
-- v1 先保证 tick 级轨迹回放流畅；subtick 和完整 usercmd 还会继续补。
+- v2 写 BotController 兼容的 tick 级快照；离线 subtick 和完整 usercmd 还会继续补。
 - 某些武器和皮肤/默认手枪配置在 CS2 里比较麻烦，目前优先保证不崩服和基本行为正确。
 - 这个工具不是作弊工具，也不会接入匹配服务器；它面向本地服务器、研究和内容制作。
 
@@ -162,7 +163,7 @@ cargo run --release -- convert --demo <demo.dem> --output <输出目录>
 目录：
 
 - `converter/`：Rust GUI/CLI 转换器。
-- `runtime/BotMimicRuntime/`：CS2 Metamod runtime。
+- `runtime/BotController/`：CS2 Metamod runtime。
 - `css/`：CounterStrikeSharp 控制插件。
 - `docs/`：格式和使用补充说明。
 - `third_party/`：保留的第三方源码和许可说明。
@@ -171,7 +172,7 @@ cargo run --release -- convert --demo <demo.dem> --output <输出目录>
 
 感谢这些项目和作者：
 
-- [XBribo/CS2-Bot-Locker](https://github.com/XBribo/CS2-Bot-Locker)：CS2 bot hook、录制/回放和武器锁定思路，本项目 runtime 基于它继续改造。
+- [XBribo/CS2-Bot-Controller](https://github.com/XBribo/CS2-Bot-Controller) 和 [CS2-Bot-Locker](https://github.com/XBribo/CS2-Bot-Locker)：CS2 bot hook、录制/回放、输入注入和武器锁定思路，本项目使用 BotController runtime 架构。
 - [LaihoE/demoparser](https://github.com/LaihoE/demoparser)：Rust CS2 demo parser，本项目 converter 使用它解析 demo。
 - [csgowiki/minidemo-encoder](https://github.com/csgowiki/minidemo-encoder)：CS:GO demo 到 BotMimic/minidemo 风格回放的思路参考。
 - Metamod:Source 和 CounterStrikeSharp 社区：CS2 本地插件生态。

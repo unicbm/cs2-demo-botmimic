@@ -9,8 +9,8 @@
 *.suo
 
 # Native runtime builds
-/runtime/BotMimicRuntime/build/
-/runtime/BotMimicRuntime/out/
+/runtime/BotController/build/
+/runtime/BotController/out/
 *.dll
 *.pdb
 *.lib

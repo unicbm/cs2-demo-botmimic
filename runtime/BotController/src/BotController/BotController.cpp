@@ -1,0 +1,284 @@
+// CCSBot Update/Upkeep/Jump detours
+
+#include "BotController.h"
+#include "BotControllerState.h"
+#include "ccsbot_slot.h"
+#include "sig_scan.h"
+#include "MotionRecorder.h"
+#include "version_targets.h"
+#include "hook.h"
+#include "platform.h"
+
+#include <tier0/dbg.h>
+
+#include <cstdint>
+#include <cstdio>
+#include <cmath>
+#include <vector>
+
+namespace tg = BotController::targets;
+
+using Update_t = void(BC_FASTCALL *)(void *bot);
+using Upkeep_t = void(BC_FASTCALL *)(void *bot);
+using Jump_t = char(BC_FASTCALL *)(void *bot, char mustJump);
+using UpdateLookAngles_t = void(BC_FASTCALL *)(void *bot);
+using SetEyeAngles_t = void(BC_FASTCALL *)(void *pawn, float *angle);
+
+namespace BotController
+{
+    namespace BotControllerHooks
+    {
+        static Update_t g_origUpdate = nullptr;
+        static void *g_addrUpdate = nullptr;
+        static Upkeep_t g_origUpkeep = nullptr;
+        static void *g_addrUpkeep = nullptr;
+        static Jump_t g_origJump = nullptr;
+        static void *g_addrJump = nullptr;
+        static UpdateLookAngles_t g_origUpdateLookAngles = nullptr;
+        static void *g_addrUpdateLookAngles = nullptr;
+        static SetEyeAngles_t g_origSetEyeAngles = nullptr;
+        static void *g_addrSetEyeAngles = nullptr;
+        static bool g_installed = false;
+        static std::string g_status = "not_attempted";
+
+        static Hook g_hookUpdate;
+        static Hook g_hookUpkeep;
+        static Hook g_hookJump;
+        static Hook g_hookUpdateLookAngles;
+        static Hook g_hookSetEyeAngles;
+
+        // Skip the Bot tick under All lock OR while replaying
+        static void BC_FASTCALL HookedUpdate(void *bot)
+        {
+            int slot = CCSBotToSlot(bot);
+            if (slot >= 0 &&
+                (BotControllerState::GetAll(slot) || MotionRecorder::IsReplaying(slot)))
+            {
+                *(reinterpret_cast<uint8_t *>(bot) + tg::kBot_AiTickedFlag) = 1;
+                return;
+            }
+            g_origUpdate(bot);
+        }
+
+        // Skip the per-frame view tick under All or Aim lock.
+        // EXCEPTION: while a slot is replaying, drive ONLY the view
+        static void BC_FASTCALL HookedUpdateLookAngles(void *bot); // fwd decl
+
+        static void BC_FASTCALL HookedUpkeep(void *bot)
+        {
+            int slot = CCSBotToSlot(bot);
+            if (slot >= 0 && MotionRecorder::IsReplaying(slot))
+            {
+                if (g_origUpdateLookAngles)
+                    HookedUpdateLookAngles(bot); // view only, no locomotion
+                return;
+            }
+            if (slot >= 0 &&
+                (BotControllerState::GetAll(slot) || BotControllerState::GetAim(slot)))
+            {
+                return;
+            }
+            g_origUpkeep(bot);
+        }
+
+        // view replay
+        static void BC_FASTCALL HookedUpdateLookAngles(void *bot)
+        {
+            g_origUpdateLookAngles(bot);
+        }
+
+        // Engine eye-angle
+        static void BC_FASTCALL HookedSetEyeAngles(void *pawn, float *angle)
+        {
+            int slot = pawn ? ControllerSlotForPawn(pawn) : -1;
+            ReplayTick t{};
+            if (slot >= 0 && MotionRecorder::CurrentReplayTick(slot, t))
+            {
+                float a[3] = {t.post.pitch, t.post.yaw, 0.0f};
+                g_origSetEyeAngles(pawn, a);
+                return;
+            }
+            g_origSetEyeAngles(pawn, angle);
+        }
+
+        // Skip Jump under Jump lock; return 0 mimics its own gate-fail.
+        static char BC_FASTCALL HookedJump(void *bot, char mustJump)
+        {
+            int slot = CCSBotToSlot(bot);
+            if (slot >= 0 && BotControllerState::GetJump(slot))
+                return 0;
+            return g_origJump(bot, mustJump);
+        }
+
+        // Resolve a sig from gamedata against the loaded server.dll.
+        bool Install(const nlohmann::json &gd, const Sig::ModuleInfo &serverModule,
+                     char *errorOut, size_t errorOutLen)
+        {
+            g_addrUpdate = Sig::ResolveSig(gd, serverModule, "CCSBot::Update",
+                                           errorOut, errorOutLen);
+            if (!g_addrUpdate)
+            {
+                g_status = "failed: Update sig";
+                return false;
+            }
+
+            g_addrUpkeep = Sig::ResolveSig(gd, serverModule, "CCSBot::Upkeep",
+                                           errorOut, errorOutLen);
+            if (!g_addrUpkeep)
+            {
+                g_status = "failed: Upkeep sig";
+                return false;
+            }
+
+            // Jump is optional; failure leaves all/aim working, only jump dies.
+            char jumpErr[256] = {0};
+            g_addrJump = Sig::ResolveSig(gd, serverModule, "CCSBot::Jump",
+                                         jumpErr, sizeof(jumpErr));
+            if (!g_addrJump)
+            {
+                char dbg[320];
+                std::snprintf(dbg, sizeof(dbg),
+                              "[BotController] WARN: CCSBot::Jump sig not resolved (%s); jump-lock disabled\n",
+                              jumpErr);
+                DebugOut(dbg);
+            }
+
+            // UpdateLookAngles is optional
+            char ulaErr[256] = {0};
+            g_addrUpdateLookAngles = Sig::ResolveSig(gd, serverModule,
+                                                     "CCSBot::UpdateLookAngles",
+                                                     ulaErr, sizeof(ulaErr));
+            if (!g_addrUpdateLookAngles)
+            {
+                char dbg[320];
+                std::snprintf(dbg, sizeof(dbg),
+                              "[BotController] WARN: CCSBot::UpdateLookAngles sig not resolved (%s); replay view-drive disabled\n",
+                              ulaErr);
+                DebugOut(dbg);
+            }
+
+            // SetEyeAngles is optional; without it replay view falls back to
+            // the (smoothing) UpdateLookAngles hook only.
+            char seaErr[256] = {0};
+            g_addrSetEyeAngles = Sig::ResolveSig(gd, serverModule,
+                                                 "CCSPlayerPawn::SetEyeAngles",
+                                                 seaErr, sizeof(seaErr));
+            if (!g_addrSetEyeAngles)
+            {
+                char dbg[320];
+                std::snprintf(dbg, sizeof(dbg),
+                              "[BotController] WARN: CCSPlayerPawn::SetEyeAngles sig not resolved (%s); replay 1:1 view disabled\n",
+                              seaErr);
+                DebugOut(dbg);
+            }
+
+            // required: Update
+            if (!g_hookUpdate.Create(g_addrUpdate,
+                                     reinterpret_cast<void *>(&HookedUpdate),
+                                     reinterpret_cast<void **>(&g_origUpdate)) ||
+                !g_hookUpdate.Enable())
+            {
+                std::snprintf(errorOut, errorOutLen, "hook CCSBot::Update failed");
+                g_hookUpdate.Remove();
+                g_origUpdate = nullptr;
+                g_status = "failed: hook Update";
+                return false;
+            }
+
+            // required: Upkeep
+            if (!g_hookUpkeep.Create(g_addrUpkeep,
+                                     reinterpret_cast<void *>(&HookedUpkeep),
+                                     reinterpret_cast<void **>(&g_origUpkeep)) ||
+                !g_hookUpkeep.Enable())
+            {
+                std::snprintf(errorOut, errorOutLen, "hook CCSBot::Upkeep failed");
+                g_hookUpkeep.Remove();
+                g_origUpkeep = nullptr;
+                g_hookUpdate.Remove();
+                g_origUpdate = nullptr;
+                g_status = "failed: hook Upkeep";
+                return false;
+            }
+
+            // optional: Jump
+            if (g_addrJump)
+            {
+                if (!g_hookJump.Create(g_addrJump,
+                                       reinterpret_cast<void *>(&HookedJump),
+                                       reinterpret_cast<void **>(&g_origJump)) ||
+                    !g_hookJump.Enable())
+                {
+                    DebugOut("[BotController] WARN: hook CCSBot::Jump failed; jump-lock disabled\n");
+                    g_hookJump.Remove();
+                    g_origJump = nullptr;
+                    g_addrJump = nullptr;
+                }
+            }
+
+            // optional: UpdateLookAngles
+            if (g_addrUpdateLookAngles)
+            {
+                if (!g_hookUpdateLookAngles.Create(g_addrUpdateLookAngles,
+                                                   reinterpret_cast<void *>(&HookedUpdateLookAngles),
+                                                   reinterpret_cast<void **>(&g_origUpdateLookAngles)) ||
+                    !g_hookUpdateLookAngles.Enable())
+                {
+                    DebugOut("[BotController] WARN: hook UpdateLookAngles failed; replay view-drive disabled\n");
+                    g_hookUpdateLookAngles.Remove();
+                    g_origUpdateLookAngles = nullptr;
+                    g_addrUpdateLookAngles = nullptr;
+                }
+            }
+
+            // optional: SetEyeAngles
+            if (g_addrSetEyeAngles)
+            {
+                if (!g_hookSetEyeAngles.Create(g_addrSetEyeAngles,
+                                               reinterpret_cast<void *>(&HookedSetEyeAngles),
+                                               reinterpret_cast<void **>(&g_origSetEyeAngles)) ||
+                    !g_hookSetEyeAngles.Enable())
+                {
+                    DebugOut("[BotController] WARN: hook SetEyeAngles failed; replay 1:1 view disabled\n");
+                    g_hookSetEyeAngles.Remove();
+                    g_origSetEyeAngles = nullptr;
+                    g_addrSetEyeAngles = nullptr;
+                }
+            }
+
+            g_installed = true;
+            g_status = "ok";
+
+            char dbg[400];
+            std::snprintf(dbg, sizeof(dbg),
+                          "[BotController] Update@%p Upkeep@%p Jump@%p ULA@%p SEA@%p\n",
+                          g_addrUpdate, g_addrUpkeep, g_addrJump,
+                          g_addrUpdateLookAngles, g_addrSetEyeAngles);
+            DebugOut(dbg);
+            return true;
+        }
+
+        void Remove()
+        {
+            if (!g_installed)
+                return;
+            g_hookSetEyeAngles.Remove();
+            g_origSetEyeAngles = nullptr;
+            g_hookUpdateLookAngles.Remove();
+            g_origUpdateLookAngles = nullptr;
+            g_hookJump.Remove();
+            g_origJump = nullptr;
+            g_hookUpkeep.Remove();
+            g_origUpkeep = nullptr;
+            g_hookUpdate.Remove();
+            g_origUpdate = nullptr;
+            g_installed = false;
+            g_status = "not_attempted";
+        }
+
+        const char *Status() { return g_status.c_str(); }
+        void *UpdateAddress() { return g_addrUpdate; }
+        void *UpkeepAddress() { return g_addrUpkeep; }
+        void *JumpAddress() { return g_addrJump; }
+        void *UpdateLookAnglesAddress() { return g_addrUpdateLookAngles; }
+    }
+}

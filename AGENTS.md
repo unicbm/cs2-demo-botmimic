@@ -13,7 +13,7 @@ This repository is the standalone public project for CS2 demo-to-bot-replay work
 
 - `converter/`: Rust GUI/CLI converter.
 - `css/`: CounterStrikeSharp control plugin and C ABI wrapper.
-- `runtime/BotMimicRuntime/`: CS2 Metamod runtime.
+- `runtime/BotController/`: CS2 Metamod runtime based on XBribo/CS2-Bot-Controller.
 - `docs/`: user-facing supplemental docs.
 - `third_party/`: vendored third-party source and attribution.
 
@@ -42,7 +42,7 @@ Keep module boundaries clear:
 
 ## Runtime And CSS Rules
 
-- `CS2BM_ABI` / expected ABI values must stay synchronized across Rust manifest generation, C# wrapper, and native runtime.
+- `CS2BM_ABI` / expected ABI values must stay synchronized across Rust manifest generation, C# BotController wrapper, and native runtime.
 - Never assign replay control to real human players. Safe candidates are strict CS2 bots or slots known to be bot-managed by the local bot-hider/shared-state path.
 - `cs2bm_handoff death_or_contact slot` is the intended safe default: replay controls opening movement, then releases only the contacted/dead replay slot after contact/death. Use `all` only for explicit experiments where one trigger should release every replaying bot.
 - On stop, unload, finish, or handoff, release replay state: stop replay, clear input injection, unlock weapon locks, clear pending weapon alignment, and reset bot brain state that would bias native AI.
@@ -79,8 +79,11 @@ Before publishing, also check:
 
 ```powershell
 git status -sb
-git grep -n -I -E "([A-Z]:\\\\Users\\\\|/Users/|/home/|SteamLibrary|steamapps|Documents\\\\Github)" HEAD -- .
+git diff --check
 ```
+
+
+Also scan README/docs/source changes for accidental local absolute paths before publishing.
 
 `git diff --check` may report trailing whitespace inside vendored third-party source. Do not reformat vendored source solely to satisfy whitespace checks.
 
