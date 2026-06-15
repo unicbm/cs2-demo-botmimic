@@ -22,6 +22,11 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         (byte)'C', (byte)'S', (byte)'2', (byte)'B',
         (byte)'M', (byte)'R', (byte)'E', (byte)'C'
     ];
+    private const float HandoffGraceSeconds = 0.25f;
+    private const float ContactNearRangeUnits = 192.0f;
+    private const float ContactConeRangeUnits = 900.0f;
+    private const float ContactMaxVerticalDeltaUnits = 160.0f;
+    private const float ContactConeMinDot = 0.5f;
 
     private readonly List<int> _loadedSlots = new();
     private readonly Dictionary<int, LoadedReplay> _loadedReplays = new();
@@ -620,16 +625,17 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
             if (!_lastPlayingSlots.Contains(slot))
                 MarkReplayStarted(slot);
 
+            var hasReplayTick = BotControllerNative.TryGetReplayTick(slot, out var tick);
             if (HandoffIncludesContact(_handoffMode) && ReplayHasPassedHandoffGrace(slot) &&
-                ReplayBotSeesEnemy(slot))
+                ReplayBotSeesEnemy(slot, hasReplayTick ? tick : null, out var contactReason))
             {
-                HandoffActiveReplays($"enemy_contact_slot{slot}", slot);
+                HandoffActiveReplays($"enemy_contact_{contactReason}_slot{slot}", slot);
                 continue;
             }
 
             if (!_weaponAlignEnabled)
                 continue;
-            if (!BotControllerNative.TryGetReplayTick(slot, out var tick))
+            if (!hasReplayTick)
                 continue;
 
             ApplyReplayWeaponPreset(slot, tick.WeaponDefIndex, allowSlotReplacement: true, force: false);
@@ -1129,7 +1135,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
     private bool ReplayHasPassedHandoffGrace(int slot)
     {
         return !_replayStartedAt.TryGetValue(slot, out var startedAt) ||
-               Server.CurrentTime - startedAt >= 0.5f;
+               Server.CurrentTime - startedAt >= HandoffGraceSeconds;
     }
 
     private static void ResetBotBrainForHandoff(int slot)
@@ -1729,8 +1735,9 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
             .ToList();
     }
 
-    private static bool ReplayBotSeesEnemy(int slot)
+    private static bool ReplayBotSeesEnemy(int slot, NativeReplayTick? replayTick, out string contactReason)
     {
+        contactReason = string.Empty;
         var bot = Utilities.GetPlayerFromSlot(slot);
         if (bot is not { IsValid: true } || !bot.PawnIsAlive)
             return false;
@@ -1742,15 +1749,20 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
                 !enemy.PawnIsAlive)
                 continue;
 
-            if (PlayerSeesTarget(bot, enemy))
+            if (PlayerSeesTarget(bot, enemy, replayTick, out contactReason))
                 return true;
         }
 
         return false;
     }
 
-    private static bool PlayerSeesTarget(CCSPlayerController observer, CCSPlayerController target)
+    private static bool PlayerSeesTarget(
+        CCSPlayerController observer,
+        CCSPlayerController target,
+        NativeReplayTick? replayTick,
+        out string contactReason)
     {
+        contactReason = string.Empty;
         if (observer.Slot < 0)
             return false;
         if (target.PlayerPawn is not { IsValid: true, Value.IsValid: true })
@@ -1765,12 +1777,90 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
             var mask = spotted.SpottedByMask;
             var word = observer.Slot / 32;
             var bit = observer.Slot % 32;
-            return word >= 0 && word < mask.Length && (mask[word] & (1u << bit)) != 0;
+            if (word >= 0 && word < mask.Length && (mask[word] & (1u << bit)) != 0)
+            {
+                contactReason = "spotted";
+                return true;
+            }
         }
         catch
         {
-            return false;
         }
+
+        return PlayerIsNearReplayView(observer, target, replayTick, out contactReason);
+    }
+
+    private static bool PlayerIsNearReplayView(
+        CCSPlayerController observer,
+        CCSPlayerController target,
+        NativeReplayTick? replayTick,
+        out string contactReason)
+    {
+        contactReason = string.Empty;
+        if (observer.PlayerPawn is not { IsValid: true, Value.IsValid: true } ||
+            target.PlayerPawn is not { IsValid: true, Value.IsValid: true })
+            return false;
+
+        var targetOrigin = target.PlayerPawn.Value.AbsOrigin;
+        if (targetOrigin == null)
+            return false;
+
+        float observerX;
+        float observerY;
+        float observerZ;
+        float observerYaw;
+        if (replayTick.HasValue)
+        {
+            var tick = replayTick.Value;
+            observerX = tick.Post.OriginX;
+            observerY = tick.Post.OriginY;
+            observerZ = tick.Post.OriginZ;
+            observerYaw = tick.Post.Yaw;
+        }
+        else
+        {
+            var observerOrigin = observer.PlayerPawn.Value.AbsOrigin;
+            var observerAngles = observer.PlayerPawn.Value.AbsRotation;
+            if (observerOrigin == null || observerAngles == null)
+                return false;
+            observerX = observerOrigin.X;
+            observerY = observerOrigin.Y;
+            observerZ = observerOrigin.Z;
+            observerYaw = observerAngles.Y;
+        }
+
+        var dx = targetOrigin.X - observerX;
+        var dy = targetOrigin.Y - observerY;
+        var dz = targetOrigin.Z - observerZ;
+        if (MathF.Abs(dz) > ContactMaxVerticalDeltaUnits)
+            return false;
+
+        var horizontalDistanceSquared = dx * dx + dy * dy;
+        if (horizontalDistanceSquared <= ContactNearRangeUnits * ContactNearRangeUnits)
+        {
+            contactReason = "near";
+            return true;
+        }
+
+        if (horizontalDistanceSquared > ContactConeRangeUnits * ContactConeRangeUnits)
+            return false;
+
+        var horizontalDistance = MathF.Sqrt(horizontalDistanceSquared);
+        if (horizontalDistance <= 1.0f)
+        {
+            contactReason = "near";
+            return true;
+        }
+
+        var yawRadians = observerYaw * (MathF.PI / 180.0f);
+        var forwardX = MathF.Cos(yawRadians);
+        var forwardY = MathF.Sin(yawRadians);
+        var dot = (forwardX * dx + forwardY * dy) / horizontalDistance;
+        if (dot < ContactConeMinDot)
+            return false;
+
+        contactReason = "cone";
+        return true;
     }
 
     private static bool TryParseHandoffMode(string value, out HandoffMode mode)

@@ -14,6 +14,8 @@ In a local CS2 server, the runtime and CounterStrikeSharp plugin can then make b
 
 This is still an MVP, but the full demo -> replay -> in-game bot playback loop is already working.
 
+Plugin/runtime authors who only need to inspect replay fields can read the binary layout in [`docs/FORMAT.md`](docs/FORMAT.md).
+
 ## Who This Is For
 
 - People who want to replay pro match movement inside a local CS2 server.

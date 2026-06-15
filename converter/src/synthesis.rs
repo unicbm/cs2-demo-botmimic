@@ -20,7 +20,7 @@ pub fn synthesize_player_rec(
         ticks.push(ReplayTick {
             pre,
             post,
-            weapon_def_index: pair[0].item_def_idx,
+            weapon_def_index: normalize_replay_weapon_def_index(pair[0].item_def_idx),
             num_subtick: 0,
         });
     }
@@ -39,6 +39,21 @@ pub fn synthesize_player_rec(
         ticks,
         subticks: Vec::new(),
     })
+}
+
+fn normalize_replay_weapon_def_index(def: i32) -> i32 {
+    if is_cs2_knife_def_index(def) {
+        42
+    } else {
+        def
+    }
+}
+
+fn is_cs2_knife_def_index(def: i32) -> bool {
+    // CS2 demos can report the active knife as the equipped cosmetic item
+    // definition. BotController treats canonical def 42 as "the bot's own
+    // knife", so the file format stores every knife variant as 42.
+    def == 42 || def == 59 || (500..600).contains(&def)
 }
 
 #[cfg(test)]
@@ -81,5 +96,17 @@ mod tests {
         assert_eq!(rec.ticks[0].post.origin[0], 11.0);
         assert_eq!(rec.ticks[1].weapon_def_index, 7);
         assert!(rec.subticks.is_empty());
+    }
+
+    #[test]
+    fn synthesis_canonicalizes_knife_def_indices() {
+        let rec = synthesize_player_rec(
+            &[row(10, 508), row(11, 508), row(12, 7)],
+            "de_nuke",
+            64.0,
+            1,
+        )
+        .unwrap();
+        assert_eq!(rec.ticks[0].weapon_def_index, 42);
     }
 }

@@ -2,6 +2,8 @@
 
 All values are little-endian. v2 is the only supported format after the BotController migration.
 
+This file format is intentionally simple to parse. It is not a C++ raw struct dump: strings are length-prefixed UTF-8, and every numeric field is written explicitly in order.
+
 ## Header
 
 | Field | Type | Notes |
@@ -28,6 +30,17 @@ Each tick stores:
 - `num_subtick: u32`
 
 The sum of all `num_subtick` values must equal header `subtick_count`.
+
+The current tick record size is fixed at `192` bytes:
+
+| Part | Bytes |
+| --- | ---: |
+| `pre: MovementSnapshotV2` | 92 |
+| `post: MovementSnapshotV2` | 92 |
+| `weapon_def_index: i32` | 4 |
+| `num_subtick: u32` | 4 |
+
+`weapon_def_index` uses CS2 item definition indexes. Knife cosmetic definition indexes are canonicalized to `42`, because BotController treats `42` as "the bot's own knife" and all knife variants share the same replay slot semantics.
 
 ## MovementSnapshotV2
 
@@ -65,3 +78,15 @@ This layout matches BotController ABI 10 (`92` bytes with `Pack=4`).
 | yaw_delta | `f32` |
 
 The current offline converter may emit zero subticks. BotController accepts empty subtick arrays and replays tick snapshots plus reconstructed button edge states.
+
+## Parser Checklist
+
+1. Read and validate magic `CS2BMREC`.
+2. Require `version == 2`.
+3. Read `tick_count` and `subtick_count`.
+4. Read `map` and `player_name` as `u16 length + UTF-8 bytes`.
+5. Read `tick_count` records of exactly `192` bytes.
+6. Sum all tick `num_subtick` values and verify it equals `subtick_count`.
+7. Read `subtick_count` records of exactly `28` bytes.
+
+Current converter-generated files usually have `subtick_count == 0`.
