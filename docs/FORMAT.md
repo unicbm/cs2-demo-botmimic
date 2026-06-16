@@ -1,15 +1,15 @@
-# `.cs2rec` v2 Format
+# `.rec2` v3 Format
 
-All values are little-endian. v2 is the only supported format after the BotController migration.
+All values are little-endian. v3 is the only supported replay file format.
 
-This file format is intentionally simple to parse. It is not a C++ raw struct dump: strings are length-prefixed UTF-8, and every numeric field is written explicitly in order.
+The format is lossless: movement snapshots and subtick records are written with their original `f32` and integer bit patterns. The body removes duplicated adjacent tick snapshots and is then compressed with Brotli.
 
 ## Header
 
 | Field | Type | Notes |
 | --- | --- | --- |
 | magic | 8 bytes | `CS2BMREC` |
-| version | `u32` | `2` |
+| version | `u32` | `3` |
 | tick_rate | `f32` | Demo tickrate estimate |
 | round | `u32` | `total_rounds_played` window |
 | side | `u8` | `2=T`, `3=CT`, `0=unknown` |
@@ -19,30 +19,39 @@ This file format is intentionally simple to parse. It is not a C++ raw struct du
 | subtick_count | `u32` | Number of subtick moves |
 | map | `u16 len + utf8` | Map name |
 | player_name | `u16 len + utf8` | Demo player name |
+| codec | `u8` | `1 = Brotli` |
+| body_uncompressed_len | `u64` | Expected decoded body byte length |
+| body_compressed_len | `u64` | Compressed body byte length |
 
-## ReplayTickV2
+The next `body_compressed_len` bytes are a Brotli stream.
 
-Each tick stores:
+## Decoded Body
 
-- `pre: MovementSnapshotV2`
-- `post: MovementSnapshotV2`
-- `weapon_def_index: i32`
-- `num_subtick: u32`
+After decompression, the body layout is:
+
+| Part | Count | Bytes Each |
+| --- | ---: | ---: |
+| `MovementSnapshotV3` | `0 if tick_count == 0, else tick_count + 1` | 92 |
+| tick metadata | `tick_count` | 8 |
+| `SubtickMoveV3` | `subtick_count` | 28 |
+
+Tick metadata is:
+
+| Field | Type |
+| --- | --- |
+| weapon_def_index | `i32` |
+| num_subtick | `u32` |
+
+Reconstruct replay ticks as:
+
+- `tick[i].pre = snapshots[i]`
+- `tick[i].post = snapshots[i + 1]`
+- `tick[i].weapon_def_index = metadata[i].weapon_def_index`
+- `tick[i].num_subtick = metadata[i].num_subtick`
 
 The sum of all `num_subtick` values must equal header `subtick_count`.
 
-The current tick record size is fixed at `192` bytes:
-
-| Part | Bytes |
-| --- | ---: |
-| `pre: MovementSnapshotV2` | 92 |
-| `post: MovementSnapshotV2` | 92 |
-| `weapon_def_index: i32` | 4 |
-| `num_subtick: u32` | 4 |
-
-`weapon_def_index` uses CS2 item definition indexes. Knife cosmetic definition indexes are canonicalized to `42`, because BotController treats `42` as "the bot's own knife" and all knife variants share the same replay slot semantics.
-
-## MovementSnapshotV2
+## MovementSnapshotV3
 
 This layout matches BotController ABI 10 (`92` bytes with `Pack=4`).
 
@@ -65,7 +74,7 @@ This layout matches BotController ABI 10 (`92` bytes with `Pack=4`).
 | desires_duck | `u8` |
 | actual_move_type | `u8` |
 
-## SubtickMoveV2
+## SubtickMoveV3
 
 | Field | Type |
 | --- | --- |
@@ -77,16 +86,13 @@ This layout matches BotController ABI 10 (`92` bytes with `Pack=4`).
 | pitch_delta | `f32` |
 | yaw_delta | `f32` |
 
-The current offline converter may emit zero subticks. BotController accepts empty subtick arrays and replays tick snapshots plus reconstructed button edge states.
-
 ## Parser Checklist
 
 1. Read and validate magic `CS2BMREC`.
-2. Require `version == 2`.
-3. Read `tick_count` and `subtick_count`.
-4. Read `map` and `player_name` as `u16 length + UTF-8 bytes`.
-5. Read `tick_count` records of exactly `192` bytes.
-6. Sum all tick `num_subtick` values and verify it equals `subtick_count`.
-7. Read `subtick_count` records of exactly `28` bytes.
-
-Current converter-generated files usually have `subtick_count == 0`.
+2. Require `version == 3`.
+3. Read `tick_count`, `subtick_count`, `map`, and `player_name`.
+4. Require `codec == 1`.
+5. Check `body_uncompressed_len == snapshot_count * 92 + tick_count * 8 + subtick_count * 28`, where `snapshot_count` is `0` for empty replays and `tick_count + 1` otherwise.
+6. Read and Brotli-decompress exactly `body_compressed_len` bytes.
+7. Rebuild ticks from the snapshot chain and metadata.
+8. Sum all tick `num_subtick` values and verify it equals `subtick_count`.

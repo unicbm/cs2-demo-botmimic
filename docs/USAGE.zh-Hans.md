@@ -25,8 +25,8 @@ cargo run --release -- gui
 
 ```text
 manifest.json
-round00/t/*.cs2rec
-round00/ct/*.cs2rec
+round00/t/*.rec2
+round00/ct/*.rec2
 ```
 
 播放整场或指定回合时，优先使用 `manifest.json`。

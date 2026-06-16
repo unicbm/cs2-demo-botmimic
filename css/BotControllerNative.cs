@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using System.Runtime.InteropServices;
 
 namespace Cs2DemoBotMimic;
@@ -5,11 +6,13 @@ namespace Cs2DemoBotMimic;
 internal static class BotControllerNative
 {
     public const int ExpectedAbiVersion = 10;
-    public const uint RecFormatVersion = 2;
-    public const uint LegacyRecFormatVersion = 1;
+    public const uint RecFormatVersion = 3;
     public const int MovementSnapshotByteSize = 92;
     public const int ReplayTickByteSize = 192;
 
+    private const byte RecCodecBrotli = 1;
+    private const int TickMetadataByteSize = 8;
+    private const int SubtickMoveByteSize = 28;
     private const int LockKindAll = 0;
     private const int LockKindAim = 1;
     private const int LockKindWeapon = 2;
@@ -185,12 +188,12 @@ internal static class BotControllerNative
 
         var magic = reader.ReadBytes(RecMagic.Length);
         if (!magic.SequenceEqual(RecMagic))
-            throw new InvalidDataException("bad .cs2rec magic");
+            throw new InvalidDataException("bad .rec2 magic");
 
         var version = reader.ReadUInt32();
-        if (version is not (LegacyRecFormatVersion or RecFormatVersion))
+        if (version != RecFormatVersion)
             throw new InvalidDataException(
-                $"unsupported .cs2rec version {version}; expected {LegacyRecFormatVersion} or {RecFormatVersion}");
+                $"unsupported .rec2 version {version}; expected {RecFormatVersion}");
 
         _ = reader.ReadSingle(); // tick_rate
         _ = reader.ReadUInt32(); // round
@@ -202,16 +205,39 @@ internal static class BotControllerNative
         _ = ReadRecString(reader); // map
         _ = ReadRecString(reader); // player name
 
+        var codec = reader.ReadByte();
+        if (codec != RecCodecBrotli)
+            throw new InvalidDataException($"unsupported .rec2 codec {codec}");
+
+        var bodyUncompressedLength = CheckedLength(reader.ReadUInt64(), "body_uncompressed_len");
+        var bodyCompressedLength = CheckedLength(reader.ReadUInt64(), "body_compressed_len");
+        var expectedBodyLength = ExpectedBodyLength(tickCount, subtickCount);
+        if (bodyUncompressedLength != expectedBodyLength)
+            throw new InvalidDataException($"body length {bodyUncompressedLength} != expected {expectedBodyLength}");
+
+        var compressed = reader.ReadBytes(bodyCompressedLength);
+        if (compressed.Length != bodyCompressedLength)
+            throw new EndOfStreamException("truncated compressed .rec2 body");
+
+        var body = DecompressBrotli(compressed, bodyUncompressedLength);
+        using var bodyStream = new MemoryStream(body, writable: false);
+        using var bodyReader = new BinaryReader(bodyStream);
+
+        var snapshotCount = tickCount == 0 ? 0 : tickCount + 1;
+        var snapshots = new NativeMovementSnapshot[snapshotCount];
+        for (var i = 0; i < snapshotCount; i++)
+            snapshots[i] = ReadCurrentSnapshot(bodyReader);
+
         var ticks = new NativeReplayTick[tickCount];
         long expectedSubticks = 0;
         for (var i = 0; i < tickCount; i++)
         {
             ticks[i] = new NativeReplayTick
             {
-                Pre = ReadSnapshot(reader, version),
-                Post = ReadSnapshot(reader, version),
-                WeaponDefIndex = reader.ReadInt32(),
-                NumSubtick = reader.ReadUInt32()
+                Pre = snapshots[i],
+                Post = snapshots[i + 1],
+                WeaponDefIndex = bodyReader.ReadInt32(),
+                NumSubtick = bodyReader.ReadUInt32()
             };
             expectedSubticks += ticks[i].NumSubtick;
         }
@@ -224,15 +250,18 @@ internal static class BotControllerNative
         {
             subticks[i] = new NativeSubtickMove
             {
-                When = reader.ReadSingle(),
-                Button = reader.ReadUInt32(),
-                Pressed = reader.ReadSingle(),
-                AnalogForward = reader.ReadSingle(),
-                AnalogLeft = reader.ReadSingle(),
-                PitchDelta = reader.ReadSingle(),
-                YawDelta = reader.ReadSingle()
+                When = bodyReader.ReadSingle(),
+                Button = bodyReader.ReadUInt32(),
+                Pressed = bodyReader.ReadSingle(),
+                AnalogForward = bodyReader.ReadSingle(),
+                AnalogLeft = bodyReader.ReadSingle(),
+                PitchDelta = bodyReader.ReadSingle(),
+                YawDelta = bodyReader.ReadSingle()
             };
         }
+
+        if (bodyStream.Position != bodyStream.Length)
+            throw new InvalidDataException("trailing bytes in .rec2 body");
 
         return new ReplayFile(ticks, subticks);
     }
@@ -244,44 +273,31 @@ internal static class BotControllerNative
         return (int)value;
     }
 
-    private static NativeMovementSnapshot ReadSnapshot(BinaryReader reader, uint version)
-        => version == LegacyRecFormatVersion
-            ? ReadLegacySnapshot(reader)
-            : ReadCurrentSnapshot(reader);
-
-    private static NativeMovementSnapshot ReadLegacySnapshot(BinaryReader reader)
+    private static int CheckedLength(ulong value, string fieldName)
     {
-        const uint FlDucking = 1 << 1;
-        const ulong InDuck = 1UL << 2;
+        if (value > int.MaxValue)
+            throw new InvalidDataException($"{fieldName} too large: {value}");
+        return (int)value;
+    }
 
-        var snapshot = new NativeMovementSnapshot
-        {
-            OriginX = reader.ReadSingle(),
-            OriginY = reader.ReadSingle(),
-            OriginZ = reader.ReadSingle(),
-            VelX = reader.ReadSingle(),
-            VelY = reader.ReadSingle(),
-            VelZ = reader.ReadSingle(),
-            Pitch = reader.ReadSingle(),
-            Yaw = reader.ReadSingle(),
-            Roll = reader.ReadSingle(),
-            EntityFlags = reader.ReadUInt32(),
-            MoveType = reader.ReadByte(),
-            Pad0 = reader.ReadByte(),
-            Pad1 = reader.ReadByte(),
-            Pad2 = reader.ReadByte(),
-            Buttons = reader.ReadUInt64()
-        };
+    private static int ExpectedBodyLength(int tickCount, int subtickCount)
+    {
+        var snapshotCount = tickCount == 0 ? 0 : checked(tickCount + 1);
+        return checked(
+            snapshotCount * MovementSnapshotByteSize +
+            tickCount * TickMetadataByteSize +
+            subtickCount * SubtickMoveByteSize);
+    }
 
-        var ducking = (snapshot.EntityFlags & FlDucking) != 0 || (snapshot.Buttons & InDuck) != 0;
-        var duckByte = (byte)(ducking ? 1 : 0);
-        snapshot.DuckAmount = ducking ? 1.0f : 0.0f;
-        snapshot.DuckSpeed = ducking ? 8.0f : 0.0f;
-        snapshot.Ducked = duckByte;
-        snapshot.Ducking = duckByte;
-        snapshot.DesiresDuck = duckByte;
-        snapshot.ActualMoveType = snapshot.MoveType;
-        return snapshot;
+    private static byte[] DecompressBrotli(byte[] compressed, int expectedLength)
+    {
+        using var input = new MemoryStream(compressed, writable: false);
+        using var brotli = new BrotliStream(input, CompressionMode.Decompress);
+        using var output = new MemoryStream(expectedLength);
+        brotli.CopyTo(output);
+        if (output.Length != expectedLength)
+            throw new InvalidDataException($"decompressed body length {output.Length} != expected {expectedLength}");
+        return output.ToArray();
     }
 
     private static NativeMovementSnapshot ReadCurrentSnapshot(BinaryReader reader)
@@ -322,7 +338,7 @@ internal static class BotControllerNative
         var len = reader.ReadUInt16();
         var bytes = reader.ReadBytes(len);
         if (bytes.Length != len)
-            throw new EndOfStreamException("truncated string in .cs2rec");
+            throw new EndOfStreamException("truncated string in .rec2");
         return System.Text.Encoding.UTF8.GetString(bytes);
     }
 

@@ -19,7 +19,7 @@ pub enum Error {
         #[source]
         source: std::io::Error,
     },
-    #[error("invalid .cs2rec: {0}")]
+    #[error("invalid .rec2: {0}")]
     InvalidRec(String),
     #[error("invalid demo data: {0}")]
     InvalidDemo(String),

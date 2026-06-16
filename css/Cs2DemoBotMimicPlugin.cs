@@ -4,6 +4,7 @@ using CounterStrikeSharp.API.Core.Attributes.Registration;
 using CounterStrikeSharp.API.Modules.Commands;
 using CounterStrikeSharp.API.Modules.Memory;
 using CounterStrikeSharp.API.Modules.Utils;
+using System.IO.Compression;
 using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -16,7 +17,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
     public override string ModuleName => "CS2 Demo BotMimic";
     public override string ModuleVersion => "0.1.0";
     public override string ModuleAuthor => "unicbm";
-    public override string ModuleDescription => "Loads .cs2rec files into the BotController Metamod runtime.";
+    public override string ModuleDescription => "Loads .rec2 files into the BotController Metamod runtime.";
 
     private static readonly byte[] RecMagic =
     [
@@ -390,14 +391,14 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         command.ReplyToCommand($"cs2bm: partial_replay={_partialReplayEnabled}");
     }
 
-    [ConsoleCommand("cs2bm_load", "cs2bm_load <slot> <absolute-or-game-path.cs2rec>")]
+    [ConsoleCommand("cs2bm_load", "cs2bm_load <slot> <absolute-or-game-path.rec2>")]
     public void LoadCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (!CheckAbi(command))
             return;
         if (!TryParseSlot(command, out var slot) || command.ArgCount < 3)
         {
-            command.ReplyToCommand("usage: cs2bm_load <slot> <path.cs2rec>");
+            command.ReplyToCommand("usage: cs2bm_load <slot> <path.rec2>");
             return;
         }
 
@@ -1732,23 +1733,40 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
             _ = reader.ReadByte();   // side
             _ = reader.ReadUInt32(); // flags
             _ = reader.ReadUInt64(); // steamid
-            var tickCount = reader.ReadUInt32();
-            _ = reader.ReadUInt32(); // subticks
+            var tickCount = CheckedRecCount(reader.ReadUInt32());
+            var subtickCount = CheckedRecCount(reader.ReadUInt32());
             if (tickCount == 0)
                 return false;
 
             SkipRecString(reader);
             SkipRecString(reader);
+
+            var codec = reader.ReadByte();
+            if (codec != 1)
+                return false;
+            var bodyUncompressedLength = CheckedRecLength(reader.ReadUInt64());
+            var bodyCompressedLength = CheckedRecLength(reader.ReadUInt64());
+            var expectedBodyLength = ExpectedRecBodyLength(tickCount, subtickCount);
+            if (bodyUncompressedLength != expectedBodyLength)
+                return false;
+
+            var compressed = reader.ReadBytes(bodyCompressedLength);
+            if (compressed.Length != bodyCompressedLength)
+                return false;
+            var body = DecompressRecBody(compressed, bodyUncompressedLength);
+            using var bodyStream = new MemoryStream(body, writable: false);
+            using var bodyReader = new BinaryReader(bodyStream);
+            bodyStream.Seek((long)(tickCount + 1) * BotControllerNative.MovementSnapshotByteSize, SeekOrigin.Begin);
+
             var preload = new List<int>();
             for (var i = 0; i < tickCount; i++)
             {
-                stream.Seek(BotControllerNative.MovementSnapshotByteSize + BotControllerNative.MovementSnapshotByteSize, SeekOrigin.Current);
-                var def = NormalizeWeaponDefIndex(reader.ReadInt32());
+                var def = NormalizeWeaponDefIndex(bodyReader.ReadInt32());
                 if (IsKnownWeaponDefIndex(def) && firstWeaponDefIndex < 0)
                     firstWeaponDefIndex = def;
                 if (IsPreloadWeaponDefIndex(def))
                     preload.Add(def);
-                _ = reader.ReadUInt32(); // num_subtick
+                _ = bodyReader.ReadUInt32(); // num_subtick
             }
             preloadWeaponDefIndices = NormalizePreloadWeaponDefs(preload);
             return true;
@@ -1764,6 +1782,40 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         var len = reader.ReadUInt16();
         if (len > 0)
             reader.BaseStream.Seek(len, SeekOrigin.Current);
+    }
+
+    private static int CheckedRecCount(uint value)
+    {
+        if (value > int.MaxValue)
+            throw new InvalidDataException($"count too large: {value}");
+        return (int)value;
+    }
+
+    private static int CheckedRecLength(ulong value)
+    {
+        if (value > int.MaxValue)
+            throw new InvalidDataException($"body length too large: {value}");
+        return (int)value;
+    }
+
+    private static int ExpectedRecBodyLength(int tickCount, int subtickCount)
+    {
+        var snapshotCount = tickCount == 0 ? 0 : checked(tickCount + 1);
+        return checked(
+            snapshotCount * BotControllerNative.MovementSnapshotByteSize +
+            tickCount * 8 +
+            subtickCount * 28);
+    }
+
+    private static byte[] DecompressRecBody(byte[] compressed, int expectedLength)
+    {
+        using var input = new MemoryStream(compressed, writable: false);
+        using var brotli = new BrotliStream(input, CompressionMode.Decompress);
+        using var output = new MemoryStream(expectedLength);
+        brotli.CopyTo(output);
+        if (output.Length != expectedLength)
+            throw new InvalidDataException($"decompressed body length {output.Length} != expected {expectedLength}");
+        return output.ToArray();
     }
 
     private List<CCSPlayerController> FindReplayTargets()

@@ -149,7 +149,7 @@ pub fn export_demo(parsed: &ParsedDemo, options: &ConvertOptions) -> Result<Conv
             };
             let rel_path = Path::new(&format!("round{:02}", round.round))
                 .join(team_dir)
-                .join(format!("{}_{}.cs2rec", steam_id, slugify(&player_name)));
+                .join(format!("{}_{}.rec2", steam_id, slugify(&player_name)));
             let full_path = root.join(&rel_path);
             if let Some(parent) = full_path.parent() {
                 fs::create_dir_all(parent).map_err(|e| io_error(parent, e))?;

@@ -16,7 +16,7 @@ First-person spectator view stays synchronized while bots replay converted CS2 d
 
 ## What It Does
 
-CS2 Demo BotMimic takes a `.dem` file, analyzes its rounds, and exports `.cs2rec` replay files for each player.
+CS2 Demo BotMimic takes a `.dem` file, analyzes its rounds, and exports compressed `.rec2` replay files for each player.
 
 In a local CS2 server, the runtime and CounterStrikeSharp plugin can then make bots replay the demo player's movement, view angles, jumping, crouching, firing, and basic weapon switching.
 
@@ -63,8 +63,8 @@ The output looks like this:
 
 ```text
 output/<demo-name>/manifest.json
-output/<demo-name>/round00/t/<player>.cs2rec
-output/<demo-name>/round00/ct/<player>.cs2rec
+output/<demo-name>/round00/t/<player>.rec2
+output/<demo-name>/round00/ct/<player>.rec2
 output/<demo-name>/round01/...
 ```
 
@@ -79,7 +79,7 @@ cd cs2-demo-botmimic\converter
 cargo run --release -- convert-pool --demo-dir "<demo-root>" --output "..\output\mirage_pool" --map de_mirage --recursive
 ```
 
-This writes `pool_manifest.json` plus normal per-demo manifests and `.cs2rec` files under the output folder.
+This writes `pool_manifest.json` plus normal per-demo manifests and compressed `.rec2` files under the output folder.
 
 ## Play In CS2
 
@@ -155,7 +155,7 @@ For normal use, export the recommended rounds only.
 
 - Windows x64 local CS2 is the primary target.
 - The server should run the same map and have enough bots.
-- v2 writes BotController-compatible tick snapshots. Full offline subtick/usercmd reconstruction is future work.
+- `.rec2` uses a lossless compressed BotController-compatible replay format. Full offline subtick/usercmd reconstruction is future work.
 - Some weapon/loadout details are still limited by CS2 slot behavior, especially default pistols.
 - This is for local servers, research, content creation, and plugin development. It is not intended for matchmaking or cheating.
 
@@ -180,7 +180,7 @@ Repository layout:
 
 Thanks to:
 
-- [XBribo/CS2-Bot-Controller](https://github.com/XBribo/CS2-Bot-Controller) and [CS2-Bot-Locker](https://github.com/XBribo/CS2-Bot-Locker): CS2 bot hooks, replay, recording, input injection, and weapon-locking ideas. This project uses the BotController runtime architecture.
+- [XBribo/CS2-Bot-Controller](https://github.com/XBribo/CS2-Bot-Controller): CS2 bot hooks, replay, recording, input injection, and weapon-locking ideas. This project uses the BotController runtime architecture.
 - [LaihoE/demoparser](https://github.com/LaihoE/demoparser): Rust CS2 demo parser used by the converter.
 - [csgowiki/minidemo-encoder](https://github.com/csgowiki/minidemo-encoder): inspiration for the demo-to-replay tooling workflow used in the CS:GO BotMimic/minidemo ecosystem.
 - The Metamod:Source and CounterStrikeSharp communities.

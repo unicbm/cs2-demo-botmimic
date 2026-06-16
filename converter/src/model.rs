@@ -3,7 +3,7 @@ use std::fmt;
 use std::str::FromStr;
 
 pub const CS2BM_ABI: i32 = 10;
-pub const CS2REC_VERSION: u32 = 2;
+pub const CS2REC_VERSION: u32 = 3;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]

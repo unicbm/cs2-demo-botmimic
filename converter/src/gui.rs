@@ -286,7 +286,7 @@ impl ConverterApp {
         let (tx, rx) = mpsc::channel();
         self.worker = Some(rx);
         self.busy_label = Some(
-            self.t("Exporting .cs2rec...", "正在导出 .cs2rec...")
+            self.t("Exporting .rec2...", "正在导出 .rec2...")
                 .to_string(),
         );
         thread::spawn(move || {

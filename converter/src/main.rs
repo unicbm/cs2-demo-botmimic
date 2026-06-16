@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "cs2-demo-botmimic-converter")]
-#[command(about = "CS2 .dem -> .cs2rec converter")]
+#[command(about = "CS2 .dem -> .rec2 converter")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -226,7 +226,7 @@ fn run() -> cs2_demo_botmimic_converter::Result<()> {
         }
         Command::Validate { input } => {
             let mut count = 0_usize;
-            for path in collect_cs2rec_files(&input)? {
+            for path in collect_rec2_files(&input)? {
                 let rec = read_rec_file(&path)?;
                 if rec.ticks.is_empty() {
                     return Err(cs2_demo_botmimic_converter::Error::InvalidRec(format!(
@@ -236,7 +236,7 @@ fn run() -> cs2_demo_botmimic_converter::Result<()> {
                 }
                 count += 1;
             }
-            println!("validated {count} .cs2rec files");
+            println!("validated {count} .rec2 files");
         }
         #[cfg(feature = "gui")]
         Command::Gui => {
@@ -358,7 +358,7 @@ fn print_player_table(title: &str, players: &BTreeMap<(u8, u64), PlayerRoundStat
     }
 }
 
-fn collect_cs2rec_files(root: &PathBuf) -> cs2_demo_botmimic_converter::Result<Vec<PathBuf>> {
+fn collect_rec2_files(root: &PathBuf) -> cs2_demo_botmimic_converter::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     collect_recursively(root, &mut out)?;
     Ok(out)
@@ -369,7 +369,7 @@ fn collect_recursively(
     out: &mut Vec<PathBuf>,
 ) -> cs2_demo_botmimic_converter::Result<()> {
     if path.is_file() {
-        if path.extension().and_then(|e| e.to_str()) == Some("cs2rec") {
+        if path.extension().and_then(|e| e.to_str()) == Some("rec2") {
             out.push(path.clone());
         }
         return Ok(());
