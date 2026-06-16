@@ -25,6 +25,8 @@ public sealed class DemoTracerPlugin : BasePlugin
         (byte)'M', (byte)'R', (byte)'E', (byte)'C'
     ];
     private const float HandoffGraceSeconds = 0.25f;
+    private const float BulletHandoffMatchSeconds = 0.25f;
+    private const int BulletHandoffMinDamage = 10;
     private const int MaxPlayerSlots = 64;
 
     private readonly List<int> _loadedSlots = new();
@@ -36,6 +38,8 @@ public sealed class DemoTracerPlugin : BasePlugin
     private readonly HashSet<int> _rebuiltInventorySlots = new();
     private readonly HashSet<int> _lastPlayingSlots = new();
     private readonly Dictionary<int, float> _replayStartedAt = new();
+    private readonly Dictionary<int, PendingBulletHit> _pendingBulletHits = new();
+    private readonly Dictionary<int, PendingBulletDamage> _pendingBulletDamages = new();
     private readonly BotHiderMemoryProbe _botHiderProbe = new();
 
     private bool _armed;
@@ -408,6 +412,8 @@ public sealed class DemoTracerPlugin : BasePlugin
         _rebuiltInventorySlots.Clear();
         _lastPlayingSlots.Clear();
         _replayStartedAt.Clear();
+        _pendingBulletHits.Clear();
+        _pendingBulletDamages.Clear();
         command.ReplyToCommand($"dtr: stopped {_loadedSlots.Count} loaded slots");
     }
 
@@ -426,6 +432,8 @@ public sealed class DemoTracerPlugin : BasePlugin
             _lastLockedWeaponTarget.Remove(slot);
             _pendingWeaponAlign.Remove(slot);
             _rebuiltInventorySlots.Remove(slot);
+            _pendingBulletHits.Remove(slot);
+            _pendingBulletDamages.Remove(slot);
             ReleaseReplaySlot(slot, "unload");
         }
 
@@ -511,6 +519,60 @@ public sealed class DemoTracerPlugin : BasePlugin
             var triggerSlot = GetDeathHandoffSlot(@event);
             if (triggerSlot >= 0)
                 HandoffActiveReplays($"player_death_slot{triggerSlot}", triggerSlot);
+        }
+
+        return HookResult.Continue;
+    }
+
+    [GameEventHandler]
+    public HookResult OnBulletDamage(EventBulletDamage @event, GameEventInfo info)
+    {
+        if (!HandoffIncludesContact(_handoffMode) || !HasActiveReplaySlots())
+            return HookResult.Continue;
+
+        if (!TryGetEnemyBulletHandoffPair(@event.Attacker, @event.Victim, out var victimSlot, out var attackerSlot))
+            return HookResult.Continue;
+
+        PruneExpiredBulletHandoffState();
+        if (_pendingBulletDamages.TryGetValue(victimSlot, out var damage) &&
+            damage.AttackerSlot == attackerSlot &&
+            IsFreshBulletHandoffEvent(damage.Time))
+        {
+            _pendingBulletDamages.Remove(victimSlot);
+            TryHandoffBulletDamagedReplay(victimSlot, attackerSlot, damage.Damage);
+        }
+        else
+        {
+            _pendingBulletHits[victimSlot] = new PendingBulletHit(attackerSlot, Server.CurrentTime);
+        }
+
+        return HookResult.Continue;
+    }
+
+    [GameEventHandler]
+    public HookResult OnPlayerHurt(EventPlayerHurt @event, GameEventInfo info)
+    {
+        if (!HandoffIncludesContact(_handoffMode) || !HasActiveReplaySlots())
+            return HookResult.Continue;
+
+        if (!TryGetEnemyBulletHandoffPair(@event.Attacker, @event.Userid, out var victimSlot, out var attackerSlot))
+            return HookResult.Continue;
+
+        var damage = Math.Max(0, @event.DmgHealth) + Math.Max(0, @event.DmgArmor);
+        if (damage < BulletHandoffMinDamage)
+            return HookResult.Continue;
+
+        PruneExpiredBulletHandoffState();
+        if (_pendingBulletHits.TryGetValue(victimSlot, out var hit) &&
+            hit.AttackerSlot == attackerSlot &&
+            IsFreshBulletHandoffEvent(hit.Time))
+        {
+            _pendingBulletHits.Remove(victimSlot);
+            TryHandoffBulletDamagedReplay(victimSlot, attackerSlot, damage);
+        }
+        else
+        {
+            _pendingBulletDamages[victimSlot] = new PendingBulletDamage(attackerSlot, damage, Server.CurrentTime);
         }
 
         return HookResult.Continue;
@@ -1028,6 +1090,8 @@ public sealed class DemoTracerPlugin : BasePlugin
         _rebuiltInventorySlots.Clear();
         _lastPlayingSlots.Clear();
         _replayStartedAt.Clear();
+        _pendingBulletHits.Clear();
+        _pendingBulletDamages.Clear();
         _armed = false;
         _sequencePrepared = false;
         _sequencePreparedRound = -1;
@@ -1048,6 +1112,8 @@ public sealed class DemoTracerPlugin : BasePlugin
         _lastLockedWeaponTarget.Remove(slot);
         _pendingWeaponAlign.Remove(slot);
         _rebuiltInventorySlots.Remove(slot);
+        _pendingBulletHits.Remove(slot);
+        _pendingBulletDamages.Remove(slot);
         BotControllerNative.UnlockReplayControl(slot);
         BotControllerNative.UnlockWeaponSlot(slot);
         ResetBotBrainForHandoff(slot);
@@ -1064,7 +1130,7 @@ public sealed class DemoTracerPlugin : BasePlugin
         return false;
     }
 
-    private void HandoffActiveReplays(string reason, int triggerSlot = -1)
+    private void HandoffActiveReplays(string reason, int triggerSlot = -1, int lookAtSlot = -1)
     {
         if (triggerSlot < 0 && !_handoffAllSlots)
             return;
@@ -1079,6 +1145,8 @@ public sealed class DemoTracerPlugin : BasePlugin
                 continue;
 
             BotControllerNative.StopReplay(slot);
+            if (lookAtSlot >= 0 && slot == triggerSlot)
+                AimSlotAtSlot(slot, lookAtSlot);
             ReleaseReplaySlot(slot, reason);
             stopped++;
 
@@ -1097,6 +1165,124 @@ public sealed class DemoTracerPlugin : BasePlugin
         if (@event.Attacker is { IsValid: true } attacker && IsReplaySlotPlaying(attacker.Slot))
             return attacker.Slot;
         return -1;
+    }
+
+    private bool TryGetEnemyBulletHandoffPair(
+        CCSPlayerController? attacker,
+        CCSPlayerController? victim,
+        out int victimSlot,
+        out int attackerSlot)
+    {
+        victimSlot = -1;
+        attackerSlot = -1;
+
+        if (attacker is not { IsValid: true } ||
+            victim is not { IsValid: true } ||
+            attacker.Slot == victim.Slot ||
+            attacker.Team == victim.Team ||
+            !victim.PawnIsAlive ||
+            !attacker.PawnIsAlive)
+            return false;
+
+        if (!IsReplaySlotPlaying(victim.Slot) || !ReplayHasPassedHandoffGrace(victim.Slot))
+            return false;
+
+        victimSlot = victim.Slot;
+        attackerSlot = attacker.Slot;
+        return true;
+    }
+
+    private bool TryHandoffBulletDamagedReplay(int victimSlot, int attackerSlot, int damage)
+    {
+        if (damage < BulletHandoffMinDamage ||
+            !IsReplaySlotPlaying(victimSlot) ||
+            !ReplayHasPassedHandoffGrace(victimSlot))
+            return false;
+
+        HandoffActiveReplays(
+            $"bullet_damage_slot{victimSlot}_attacker{attackerSlot}_dmg{damage}",
+            victimSlot,
+            attackerSlot);
+        return true;
+    }
+
+    private void PruneExpiredBulletHandoffState()
+    {
+        if (_pendingBulletHits.Count == 0 && _pendingBulletDamages.Count == 0)
+            return;
+
+        foreach (var (slot, hit) in _pendingBulletHits.ToArray())
+        {
+            if (!IsFreshBulletHandoffEvent(hit.Time))
+                _pendingBulletHits.Remove(slot);
+        }
+
+        foreach (var (slot, damage) in _pendingBulletDamages.ToArray())
+        {
+            if (!IsFreshBulletHandoffEvent(damage.Time))
+                _pendingBulletDamages.Remove(slot);
+        }
+    }
+
+    private static bool IsFreshBulletHandoffEvent(float eventTime)
+        => Server.CurrentTime - eventTime <= BulletHandoffMatchSeconds;
+
+    private static void AimSlotAtSlot(int slot, int targetSlot)
+    {
+        var player = Utilities.GetPlayerFromSlot(slot);
+        var target = Utilities.GetPlayerFromSlot(targetSlot);
+        if (player is not { IsValid: true } ||
+            target is not { IsValid: true } ||
+            player.PlayerPawn is not { IsValid: true, Value.IsValid: true } ||
+            target.PlayerPawn is not { IsValid: true, Value.IsValid: true })
+            return;
+
+        try
+        {
+            var from = EyePosition(player.PlayerPawn.Value);
+            var to = EyePosition(target.PlayerPawn.Value);
+            var dx = to.X - from.X;
+            var dy = to.Y - from.Y;
+            var dz = to.Z - from.Z;
+            var horizontal = MathF.Sqrt(dx * dx + dy * dy);
+            if (horizontal < 0.001f)
+                return;
+
+            var pitch = -RadiansToDegrees(MathF.Atan2(dz, horizontal));
+            var yaw = NormalizeYaw(RadiansToDegrees(MathF.Atan2(dy, dx)));
+            player.PlayerPawn.Value.Teleport(
+                (System.Numerics.Vector3?)null,
+                new System.Numerics.Vector3(pitch, yaw, 0.0f),
+                (System.Numerics.Vector3?)null);
+        }
+        catch
+        {
+        }
+    }
+
+    private static (float X, float Y, float Z) EyePosition(CCSPlayerPawn pawn)
+    {
+        var origin = pawn.AbsOrigin;
+        var viewOffset = pawn.ViewOffset;
+        if (origin == null || viewOffset == null)
+            return (0.0f, 0.0f, 0.0f);
+
+        return (
+            origin.X + viewOffset.X,
+            origin.Y + viewOffset.Y,
+            origin.Z + viewOffset.Z);
+    }
+
+    private static float RadiansToDegrees(float radians)
+        => radians * 180.0f / MathF.PI;
+
+    private static float NormalizeYaw(float yaw)
+    {
+        while (yaw > 180.0f)
+            yaw -= 360.0f;
+        while (yaw < -180.0f)
+            yaw += 360.0f;
+        return yaw;
     }
 
     private static bool IsReplaySlotPlaying(int slot)
@@ -2008,6 +2194,10 @@ public sealed class DemoTracerPlugin : BasePlugin
     private readonly record struct ReplayAssignment(ManifestFile File, CCSPlayerController Bot);
 
     private readonly record struct PendingWeaponAlign(int WeaponDefIndex, bool ForceSwitch);
+
+    private readonly record struct PendingBulletHit(int AttackerSlot, float Time);
+
+    private readonly record struct PendingBulletDamage(int AttackerSlot, int Damage, float Time);
 
     private readonly record struct TeamEconomySnapshot(uint EquipmentValue, string Class);
 
