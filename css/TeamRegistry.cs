@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace Cs2DemoBotMimic;
+namespace DemoTracer;
 
 internal enum TeamSide
 {

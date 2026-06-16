@@ -1,4 +1,4 @@
-# `.rec2` v3 Format
+# `.dtr` v3 Format
 
 All values are little-endian. v3 is the only supported replay file format.
 
@@ -8,7 +8,7 @@ The format is lossless: movement snapshots and subtick records are written with 
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| magic | 8 bytes | `CS2BMREC` |
+| magic | 8 bytes | `CSDTRREC` |
 | version | `u32` | `3` |
 | tick_rate | `f32` | Demo tickrate estimate |
 | round | `u32` | `total_rounds_played` window |
@@ -88,7 +88,7 @@ This layout matches BotController ABI 10 (`92` bytes with `Pack=4`).
 
 ## Parser Checklist
 
-1. Read and validate magic `CS2BMREC`.
+1. Read and validate magic `CSDTRREC`.
 2. Require `version == 3`.
 3. Read `tick_count`, `subtick_count`, `map`, and `player_name`.
 4. Require `codec == 1`.

@@ -74,7 +74,7 @@ pub fn synthesize_player_rec_with_options(
     Ok((
         Cs2Rec {
             header: Cs2RecHeader {
-                version: crate::model::CS2REC_VERSION,
+                version: crate::model::DTR_FORMAT_VERSION,
                 tick_rate,
                 map: map.to_string(),
                 round,

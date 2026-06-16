@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
 
-pub const CS2BM_ABI: i32 = 10;
-pub const CS2REC_VERSION: u32 = 3;
+pub const DEMOTRACER_ABI: i32 = 10;
+pub const DTR_FORMAT_VERSION: u32 = 3;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -142,7 +142,7 @@ pub struct Cs2RecHeader {
 impl Default for Cs2RecHeader {
     fn default() -> Self {
         Self {
-            version: CS2REC_VERSION,
+            version: DTR_FORMAT_VERSION,
             tick_rate: 64.0,
             map: String::new(),
             round: 0,

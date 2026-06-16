@@ -1,6 +1,6 @@
 use crate::demo_reader::read_demo;
 use crate::export::{export_demo, ConvertOptions};
-use crate::model::{RoundPoolCandidate, RoundPoolManifest, Side, SubtickMode, CS2BM_ABI};
+use crate::model::{RoundPoolCandidate, RoundPoolManifest, Side, SubtickMode, DEMOTRACER_ABI};
 use crate::quality::AnalysisOptions;
 use crate::{io_error, Result};
 use serde::{Deserialize, Serialize};
@@ -41,7 +41,7 @@ pub fn build_round_pool(options: &BuildPoolOptions) -> Result<BuildPoolReport> {
 
     let mut pool = RoundPoolManifest {
         format_version: 1,
-        abi: CS2BM_ABI,
+        abi: DEMOTRACER_ABI,
         map: options.map.clone(),
         candidates: Vec::new(),
     };

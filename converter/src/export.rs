@@ -1,6 +1,6 @@
 use crate::model::{
     ConversionManifest, ConvertedFile, ConvertedRound, EconomyClass, ParsedDemo, ParsedPlayerTick,
-    Side, SubtickMode, TeamEconomy, CS2BM_ABI, CS2REC_VERSION,
+    Side, SubtickMode, TeamEconomy, DEMOTRACER_ABI, DTR_FORMAT_VERSION,
 };
 use crate::quality::{analyze_demo, AnalysisOptions};
 use crate::rec_writer::write_rec_file;
@@ -41,8 +41,8 @@ pub fn export_demo(parsed: &ParsedDemo, options: &ConvertOptions) -> Result<Conv
         demo_path: parsed.path.clone(),
         map: parsed.map.clone(),
         tick_rate: parsed.tick_rate,
-        abi: CS2BM_ABI,
-        format_version: CS2REC_VERSION,
+        abi: DEMOTRACER_ABI,
+        format_version: DTR_FORMAT_VERSION,
         rounds: Vec::new(),
         files: Vec::new(),
     };
@@ -149,7 +149,7 @@ pub fn export_demo(parsed: &ParsedDemo, options: &ConvertOptions) -> Result<Conv
             };
             let rel_path = Path::new(&format!("round{:02}", round.round))
                 .join(team_dir)
-                .join(format!("{}_{}.rec2", steam_id, slugify(&player_name)));
+                .join(format!("{}_{}.dtr", steam_id, slugify(&player_name)));
             let full_path = root.join(&rel_path);
             if let Some(parent) = full_path.parent() {
                 fs::create_dir_all(parent).map_err(|e| io_error(parent, e))?;

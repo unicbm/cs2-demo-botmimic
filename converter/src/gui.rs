@@ -15,7 +15,7 @@ pub fn run_gui() -> Result<()> {
         ..Default::default()
     };
     eframe::run_native(
-        "CS2 Demo BotMimic Converter",
+        "CS2 DemoTracer",
         options,
         Box::new(|cc| {
             install_cjk_fonts(&cc.egui_ctx);
@@ -79,7 +79,7 @@ impl eframe::App for ConverterApp {
         self.poll_worker();
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading(self.t("CS2 Demo BotMimic Converter", "CS2 Demo BotMimic 转换器"));
+            ui.heading(self.t("CS2 DemoTracer", "CS2 DemoTracer 转换器"));
             ui.separator();
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut self.lang, Lang::ZhHans, "简体中文");
@@ -285,10 +285,7 @@ impl ConverterApp {
         };
         let (tx, rx) = mpsc::channel();
         self.worker = Some(rx);
-        self.busy_label = Some(
-            self.t("Exporting .rec2...", "正在导出 .rec2...")
-                .to_string(),
-        );
+        self.busy_label = Some(self.t("Exporting .dtr...", "正在导出 .dtr...").to_string());
         thread::spawn(move || {
             let result = export_demo(&parsed, &options).map_err(|e| e.to_string());
             let _ = tx.send(WorkerResult::Export(result));

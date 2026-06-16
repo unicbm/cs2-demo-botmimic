@@ -10,14 +10,14 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace Cs2DemoBotMimic;
+namespace DemoTracer;
 
-public sealed class Cs2DemoBotMimicPlugin : BasePlugin
+public sealed class DemoTracerPlugin : BasePlugin
 {
-    public override string ModuleName => "CS2 Demo BotMimic";
+    public override string ModuleName => "CS2 DemoTracer";
     public override string ModuleVersion => "0.1.0";
     public override string ModuleAuthor => "unicbm";
-    public override string ModuleDescription => "Loads .rec2 files into the BotController Metamod runtime.";
+    public override string ModuleDescription => "Trace CS2 demos into bot-executable route replays.";
 
     private static readonly byte[] RecMagic =
     [
@@ -66,8 +66,8 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         RegisterListener<Listeners.OnTick>(OnTick);
         ConfigureNativeSafetyOffsets();
         _teamRegistry.Load(ModuleDirectory, out var teamLoadMessage);
-        Server.PrintToConsole($"cs2bm: {teamLoadMessage}");
-        Server.PrintToConsole("cs2bm: CSS control plugin loaded");
+        Server.PrintToConsole($"dtr: {teamLoadMessage}");
+        Server.PrintToConsole("dtr: CSS control plugin loaded");
     }
 
     public override void Unload(bool hotReload)
@@ -82,30 +82,30 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
             var offset = Schema.GetSchemaOffset("CCSPlayerController", "m_bControllingBot");
             var ok = BotControllerNative.SetControllerControllingBotOffset(offset);
             Server.PrintToConsole(ok
-                ? $"cs2bm: native takeover guard enabled, ControllingBot offset=0x{offset:X}"
-                : "cs2bm: native takeover guard unavailable; CSS safety checks remain active");
+                ? $"dtr: native takeover guard enabled, ControllingBot offset=0x{offset:X}"
+                : "dtr: native takeover guard unavailable; CSS safety checks remain active");
         }
         catch (Exception ex)
         {
-            Server.PrintToConsole($"cs2bm: native takeover guard unavailable: {ex.Message}");
+            Server.PrintToConsole($"dtr: native takeover guard unavailable: {ex.Message}");
         }
     }
 
-    [ConsoleCommand("cs2bm_run_manifest", "cs2bm_run_manifest <manifest.json> [start-round]")]
+    [ConsoleCommand("dtr_run_manifest", "dtr_run_manifest <manifest.json> [start-round]")]
     public void RunManifestCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (!CheckAbi(command))
             return;
         if (command.ArgCount < 2)
         {
-            command.ReplyToCommand("usage: cs2bm_run_manifest <manifest.json> [start-round]");
+            command.ReplyToCommand("usage: dtr_run_manifest <manifest.json> [start-round]");
             return;
         }
 
         var manifestPath = command.GetArg(1);
         if (!TryReadManifest(manifestPath, out var manifest, out var readError))
         {
-            command.ReplyToCommand($"cs2bm: failed to read manifest: {readError}");
+            command.ReplyToCommand($"dtr: failed to read manifest: {readError}");
             return;
         }
 
@@ -117,7 +117,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
 
         if (rounds.Length == 0)
         {
-            command.ReplyToCommand("cs2bm: manifest has no playable rounds");
+            command.ReplyToCommand("dtr: manifest has no playable rounds");
             return;
         }
 
@@ -125,7 +125,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         if (command.ArgCount >= 3 &&
             (!int.TryParse(command.GetArg(2), out startRound) || !rounds.Contains(startRound)))
         {
-            command.ReplyToCommand("cs2bm: start round is not present in manifest");
+            command.ReplyToCommand("dtr: start round is not present in manifest");
             return;
         }
 
@@ -140,10 +140,10 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         _poolActive = false;
 
         command.ReplyToCommand(
-            $"cs2bm: sequence armed, {rounds.Length - _sequenceIndex} rounds from round {startRound}; next round_start prepares bots, round_freeze_end starts playback");
+            $"dtr: sequence armed, {rounds.Length - _sequenceIndex} rounds from round {startRound}; next round_start prepares bots, round_freeze_end starts playback");
     }
 
-    [ConsoleCommand("cs2bm_stop_sequence", "cs2bm_stop_sequence")]
+    [ConsoleCommand("dtr_stop_sequence", "dtr_stop_sequence")]
     public void StopSequenceCommand(CCSPlayerController? player, CommandInfo command)
     {
         _sequenceActive = false;
@@ -151,24 +151,24 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         _sequenceIndex = 0;
         _sequencePrepared = false;
         _sequencePreparedRound = -1;
-        command.ReplyToCommand("cs2bm: sequence stopped");
+        command.ReplyToCommand("dtr: sequence stopped");
     }
 
-    [ConsoleCommand("cs2bm_run_pool", "cs2bm_run_pool <pool_manifest.json> [start-round]")]
+    [ConsoleCommand("dtr_run_pool", "dtr_run_pool <pool_manifest.json> [start-round]")]
     public void RunPoolCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (!CheckAbi(command))
             return;
         if (command.ArgCount < 2)
         {
-            command.ReplyToCommand("usage: cs2bm_run_pool <pool_manifest.json> [start-round]");
+            command.ReplyToCommand("usage: dtr_run_pool <pool_manifest.json> [start-round]");
             return;
         }
 
         var poolPath = command.GetArg(1);
         if (!TryReadPoolManifest(poolPath, out var pool, out var readError))
         {
-            command.ReplyToCommand($"cs2bm: failed to read pool manifest: {readError}");
+            command.ReplyToCommand($"dtr: failed to read pool manifest: {readError}");
             return;
         }
 
@@ -176,7 +176,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         if (command.ArgCount >= 3 &&
             (!int.TryParse(command.GetArg(2), out startRound) || startRound < 0))
         {
-            command.ReplyToCommand("cs2bm: start round must be a non-negative integer");
+            command.ReplyToCommand("dtr: start round must be a non-negative integer");
             return;
         }
 
@@ -192,11 +192,11 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
 
         command.ReplyToCommand(
             _poolActive
-                ? $"cs2bm: pool armed, candidates={pool.Candidates.Count}, next round={_poolRoundIndex}; round_freeze_end selects by economy"
-                : "cs2bm: pool manifest has no candidates");
+                ? $"dtr: pool armed, candidates={pool.Candidates.Count}, next round={_poolRoundIndex}; round_freeze_end selects by economy"
+                : "dtr: pool manifest has no candidates");
     }
 
-    [ConsoleCommand("cs2bm_stop_pool", "cs2bm_stop_pool")]
+    [ConsoleCommand("dtr_stop_pool", "dtr_stop_pool")]
     public void StopPoolCommand(CCSPlayerController? player, CommandInfo command)
     {
         _poolActive = false;
@@ -204,33 +204,29 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         _poolManifestPath = string.Empty;
         _poolRoundIndex = 0;
         _poolUsedCandidates.Clear();
-        command.ReplyToCommand("cs2bm: pool stopped");
+        command.ReplyToCommand("dtr: pool stopped");
     }
 
-    [ConsoleCommand("team", "team <t-team> <ct-team> OR team <team> <t|ct>")]
+    [ConsoleCommand("dtr_team", "dtr_team <t-team> <ct-team> OR dtr_team <team> <t|ct>")]
     public void TeamCommand(CCSPlayerController? player, CommandInfo command)
         => RunTeamCommand(command);
 
-    [ConsoleCommand("cs2bm_team", "cs2bm_team <t-team> <ct-team> OR cs2bm_team <team> <t|ct>")]
-    public void Cs2BmTeamCommand(CCSPlayerController? player, CommandInfo command)
-        => RunTeamCommand(command);
-
-    [ConsoleCommand("cs2bm_teams", "List configured cs2bm teams")]
+    [ConsoleCommand("dtr_teams", "List configured DemoTracer teams")]
     public void TeamsCommand(CCSPlayerController? player, CommandInfo command)
     {
         EnsureTeamRegistryLoaded();
         var names = _teamRegistry.Teams.Select(team => team.Key).Order(StringComparer.OrdinalIgnoreCase);
-        command.ReplyToCommand($"cs2bm: teams={string.Join(", ", names)}");
+        command.ReplyToCommand($"dtr: teams={string.Join(", ", names)}");
     }
 
-    [ConsoleCommand("cs2bm_team_reload", "Reload teams.json")]
+    [ConsoleCommand("dtr_team_reload", "Reload teams.json")]
     public void TeamReloadCommand(CCSPlayerController? player, CommandInfo command)
     {
         _teamRegistry.Load(ModuleDirectory, out var message, force: true);
-        command.ReplyToCommand($"cs2bm: {message}");
+        command.ReplyToCommand($"dtr: {message}");
     }
 
-    [ConsoleCommand("cs2bm_weapon_align", "cs2bm_weapon_align <0|1>")]
+    [ConsoleCommand("dtr_weapon_align", "dtr_weapon_align <0|1>")]
     public void WeaponAlignCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (command.ArgCount >= 2)
@@ -245,17 +241,17 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
                 BotControllerNative.UnlockWeaponSlot(slot);
         }
 
-        command.ReplyToCommand($"cs2bm: weapon_align={_weaponAlignEnabled}");
+        command.ReplyToCommand($"dtr: weapon_align={_weaponAlignEnabled}");
     }
 
-    [ConsoleCommand("cs2bm_handoff", "cs2bm_handoff <off|death|contact|death_or_contact> [all|slot]")]
+    [ConsoleCommand("dtr_handoff", "dtr_handoff <off|death|contact|death_or_contact> [all|slot]")]
     public void HandoffCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (command.ArgCount >= 2)
         {
             if (!TryParseHandoffMode(command.GetArg(1), out var mode))
             {
-                command.ReplyToCommand("usage: cs2bm_handoff <off|death|contact|death_or_contact> [all|slot]");
+                command.ReplyToCommand("usage: dtr_handoff <off|death|contact|death_or_contact> [all|slot]");
                 return;
             }
             _handoffMode = mode;
@@ -270,13 +266,13 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
                 _handoffAllSlots = true;
             else
             {
-                command.ReplyToCommand("usage: cs2bm_handoff <off|death|contact|death_or_contact> [all|slot]");
+                command.ReplyToCommand("usage: dtr_handoff <off|death|contact|death_or_contact> [all|slot]");
                 return;
             }
         }
 
         command.ReplyToCommand(
-            $"cs2bm: handoff={FormatHandoffMode(_handoffMode)} scope={(_handoffAllSlots ? "all" : "slot")}");
+            $"dtr: handoff={FormatHandoffMode(_handoffMode)} scope={(_handoffAllSlots ? "all" : "slot")}");
     }
 
     private void RunTeamCommand(CommandInfo command)
@@ -295,25 +291,25 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         {
             if (!_teamRegistry.TryResolve(first, out var team, out var error))
             {
-                command.ReplyToCommand($"cs2bm: {error}");
+                command.ReplyToCommand($"dtr: {error}");
                 return;
             }
 
             StopAndUnloadLoaded();
             ApplyTeamToSide(team, side);
-            command.ReplyToCommand($"cs2bm: TEAM {team.Name} joined {FormatTeamSide(side)} side");
+            command.ReplyToCommand($"dtr: TEAM {team.Name} joined {FormatTeamSide(side)} side");
             return;
         }
 
         if (!_teamRegistry.TryResolve(first, out var tTeam, out var tError))
         {
-            command.ReplyToCommand($"cs2bm: T team {tError}");
+            command.ReplyToCommand($"dtr: T team {tError}");
             return;
         }
 
         if (!_teamRegistry.TryResolve(second, out var ctTeam, out var ctError))
         {
-            command.ReplyToCommand($"cs2bm: CT team {ctError}");
+            command.ReplyToCommand($"dtr: CT team {ctError}");
             return;
         }
 
@@ -321,7 +317,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         ApplyTeamToSide(tTeam, TeamSide.Terrorist);
         ApplyTeamToSide(ctTeam, TeamSide.CounterTerrorist);
         command.ReplyToCommand(
-            $"cs2bm: TEAM {tTeam.Name} joined t; TEAM {ctTeam.Name} joined ct");
+            $"dtr: TEAM {tTeam.Name} joined t; TEAM {ctTeam.Name} joined ct");
     }
 
     private void EnsureTeamRegistryLoaded()
@@ -383,32 +379,32 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         => value.Replace("\\", "\\\\", StringComparison.Ordinal)
             .Replace("\"", "\\\"", StringComparison.Ordinal);
 
-    [ConsoleCommand("cs2bm_partial", "cs2bm_partial <0|1>")]
+    [ConsoleCommand("dtr_partial", "dtr_partial <0|1>")]
     public void PartialCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (command.ArgCount >= 2)
             _partialReplayEnabled = command.GetArg(1) != "0";
 
-        command.ReplyToCommand($"cs2bm: partial_replay={_partialReplayEnabled}");
+        command.ReplyToCommand($"dtr: partial_replay={_partialReplayEnabled}");
     }
 
-    [ConsoleCommand("cs2bm_replay_identity", "cs2bm_replay_identity <0|1>")]
+    [ConsoleCommand("dtr_replay_identity", "dtr_replay_identity <0|1>")]
     public void ReplayIdentityCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (command.ArgCount >= 2)
             _replayIdentityEnabled = command.GetArg(1) != "0";
 
-        command.ReplyToCommand($"cs2bm: replay_identity={ReplayIdentityModeName()}");
+        command.ReplyToCommand($"dtr: replay_identity={ReplayIdentityModeName()}");
     }
 
-    [ConsoleCommand("cs2bm_load", "cs2bm_load <slot> <absolute-or-game-path.rec2>")]
+    [ConsoleCommand("dtr_load", "dtr_load <slot> <absolute-or-game-path.dtr>")]
     public void LoadCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (!CheckAbi(command))
             return;
         if (!TryParseSlot(command, out var slot) || command.ArgCount < 3)
         {
-            command.ReplyToCommand("usage: cs2bm_load <slot> <path.rec2>");
+            command.ReplyToCommand("usage: dtr_load <slot> <path.dtr>");
             return;
         }
 
@@ -421,11 +417,11 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         }
 
         command.ReplyToCommand(ok
-            ? $"cs2bm: loaded slot {slot}: {path}"
-            : $"cs2bm: failed to load slot {slot}: {path} ({BotControllerNative.LastLoadError})");
+            ? $"dtr: loaded slot {slot}: {path}"
+            : $"dtr: failed to load slot {slot}: {path} ({BotControllerNative.LastLoadError})");
     }
 
-    [ConsoleCommand("cs2bm_load_round", "cs2bm_load_round <manifest.json> <round>")]
+    [ConsoleCommand("dtr_load_round", "dtr_load_round <manifest.json> <round>")]
     public void LoadRoundCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (!CheckAbi(command))
@@ -437,7 +433,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         command.ReplyToCommand(result.Message);
     }
 
-    [ConsoleCommand("cs2bm_arm_round", "cs2bm_arm_round <manifest.json> <round> [loop:0|1]")]
+    [ConsoleCommand("dtr_arm_round", "dtr_arm_round <manifest.json> <round> [loop:0|1]")]
     public void ArmRoundCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (!CheckAbi(command))
@@ -461,10 +457,10 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         _armedLoop = loop;
         _armedLabel = $"round={round} manifest={manifestPath}";
         PreloadLoadedReplays();
-        command.ReplyToCommand($"cs2bm: armed {_loadedSlots.Count} slots, will start on round_freeze_end, loop={loop}");
+        command.ReplyToCommand($"dtr: armed {_loadedSlots.Count} slots, will start on round_freeze_end, loop={loop}");
     }
 
-    [ConsoleCommand("cs2bm_play_loaded", "cs2bm_play_loaded [loop:0|1]")]
+    [ConsoleCommand("dtr_play_loaded", "dtr_play_loaded [loop:0|1]")]
     public void PlayLoadedCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (!CheckAbi(command))
@@ -473,7 +469,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         command.ReplyToCommand(PlayLoaded(loop));
     }
 
-    [ConsoleCommand("cs2bm_play", "cs2bm_play <slot> [loop:0|1]")]
+    [ConsoleCommand("dtr_play", "dtr_play <slot> [loop:0|1]")]
     public void PlayCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (!CheckAbi(command) || !TryParseSlot(command, out var slot))
@@ -485,7 +481,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
 
         if (!IsReplaySlotStillSafe(slot))
         {
-            command.ReplyToCommand($"cs2bm: refused to play slot {slot}: not a safe bot target");
+            command.ReplyToCommand($"dtr: refused to play slot {slot}: not a safe bot target");
             return;
         }
 
@@ -494,11 +490,11 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
             MarkReplayStarted(slot);
         var state = ok ? default : BotControllerNative.GetReplayState(slot);
         command.ReplyToCommand(ok
-            ? $"cs2bm: playing slot {slot}, loop={loop}"
-            : $"cs2bm: failed to play slot {slot} (cursor={state.Cursor}, total={state.Total})");
+            ? $"dtr: playing slot {slot}, loop={loop}"
+            : $"dtr: failed to play slot {slot} (cursor={state.Cursor}, total={state.Total})");
     }
 
-    [ConsoleCommand("cs2bm_stop", "cs2bm_stop <slot>")]
+    [ConsoleCommand("dtr_stop", "dtr_stop <slot>")]
     public void StopCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (!CheckAbi(command) || !TryParseSlot(command, out var slot))
@@ -506,11 +502,11 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         var ok = BotControllerNative.StopReplay(slot);
         ReleaseReplaySlot(slot, "manual_stop");
         command.ReplyToCommand(ok
-            ? $"cs2bm: stopped slot {slot}"
-            : $"cs2bm: failed to stop slot {slot}");
+            ? $"dtr: stopped slot {slot}"
+            : $"dtr: failed to stop slot {slot}");
     }
 
-    [ConsoleCommand("cs2bm_stop_all", "cs2bm_stop_all")]
+    [ConsoleCommand("dtr_stop_all", "dtr_stop_all")]
     public void StopAllCommand(CCSPlayerController? player, CommandInfo command)
     {
         foreach (var slot in _loadedSlots.ToArray())
@@ -534,10 +530,10 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         _rebuiltInventorySlots.Clear();
         _lastPlayingSlots.Clear();
         _replayStartedAt.Clear();
-        command.ReplyToCommand($"cs2bm: stopped {_loadedSlots.Count} loaded slots");
+        command.ReplyToCommand($"dtr: stopped {_loadedSlots.Count} loaded slots");
     }
 
-    [ConsoleCommand("cs2bm_unload", "cs2bm_unload <slot>")]
+    [ConsoleCommand("dtr_unload", "dtr_unload <slot>")]
     public void UnloadCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (!CheckAbi(command) || !TryParseSlot(command, out var slot))
@@ -556,11 +552,11 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         }
 
         command.ReplyToCommand(ok
-            ? $"cs2bm: unloaded slot {slot}"
-            : $"cs2bm: failed to unload slot {slot}");
+            ? $"dtr: unloaded slot {slot}"
+            : $"dtr: failed to unload slot {slot}");
     }
 
-    [ConsoleCommand("cs2bm_bots", "cs2bm_bots")]
+    [ConsoleCommand("dtr_bots", "dtr_bots")]
     public void BotsCommand(CCSPlayerController? player, CommandInfo command)
     {
         var players = FindTeamPlayers();
@@ -568,7 +564,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         var managedBots = players.Count(candidate => _botHiderProbe.IsManagedBot(candidate.Slot));
         var candidates = players.Count(IsReplayTargetBot);
         command.ReplyToCommand(
-            $"cs2bm: strict IsBot={strictBots}, BotHider managed={managedBots}, safe replay candidates={candidates}");
+            $"dtr: strict IsBot={strictBots}, BotHider managed={managedBots}, safe replay candidates={candidates}");
         foreach (var bot in players)
         {
             var managed = _botHiderProbe.IsManagedBot(bot.Slot);
@@ -580,7 +576,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         }
     }
 
-    [ConsoleCommand("cs2bm_status", "cs2bm_status <slot>")]
+    [ConsoleCommand("dtr_status", "dtr_status <slot>")]
     public void StatusCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (!CheckAbi(command) || !TryParseSlot(command, out var slot))
@@ -593,7 +589,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
             ? $" pool_next={_poolRoundIndex}"
             : string.Empty;
         command.ReplyToCommand(
-            $"cs2bm: abi={BotControllerNative.AbiVersion} slot={slot} playing={state.Playing} cursor={state.Cursor} total={state.Total} handoff={FormatHandoffMode(_handoffMode)} scope={(_handoffAllSlots ? "all" : "slot")} partial={_partialReplayEnabled} identity={ReplayIdentityModeName()}{sequence}{pool}");
+            $"dtr: abi={BotControllerNative.AbiVersion} slot={slot} playing={state.Playing} cursor={state.Cursor} total={state.Total} handoff={FormatHandoffMode(_handoffMode)} scope={(_handoffAllSlots ? "all" : "slot")} partial={_partialReplayEnabled} identity={ReplayIdentityModeName()}{sequence}{pool}");
     }
 
     [GameEventHandler]
@@ -624,7 +620,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
             return HookResult.Continue;
 
         var message = StartLoaded(_armedLoop);
-        Server.PrintToConsole($"cs2bm: auto-start {_armedLabel}: {message}");
+        Server.PrintToConsole($"dtr: auto-start {_armedLabel}: {message}");
         _armed = false;
         return HookResult.Continue;
     }
@@ -689,7 +685,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         if (_sequenceIndex < 0 || _sequenceIndex >= _sequenceRounds.Length)
         {
             _sequenceActive = false;
-            Server.PrintToConsole("cs2bm: sequence complete");
+            Server.PrintToConsole("dtr: sequence complete");
             return false;
         }
 
@@ -703,14 +699,14 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
             _sequenceActive = false;
             _sequencePrepared = false;
             _sequencePreparedRound = -1;
-            Server.PrintToConsole($"cs2bm: sequence stopped while preparing round {round}: {load.Message}");
+            Server.PrintToConsole($"dtr: sequence stopped while preparing round {round}: {load.Message}");
             return false;
         }
 
         PreloadLoadedReplays();
         _sequencePrepared = true;
         _sequencePreparedRound = round;
-        Server.PrintToConsole($"cs2bm: prepared sequence round {round} on {reason}: {load.Message}");
+        Server.PrintToConsole($"dtr: prepared sequence round {round} on {reason}: {load.Message}");
         return true;
     }
 
@@ -723,7 +719,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
 
         var round = _sequencePreparedRound;
         var play = StartLoaded(loop: false);
-        Server.PrintToConsole($"cs2bm: sequence round {round} start on round_freeze_end: {play}");
+        Server.PrintToConsole($"dtr: sequence round {round} start on round_freeze_end: {play}");
 
         _sequencePrepared = false;
         _sequencePreparedRound = -1;
@@ -738,14 +734,14 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         if (pool == null || pool.Candidates.Count == 0)
         {
             _poolActive = false;
-            Server.PrintToConsole("cs2bm: pool stopped, no candidates");
+            Server.PrintToConsole("dtr: pool stopped, no candidates");
             return;
         }
 
         if (!TryChoosePoolCandidate(pool, _poolRoundIndex, out var candidate, out var reason) ||
             candidate == null)
         {
-            Server.PrintToConsole($"cs2bm: pool skipped round {_poolRoundIndex}: {reason}");
+            Server.PrintToConsole($"dtr: pool skipped round {_poolRoundIndex}: {reason}");
             _poolRoundIndex++;
             return;
         }
@@ -758,7 +754,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         if (!load.Ok)
         {
             Server.PrintToConsole(
-                $"cs2bm: pool failed round {_poolRoundIndex}: {load.Message}; candidate={candidate.DemoStem} r{candidate.SourceRound}");
+                $"dtr: pool failed round {_poolRoundIndex}: {load.Message}; candidate={candidate.DemoStem} r{candidate.SourceRound}");
             _poolRoundIndex++;
             return;
         }
@@ -771,7 +767,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
             _poolUsedCandidates.Clear();
 
         Server.PrintToConsole(
-            $"cs2bm: pool round {_poolRoundIndex} -> {candidate.DemoStem} r{candidate.SourceRound} ({reason}); {load.Message}; {play}");
+            $"dtr: pool round {_poolRoundIndex} -> {candidate.DemoStem} r{candidate.SourceRound} ({reason}); {load.Message}; {play}");
         _poolRoundIndex++;
     }
 
@@ -924,7 +920,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
             return true;
 
         command.ReplyToCommand(
-            $"cs2bm: ABI mismatch, runtime={BotControllerNative.AbiVersion}, expected={BotControllerNative.ExpectedAbiVersion}");
+            $"dtr: ABI mismatch, runtime={BotControllerNative.AbiVersion}, expected={BotControllerNative.ExpectedAbiVersion}");
         return false;
     }
 
@@ -942,7 +938,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         if (int.TryParse(command.GetArg(2), out round) && round >= 0)
             return true;
 
-        command.ReplyToCommand("cs2bm: round must be a non-negative integer");
+        command.ReplyToCommand("dtr: round must be a non-negative integer");
         return false;
     }
 
@@ -961,7 +957,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         try
         {
             if (!TryReadManifest(manifestPath, out var manifest, out var readError))
-                return LoadRoundResult.Fail($"cs2bm: failed to read manifest: {readError}");
+                return LoadRoundResult.Fail($"dtr: failed to read manifest: {readError}");
 
             var manifestDir = Path.GetDirectoryName(Path.GetFullPath(manifestPath)) ?? ".";
             var roundFiles = manifest.Files
@@ -970,7 +966,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
                 .ThenBy(file => file.SteamId)
                 .ToList();
             if (roundFiles.Count == 0)
-                return LoadRoundResult.Fail($"cs2bm: manifest has no files for round {round}");
+                return LoadRoundResult.Fail($"dtr: manifest has no files for round {round}");
 
             var allTFiles = roundFiles.Where(file => file.Side.Equals("t", StringComparison.OrdinalIgnoreCase)).ToList();
             var allCtFiles = roundFiles.Where(file => file.Side.Equals("ct", StringComparison.OrdinalIgnoreCase)).ToList();
@@ -981,7 +977,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
             if (!_partialReplayEnabled && (tBots.Count < allTFiles.Count || ctBots.Count < allCtFiles.Count))
             {
                 return LoadRoundResult.Fail(
-                    $"cs2bm: not enough bots, need T={allTFiles.Count}/CT={allCtFiles.Count}, have T={tBots.Count}/CT={ctBots.Count}");
+                    $"dtr: not enough bots, need T={allTFiles.Count}/CT={allCtFiles.Count}, have T={tBots.Count}/CT={ctBots.Count}");
             }
 
             var tAssignments = BuildReplayAssignments(allTFiles, tBots);
@@ -989,7 +985,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
             if (tAssignments.Count == 0 && ctAssignments.Count == 0)
             {
                 return LoadRoundResult.Fail(
-                    $"cs2bm: no safe bot targets, need T={allTFiles.Count}/CT={allCtFiles.Count}, have T={tBots.Count}/CT={ctBots.Count}");
+                    $"dtr: no safe bot targets, need T={allTFiles.Count}/CT={allCtFiles.Count}, have T={tBots.Count}/CT={ctBots.Count}");
             }
 
             var skippedT = allTFiles.Count - tAssignments.Count;
@@ -998,18 +994,18 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
             StopAndUnloadLoaded();
             var loaded = new List<string>();
             if (!LoadSide(tAssignments, manifestDir, loaded, out var loadError))
-                return LoadRoundResult.Fail($"cs2bm: failed while loading round {round}: {loadError}");
+                return LoadRoundResult.Fail($"dtr: failed while loading round {round}: {loadError}");
             if (!LoadSide(ctAssignments, manifestDir, loaded, out loadError))
-                return LoadRoundResult.Fail($"cs2bm: failed while loading round {round}: {loadError}");
+                return LoadRoundResult.Fail($"dtr: failed while loading round {round}: {loadError}");
 
             var partial = skippedT > 0 || skippedCt > 0
                 ? $" partial replay skipped T={skippedT}/CT={skippedCt}"
                 : string.Empty;
-            return LoadRoundResult.Success($"cs2bm: loaded {loaded.Count} replays for round {round}{partial}: {string.Join(", ", loaded)}");
+            return LoadRoundResult.Success($"dtr: loaded {loaded.Count} replays for round {round}{partial}: {string.Join(", ", loaded)}");
         }
         catch (Exception ex)
         {
-            return LoadRoundResult.Fail($"cs2bm: load round failed: {ex.Message}");
+            return LoadRoundResult.Fail($"dtr: load round failed: {ex.Message}");
         }
     }
 
@@ -1068,21 +1064,21 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         if (file.SteamId == 0)
         {
             Server.PrintToConsole(
-                $"cs2bm: replay identity skipped slot={slot} player={file.PlayerName}: missing steam_id");
+                $"dtr: replay identity skipped slot={slot} player={file.PlayerName}: missing steam_id");
             return;
         }
 
         if (!_botHiderProbe.IsAvailable())
         {
             Server.PrintToConsole(
-                $"cs2bm: replay identity skipped slot={slot} player={file.PlayerName}: BotHider unavailable");
+                $"dtr: replay identity skipped slot={slot} player={file.PlayerName}: BotHider unavailable");
             return;
         }
 
         if (!_botHiderProbe.IsManagedBot(slot))
         {
             Server.PrintToConsole(
-                $"cs2bm: replay identity skipped slot={slot} player={file.PlayerName}: not a BotHider managed bot");
+                $"dtr: replay identity skipped slot={slot} player={file.PlayerName}: not a BotHider managed bot");
             return;
         }
 
@@ -1090,7 +1086,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
             Server.ExecuteCommand($"bh_setname {slot} \"{EscapeConsoleString(file.PlayerName)}\"");
         Server.ExecuteCommand($"bh_setsid {slot} {file.SteamId}");
         Server.PrintToConsole(
-            $"cs2bm: replay identity queued slot={slot} player={file.PlayerName} sid={file.SteamId}");
+            $"dtr: replay identity queued slot={slot} player={file.PlayerName} sid={file.SteamId}");
     }
 
     private string PlayLoaded(bool loop)
@@ -1134,7 +1130,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
                 ok++;
             }
         }
-        return $"cs2bm: started {ok}/{_loadedSlots.Count} loaded slots, loop={loop}";
+        return $"dtr: started {ok}/{_loadedSlots.Count} loaded slots, loop={loop}";
     }
 
     private void StopAndUnloadLoaded()
@@ -1177,7 +1173,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         BotControllerNative.UnlockReplayControl(slot);
         BotControllerNative.UnlockWeaponSlot(slot);
         ResetBotBrainForHandoff(slot);
-        Server.PrintToConsole($"cs2bm: released slot={slot} reason={reason}");
+        Server.PrintToConsole($"dtr: released slot={slot} reason={reason}");
     }
 
     private bool HasActiveReplaySlots()
@@ -1213,7 +1209,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         }
 
         if (stopped > 0)
-            Server.PrintToConsole($"cs2bm: handoff stopped {stopped} replay slot(s), reason={reason}");
+            Server.PrintToConsole($"dtr: handoff stopped {stopped} replay slot(s), reason={reason}");
     }
 
     private int GetDeathHandoffSlot(EventPlayerDeath @event)
@@ -1471,7 +1467,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         if (forceSwitch)
             BotControllerNative.SwitchBotWeapon(slot, normalized);
 
-        Server.PrintToConsole($"cs2bm: aligned slot={slot} def={normalized} item={className}");
+        Server.PrintToConsole($"dtr: aligned slot={slot} def={normalized} item={className}");
     }
 
     private static bool TryEnsureReplayWeapon(
@@ -1517,7 +1513,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         catch (Exception ex)
         {
             Server.PrintToConsole(
-                $"cs2bm: failed to give slot={player.Slot} item={className}: {ex.Message}");
+                $"dtr: failed to give slot={player.Slot} item={className}: {ex.Message}");
             return false;
         }
 

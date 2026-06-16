@@ -4,7 +4,7 @@ This project includes or adapts ideas/code from the following projects:
 
 - `XBribo/CS2-Bot-Controller` / `XBribo/CS2-Bot-Locker`，GPL-v3。本项目的 CS2 runtime 迁移到 BotController 架构，并沿用其 Metamod hook、bot replay 和 weapon lock 思路。
 - `LaihoE/demoparser`，MIT。本项目 converter vendored 了最小 Rust parser/csgoproto 源码，用于本地解析 CS2 demo。
-- `csgowiki/minidemo-encoder`，MIT。本项目没有直接复制其 Go 代码；但 `.dem -> replay file` 的工具形态和 BotMimic/minidemo 兼容思路来自该项目启发。
+- `csgowiki/minidemo-encoder`，MIT。本项目没有直接复制其 Go 代码；但 `.dem -> replay file` 的历史工具形态来自该项目启发。
 - `ed0ard/CS2-Bot-Improver`，GPL-v3。`team` 命令的内置示例队伍参考了该项目 `Commands.txt` 的公开队伍命令块。
 - Metamod:Source、CounterStrikeSharp 及相关 SDK/社区项目，提供 CS2 插件开发基础设施。
 

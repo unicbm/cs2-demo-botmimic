@@ -1,6 +1,6 @@
 # CS2-Bot-Controller
 
-**Make Bot Mimic Again**
+**Bot replay runtime for CS2 DemoTracer**
 
 ## Your stars⭐ are my motivation to keep updating
 

@@ -1,5 +1,5 @@
 [package]
-name = "cs2-demo-botmimic-converter"
+name = "cs2-demotracer"
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-only"
@@ -13,7 +13,7 @@ demoparser = ["dep:ahash", "dep:parser"]
 gui = ["dep:eframe", "dep:rfd"]
 
 [lib]
-name = "cs2_demo_botmimic_converter"
+name = "cs2_demotracer"
 path = "src/lib.rs"
 
 [dependencies]

@@ -1,16 +1,16 @@
 use clap::{Parser, Subcommand};
-use cs2_demo_botmimic_converter::demo_reader::read_demo;
-use cs2_demo_botmimic_converter::export::{export_demo, parse_round_list, ConvertOptions};
-use cs2_demo_botmimic_converter::model::{Side, SubtickMode};
-use cs2_demo_botmimic_converter::pool::{build_round_pool, BuildPoolOptions};
-use cs2_demo_botmimic_converter::quality::{analyze_demo, AnalysisOptions};
-use cs2_demo_botmimic_converter::rec_writer::read_rec_file;
+use cs2_demotracer::demo_reader::read_demo;
+use cs2_demotracer::export::{export_demo, parse_round_list, ConvertOptions};
+use cs2_demotracer::model::{Side, SubtickMode};
+use cs2_demotracer::pool::{build_round_pool, BuildPoolOptions};
+use cs2_demotracer::quality::{analyze_demo, AnalysisOptions};
+use cs2_demotracer::rec_writer::read_rec_file;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "cs2-demo-botmimic-converter")]
-#[command(about = "CS2 .dem -> .rec2 converter")]
+#[command(name = "cs2-demotracer")]
+#[command(about = "Trace CS2 demos into bot-executable route replays.")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -83,7 +83,7 @@ fn main() {
     }
 }
 
-fn run() -> cs2_demo_botmimic_converter::Result<()> {
+fn run() -> cs2_demotracer::Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Inspect {
@@ -137,7 +137,7 @@ fn run() -> cs2_demo_botmimic_converter::Result<()> {
                 },
             );
             let Some(summary) = analysis.rounds.iter().find(|r| r.round == round) else {
-                return Err(cs2_demo_botmimic_converter::Error::InvalidDemo(format!(
+                return Err(cs2_demotracer::Error::InvalidDemo(format!(
                     "round {round} not found"
                 )));
             };
@@ -226,21 +226,21 @@ fn run() -> cs2_demo_botmimic_converter::Result<()> {
         }
         Command::Validate { input } => {
             let mut count = 0_usize;
-            for path in collect_rec2_files(&input)? {
+            for path in collect_dtr_files(&input)? {
                 let rec = read_rec_file(&path)?;
                 if rec.ticks.is_empty() {
-                    return Err(cs2_demo_botmimic_converter::Error::InvalidRec(format!(
+                    return Err(cs2_demotracer::Error::InvalidRec(format!(
                         "{} has no ticks",
                         path.display()
                     )));
                 }
                 count += 1;
             }
-            println!("validated {count} .rec2 files");
+            println!("validated {count} .dtr files");
         }
         #[cfg(feature = "gui")]
         Command::Gui => {
-            cs2_demo_botmimic_converter::gui::run_gui()?;
+            cs2_demotracer::gui::run_gui()?;
         }
     }
     Ok(())
@@ -266,7 +266,7 @@ struct PlayerRoundScan {
 }
 
 fn print_round_players(
-    parsed: &cs2_demo_botmimic_converter::model::ParsedDemo,
+    parsed: &cs2_demotracer::model::ParsedDemo,
     start_tick: i32,
     end_tick: i32,
     round: u32,
@@ -290,7 +290,7 @@ fn print_round_players(
 }
 
 fn collect_round_players(
-    parsed: &cs2_demo_botmimic_converter::model::ParsedDemo,
+    parsed: &cs2_demotracer::model::ParsedDemo,
     start_tick: i32,
     end_tick: i32,
     round: u32,
@@ -358,26 +358,22 @@ fn print_player_table(title: &str, players: &BTreeMap<(u8, u64), PlayerRoundStat
     }
 }
 
-fn collect_rec2_files(root: &PathBuf) -> cs2_demo_botmimic_converter::Result<Vec<PathBuf>> {
+fn collect_dtr_files(root: &PathBuf) -> cs2_demotracer::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     collect_recursively(root, &mut out)?;
     Ok(out)
 }
 
-fn collect_recursively(
-    path: &PathBuf,
-    out: &mut Vec<PathBuf>,
-) -> cs2_demo_botmimic_converter::Result<()> {
+fn collect_recursively(path: &PathBuf, out: &mut Vec<PathBuf>) -> cs2_demotracer::Result<()> {
     if path.is_file() {
-        if path.extension().and_then(|e| e.to_str()) == Some("rec2") {
+        if path.extension().and_then(|e| e.to_str()) == Some("dtr") {
             out.push(path.clone());
         }
         return Ok(());
     }
-    let entries =
-        std::fs::read_dir(path).map_err(|e| cs2_demo_botmimic_converter::io_error(path, e))?;
+    let entries = std::fs::read_dir(path).map_err(|e| cs2_demotracer::io_error(path, e))?;
     for entry in entries {
-        let entry = entry.map_err(|e| cs2_demo_botmimic_converter::io_error(path, e))?;
+        let entry = entry.map_err(|e| cs2_demotracer::io_error(path, e))?;
         collect_recursively(&entry.path(), out)?;
     }
     Ok(())

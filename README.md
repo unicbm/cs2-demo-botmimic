@@ -1,8 +1,10 @@
-# CS2 Demo BotMimic
+# CS2 DemoTracer
+
+Trace CS2 demos into bot-executable route replays.
 
 **Language:** English | [简体中文](docs/README.zh-Hans.md)
 
-Convert CS2 match demos into bot replay files, then play those rounds back on a local CS2 server.
+Convert CS2 match demos into route replay files, then play those rounds back through bots on a local CS2 server.
 
 If this project helps you, please consider giving it a star. It makes the project easier for other CS2 tool/plugin developers to find.
 
@@ -16,7 +18,7 @@ First-person spectator view stays synchronized while bots replay converted CS2 d
 
 ## What It Does
 
-CS2 Demo BotMimic takes a `.dem` file, analyzes its rounds, and exports compressed `.rec2` replay files for each player.
+CS2 DemoTracer takes a `.dem` file, analyzes its rounds, and exports compressed `.dtr` route replay files for each player.
 
 In a local CS2 server, the runtime and CounterStrikeSharp plugin can then make bots replay the demo player's movement, view angles, jumping, crouching, firing, and basic weapon switching.
 
@@ -28,7 +30,7 @@ Plugin/runtime authors who only need to inspect replay fields can read the binar
 
 - People who want to replay pro match movement inside a local CS2 server.
 - People who prefer a simple GUI instead of command-line-only tooling.
-- Developers interested in a CS2-era BotMimic-style workflow.
+- Developers building CS2 route replay, bot playback, or demo analysis tooling.
 
 ## Requirements
 
@@ -44,7 +46,7 @@ Prebuilt packages are planned. For now, this development version is built locall
 Open PowerShell:
 
 ```powershell
-cd cs2-demo-botmimic\converter
+cd cs2-demotracer\converter
 cargo run --release -- gui
 ```
 
@@ -63,8 +65,8 @@ The output looks like this:
 
 ```text
 output/<demo-name>/manifest.json
-output/<demo-name>/round00/t/<player>.rec2
-output/<demo-name>/round00/ct/<player>.rec2
+output/<demo-name>/round00/t/<player>.dtr
+output/<demo-name>/round00/ct/<player>.dtr
 output/<demo-name>/round01/...
 ```
 
@@ -75,25 +77,25 @@ output/<demo-name>/round01/...
 If you have many demos, you can build a replay pool and let the plugin choose a similar round by economy:
 
 ```powershell
-cd cs2-demo-botmimic\converter
+cd cs2-demotracer\converter
 cargo run --release -- convert-pool --demo-dir "<demo-root>" --output "..\output\mirage_pool" --map de_mirage --recursive
 ```
 
-This writes `pool_manifest.json` plus normal per-demo manifests and compressed `.rec2` files under the output folder.
+This writes `pool_manifest.json` plus normal per-demo manifests and compressed `.dtr` files under the output folder.
 
 ## Play In CS2
 
 Make sure your local CS2 server has loaded:
 
 - the Metamod runtime plugin: `BotController`
-- the CounterStrikeSharp plugin: `Cs2DemoBotMimic`
+- the CounterStrikeSharp plugin: `DemoTracer`
 
 In the server console:
 
 ```text
-css_plugins reload Cs2DemoBotMimic
-cs2bm_weapon_align 1
-cs2bm_run_manifest "<output-dir>\<demo-name>\manifest.json" 0
+css_plugins reload DemoTracer
+dtr_weapon_align 1
+dtr_run_manifest "<output-dir>\<demo-name>\manifest.json" 0
 ```
 
 The last number is the starting round. Use `0` to start from round 0.
@@ -101,13 +103,13 @@ The last number is the starting round. Use `0` to start from round 0.
 To start from a specific round:
 
 ```text
-cs2bm_run_manifest "<output-dir>\<demo-name>\manifest.json" 12
+dtr_run_manifest "<output-dir>\<demo-name>\manifest.json" 12
 ```
 
 For a Mirage pool:
 
 ```text
-cs2bm_run_pool "<output-dir>\mirage_pool\pool_manifest.json" 0
+dtr_run_pool "<output-dir>\mirage_pool\pool_manifest.json" 0
 ```
 
 Round 0 and round 12 only match pistol-round candidates from demo round 0 or 12. Other rounds are matched by each side's current equipment value.
@@ -115,28 +117,28 @@ Round 0 and round 12 only match pistol-round candidates from demo round 0 or 12.
 Optional team setup:
 
 ```text
-team vitality spirit
-team vitality ct
-cs2bm_replay_identity 1
-cs2bm_teams
-cs2bm_team_reload
+dtr_team vitality spirit
+dtr_team vitality ct
+dtr_replay_identity 1
+dtr_teams
+dtr_team_reload
 ```
 
-`team <t-team> <ct-team>` adds named bots, team names, and team logos in one command. Put a custom `teams.json` next to the CSS plugin DLL to override the built-in examples; `css/teams.example.json` shows the format.
-`cs2bm_replay_identity 1` optionally asks BotHider to rename each loaded bot and use the replay manifest's real SteamID64.
+`dtr_team <t-team> <ct-team>` adds named bots, team names, and team logos in one command. Put a custom `teams.json` next to the CSS plugin DLL to override the built-in examples; `css/teams.example.json` shows the format.
+`dtr_replay_identity 1` optionally asks BotHider to rename each loaded bot and use the replay manifest's real SteamID64.
 
 Useful checks:
 
 ```text
 bc_status
-cs2bm_status 0
-cs2bm_bots
+dtr_status 0
+dtr_bots
 ```
 
 Stop playback:
 
 ```text
-cs2bm_stop_all
+dtr_stop_all
 ```
 
 ## Round Quality
@@ -157,14 +159,14 @@ For normal use, export the recommended rounds only.
 
 - Windows x64 local CS2 is the primary target.
 - The server should run the same map and have enough bots.
-- `.rec2` uses a lossless compressed BotController-compatible replay format. Full offline subtick/usercmd reconstruction is future work.
+- `.dtr` uses a lossless compressed BotController-compatible replay format. Full offline subtick/usercmd reconstruction is future work.
 - Some weapon/loadout details are still limited by CS2 slot behavior, especially default pistols.
 - This is for local servers, research, content creation, and plugin development. It is not intended for matchmaking or cheating.
 
 ## Developer Commands
 
 ```powershell
-cd cs2-demo-botmimic\converter
+cd cs2-demotracer\converter
 cargo test
 cargo run --release -- inspect --demo <demo.dem>
 cargo run --release -- convert --demo <demo.dem> --output <output-dir>
@@ -184,7 +186,7 @@ Thanks to:
 
 - [XBribo/CS2-Bot-Controller](https://github.com/XBribo/CS2-Bot-Controller): CS2 bot hooks, replay, recording, input injection, and weapon-locking ideas. This project uses the BotController runtime architecture.
 - [LaihoE/demoparser](https://github.com/LaihoE/demoparser): Rust CS2 demo parser used by the converter.
-- [csgowiki/minidemo-encoder](https://github.com/csgowiki/minidemo-encoder): inspiration for the demo-to-replay tooling workflow used in the CS:GO BotMimic/minidemo ecosystem.
+- [csgowiki/minidemo-encoder](https://github.com/csgowiki/minidemo-encoder): inspiration for the historical CS:GO demo-to-replay tooling workflow.
 - The Metamod:Source and CounterStrikeSharp communities.
 
 This project is licensed under GPL-3.0. See `NOTICE.md` and the vendored source folders for third-party license details.

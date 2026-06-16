@@ -1,12 +1,12 @@
 use crate::model::{
-    Cs2Rec, Cs2RecHeader, MovementSnapshot, ReplayTick, SubtickMove, CS2REC_VERSION,
+    Cs2Rec, Cs2RecHeader, MovementSnapshot, ReplayTick, SubtickMove, DTR_FORMAT_VERSION,
 };
 use crate::{io_error, Error, Result};
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Cursor, Read, Write};
 use std::path::Path;
 
-const MAGIC: &[u8; 8] = b"CS2BMREC";
+const MAGIC: &[u8; 8] = b"CSDTRREC";
 const CODEC_BROTLI: u8 = 1;
 const BROTLI_BUFFER_SIZE: usize = 4096;
 const BROTLI_QUALITY: u32 = 6;
@@ -36,7 +36,7 @@ pub fn write_rec<W: Write>(writer: &mut W, rec: &Cs2Rec) -> Result<()> {
     writer
         .write_all(MAGIC)
         .map_err(|e| Error::InvalidRec(e.to_string()))?;
-    write_u32(writer, CS2REC_VERSION)?;
+    write_u32(writer, DTR_FORMAT_VERSION)?;
     write_f32(writer, rec.header.tick_rate)?;
     write_u32(writer, rec.header.round)?;
     write_u8(writer, rec.header.side)?;
@@ -66,7 +66,7 @@ pub fn read_rec<R: Read>(reader: &mut R) -> Result<Cs2Rec> {
     }
 
     let version = read_u32(reader)?;
-    if version != CS2REC_VERSION {
+    if version != DTR_FORMAT_VERSION {
         return Err(Error::InvalidRec(format!("unsupported version {version}")));
     }
 
@@ -194,9 +194,7 @@ fn read_body(
         subticks.push(read_subtick(&mut reader)?);
     }
     if reader.position() != body.len() as u64 {
-        return Err(Error::InvalidRec(
-            "trailing bytes in .rec2 body".to_string(),
-        ));
+        return Err(Error::InvalidRec("trailing bytes in .dtr body".to_string()));
     }
     Ok((ticks, subticks))
 }
@@ -639,7 +637,7 @@ mod tests {
         };
         Cs2Rec {
             header: Cs2RecHeader {
-                version: CS2REC_VERSION,
+                version: DTR_FORMAT_VERSION,
                 tick_rate: 64.0,
                 map: "de_mirage".to_string(),
                 round: 7,
@@ -690,7 +688,7 @@ mod tests {
         let compressed = compress_body(body).unwrap();
         let mut bytes = Vec::new();
         bytes.write_all(MAGIC).unwrap();
-        write_u32(&mut bytes, CS2REC_VERSION).unwrap();
+        write_u32(&mut bytes, DTR_FORMAT_VERSION).unwrap();
         write_f32(&mut bytes, 64.0).unwrap();
         write_u32(&mut bytes, 7).unwrap();
         write_u8(&mut bytes, 2).unwrap();

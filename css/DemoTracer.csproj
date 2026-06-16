@@ -3,8 +3,8 @@
     <TargetFramework>net8.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <AssemblyName>Cs2DemoBotMimic</AssemblyName>
-    <RootNamespace>Cs2DemoBotMimic</RootNamespace>
+    <AssemblyName>DemoTracer</AssemblyName>
+    <RootNamespace>DemoTracer</RootNamespace>
   </PropertyGroup>
 
   <ItemGroup>

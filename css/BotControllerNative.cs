@@ -1,7 +1,7 @@
 using System.IO.Compression;
 using System.Runtime.InteropServices;
 
-namespace Cs2DemoBotMimic;
+namespace DemoTracer;
 
 internal static class BotControllerNative
 {
@@ -20,8 +20,8 @@ internal static class BotControllerNative
 
     private static readonly byte[] RecMagic =
     [
-        (byte)'C', (byte)'S', (byte)'2', (byte)'B',
-        (byte)'M', (byte)'R', (byte)'E', (byte)'C'
+        (byte)'C', (byte)'S', (byte)'D', (byte)'T',
+        (byte)'R', (byte)'R', (byte)'E', (byte)'C'
     ];
 
     [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
@@ -183,17 +183,20 @@ internal static class BotControllerNative
 
     private static ReplayFile ReadReplayFile(string path)
     {
+        if (!string.Equals(Path.GetExtension(path), ".dtr", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("expected .dtr replay file");
+
         using var stream = File.OpenRead(path);
         using var reader = new BinaryReader(stream);
 
         var magic = reader.ReadBytes(RecMagic.Length);
         if (!magic.SequenceEqual(RecMagic))
-            throw new InvalidDataException("bad .rec2 magic");
+            throw new InvalidDataException("bad .dtr magic");
 
         var version = reader.ReadUInt32();
         if (version != RecFormatVersion)
             throw new InvalidDataException(
-                $"unsupported .rec2 version {version}; expected {RecFormatVersion}");
+                $"unsupported .dtr version {version}; expected {RecFormatVersion}");
 
         _ = reader.ReadSingle(); // tick_rate
         _ = reader.ReadUInt32(); // round
@@ -207,7 +210,7 @@ internal static class BotControllerNative
 
         var codec = reader.ReadByte();
         if (codec != RecCodecBrotli)
-            throw new InvalidDataException($"unsupported .rec2 codec {codec}");
+            throw new InvalidDataException($"unsupported .dtr codec {codec}");
 
         var bodyUncompressedLength = CheckedLength(reader.ReadUInt64(), "body_uncompressed_len");
         var bodyCompressedLength = CheckedLength(reader.ReadUInt64(), "body_compressed_len");
@@ -217,7 +220,7 @@ internal static class BotControllerNative
 
         var compressed = reader.ReadBytes(bodyCompressedLength);
         if (compressed.Length != bodyCompressedLength)
-            throw new EndOfStreamException("truncated compressed .rec2 body");
+            throw new EndOfStreamException("truncated compressed .dtr body");
 
         var body = DecompressBrotli(compressed, bodyUncompressedLength);
         using var bodyStream = new MemoryStream(body, writable: false);
@@ -261,7 +264,7 @@ internal static class BotControllerNative
         }
 
         if (bodyStream.Position != bodyStream.Length)
-            throw new InvalidDataException("trailing bytes in .rec2 body");
+            throw new InvalidDataException("trailing bytes in .dtr body");
 
         return new ReplayFile(ticks, subticks);
     }
@@ -338,7 +341,7 @@ internal static class BotControllerNative
         var len = reader.ReadUInt16();
         var bytes = reader.ReadBytes(len);
         if (bytes.Length != len)
-            throw new EndOfStreamException("truncated string in .rec2");
+            throw new EndOfStreamException("truncated string in .dtr");
         return System.Text.Encoding.UTF8.GetString(bytes);
     }
 
