@@ -12,9 +12,12 @@ If this project helps you, please consider giving it a star. It makes the projec
 
 First-person spectator view stays synchronized while bots replay converted CS2 demo movement, view angles, firing, and weapon state.
 
-![First-person CS2 bot replay on Nuke](docs/media/first-person-replay-nuke.gif)
-
-[Watch the 720p/60fps MP4](docs/media/first-person-replay-nuke.mp4)
+<p align="center">
+  <img src="docs/media/first-person-replay-nuke.gif" alt="First-person CS2 bot replay on Nuke">
+</p>
+<p align="center">
+  <img src="docs/media/first-person-replay-route.gif" alt="First-person CS2 bot replay through an indoor route">
+</p>
 
 ## What It Does
 
