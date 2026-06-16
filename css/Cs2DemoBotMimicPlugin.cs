@@ -59,6 +59,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
     private HandoffMode _handoffMode = HandoffMode.DeathOrContact;
     private bool _handoffAllSlots;
     private bool _partialReplayEnabled = true;
+    private bool _replayIdentityEnabled;
 
     public override void Load(bool hotReload)
     {
@@ -391,6 +392,15 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         command.ReplyToCommand($"cs2bm: partial_replay={_partialReplayEnabled}");
     }
 
+    [ConsoleCommand("cs2bm_replay_identity", "cs2bm_replay_identity <0|1>")]
+    public void ReplayIdentityCommand(CCSPlayerController? player, CommandInfo command)
+    {
+        if (command.ArgCount >= 2)
+            _replayIdentityEnabled = command.GetArg(1) != "0";
+
+        command.ReplyToCommand($"cs2bm: replay_identity={ReplayIdentityModeName()}");
+    }
+
     [ConsoleCommand("cs2bm_load", "cs2bm_load <slot> <absolute-or-game-path.rec2>")]
     public void LoadCommand(CCSPlayerController? player, CommandInfo command)
     {
@@ -583,7 +593,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
             ? $" pool_next={_poolRoundIndex}"
             : string.Empty;
         command.ReplyToCommand(
-            $"cs2bm: abi={BotControllerNative.AbiVersion} slot={slot} playing={state.Playing} cursor={state.Cursor} total={state.Total} handoff={FormatHandoffMode(_handoffMode)} scope={(_handoffAllSlots ? "all" : "slot")} partial={_partialReplayEnabled}{sequence}{pool}");
+            $"cs2bm: abi={BotControllerNative.AbiVersion} slot={slot} playing={state.Playing} cursor={state.Cursor} total={state.Total} handoff={FormatHandoffMode(_handoffMode)} scope={(_handoffAllSlots ? "all" : "slot")} partial={_partialReplayEnabled} identity={ReplayIdentityModeName()}{sequence}{pool}");
     }
 
     [GameEventHandler]
@@ -974,24 +984,22 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
                     $"cs2bm: not enough bots, need T={allTFiles.Count}/CT={allCtFiles.Count}, have T={tBots.Count}/CT={ctBots.Count}");
             }
 
-            var tCount = Math.Min(allTFiles.Count, tBots.Count);
-            var ctCount = Math.Min(allCtFiles.Count, ctBots.Count);
-            if (tCount == 0 && ctCount == 0)
+            var tAssignments = BuildReplayAssignments(allTFiles, tBots);
+            var ctAssignments = BuildReplayAssignments(allCtFiles, ctBots);
+            if (tAssignments.Count == 0 && ctAssignments.Count == 0)
             {
                 return LoadRoundResult.Fail(
                     $"cs2bm: no safe bot targets, need T={allTFiles.Count}/CT={allCtFiles.Count}, have T={tBots.Count}/CT={ctBots.Count}");
             }
 
-            var tFiles = allTFiles.Take(tCount).ToList();
-            var ctFiles = allCtFiles.Take(ctCount).ToList();
-            var skippedT = allTFiles.Count - tFiles.Count;
-            var skippedCt = allCtFiles.Count - ctFiles.Count;
+            var skippedT = allTFiles.Count - tAssignments.Count;
+            var skippedCt = allCtFiles.Count - ctAssignments.Count;
 
             StopAndUnloadLoaded();
             var loaded = new List<string>();
-            if (!LoadSide(tFiles, tBots, manifestDir, loaded, out var loadError))
+            if (!LoadSide(tAssignments, manifestDir, loaded, out var loadError))
                 return LoadRoundResult.Fail($"cs2bm: failed while loading round {round}: {loadError}");
-            if (!LoadSide(ctFiles, ctBots, manifestDir, loaded, out loadError))
+            if (!LoadSide(ctAssignments, manifestDir, loaded, out loadError))
                 return LoadRoundResult.Fail($"cs2bm: failed while loading round {round}: {loadError}");
 
             var partial = skippedT > 0 || skippedCt > 0
@@ -1006,17 +1014,16 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
     }
 
     private bool LoadSide(
-        IReadOnlyList<ManifestFile> files,
-        IReadOnlyList<CCSPlayerController> bots,
+        IReadOnlyList<ReplayAssignment> assignments,
         string manifestDir,
         List<string> loaded,
         out string error)
     {
         error = string.Empty;
-        for (var i = 0; i < files.Count; i++)
+        foreach (var assignment in assignments)
         {
-            var file = files[i];
-            var bot = bots[i];
+            var file = assignment.File;
+            var bot = assignment.Bot;
             var slot = bot.Slot;
             var recPath = Path.IsPathRooted(file.Path)
                 ? file.Path
@@ -1033,11 +1040,57 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
                 slot,
                 recPath,
                 file.PlayerName,
+                file.SteamId,
                 file.FirstWeaponDefIndex ?? -1,
                 file.PreloadWeaponDefIndices);
+            TryApplyReplayIdentity(slot, file);
             loaded.Add($"{file.Side}:slot{slot}:{file.PlayerName}");
         }
         return true;
+    }
+
+    private static List<ReplayAssignment> BuildReplayAssignments(
+        IReadOnlyList<ManifestFile> files,
+        IReadOnlyList<CCSPlayerController> bots)
+    {
+        var count = Math.Min(files.Count, bots.Count);
+        var assignments = new List<ReplayAssignment>(count);
+        for (var i = 0; i < count; i++)
+            assignments.Add(new ReplayAssignment(files[i], bots[i]));
+        return assignments;
+    }
+
+    private void TryApplyReplayIdentity(int slot, ManifestFile file)
+    {
+        if (!_replayIdentityEnabled)
+            return;
+
+        if (file.SteamId == 0)
+        {
+            Server.PrintToConsole(
+                $"cs2bm: replay identity skipped slot={slot} player={file.PlayerName}: missing steam_id");
+            return;
+        }
+
+        if (!_botHiderProbe.IsAvailable())
+        {
+            Server.PrintToConsole(
+                $"cs2bm: replay identity skipped slot={slot} player={file.PlayerName}: BotHider unavailable");
+            return;
+        }
+
+        if (!_botHiderProbe.IsManagedBot(slot))
+        {
+            Server.PrintToConsole(
+                $"cs2bm: replay identity skipped slot={slot} player={file.PlayerName}: not a BotHider managed bot");
+            return;
+        }
+
+        if (!string.IsNullOrWhiteSpace(file.PlayerName))
+            Server.ExecuteCommand($"bh_setname {slot} \"{EscapeConsoleString(file.PlayerName)}\"");
+        Server.ExecuteCommand($"bh_setsid {slot} {file.SteamId}");
+        Server.PrintToConsole(
+            $"cs2bm: replay identity queued slot={slot} player={file.PlayerName} sid={file.SteamId}");
     }
 
     private string PlayLoaded(bool loop)
@@ -1253,6 +1306,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
         int slot,
         string path,
         string playerName,
+        ulong steamId = 0,
         int manifestFirstWeaponDefIndex = -1,
         IReadOnlyList<int>? manifestPreloadWeaponDefIndices = null)
     {
@@ -1265,7 +1319,7 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
             manifestPreloadWeaponDefIndices is { Count: > 0 }
                 ? manifestPreloadWeaponDefIndices
                 : scannedPreloadDefs);
-        _loadedReplays[slot] = new LoadedReplay(path, playerName, firstDef, preloadDefs);
+        _loadedReplays[slot] = new LoadedReplay(path, playerName, steamId, firstDef, preloadDefs);
         _lastEnsuredWeaponDef.Remove(slot);
         _lastReplayWeaponDef.Remove(slot);
         _lastLockedWeaponTarget.Remove(slot);
@@ -1982,6 +2036,9 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
             _ => "off"
         };
 
+    private string ReplayIdentityModeName()
+        => _replayIdentityEnabled ? "bothider" : "off";
+
     private static bool TryReadManifest(
         string manifestPath,
         out ConversionManifest manifest,
@@ -2070,8 +2127,11 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
     private readonly record struct LoadedReplay(
         string Path,
         string PlayerName,
+        ulong SteamId,
         int FirstWeaponDefIndex,
         int[] PreloadWeaponDefIndices);
+
+    private readonly record struct ReplayAssignment(ManifestFile File, CCSPlayerController Bot);
 
     private readonly record struct PendingWeaponAlign(int WeaponDefIndex, bool ForceSwitch);
 
@@ -2108,6 +2168,9 @@ public sealed class Cs2DemoBotMimicPlugin : BasePlugin
 
         private MemoryMappedFile? _memory;
         private MemoryMappedViewAccessor? _view;
+
+        public bool IsAvailable()
+            => TryConnect();
 
         public bool IsManagedBot(int slot)
         {

@@ -117,11 +117,13 @@ Optional team setup:
 ```text
 team vitality spirit
 team vitality ct
+cs2bm_replay_identity 1
 cs2bm_teams
 cs2bm_team_reload
 ```
 
 `team <t-team> <ct-team>` adds named bots, team names, and team logos in one command. Put a custom `teams.json` next to the CSS plugin DLL to override the built-in examples; `css/teams.example.json` shows the format.
+`cs2bm_replay_identity 1` optionally asks BotHider to rename each loaded bot and use the replay manifest's real SteamID64.
 
 Useful checks:
 
