@@ -165,6 +165,7 @@ pub struct Cs2Rec {
 pub struct ParsedDemo {
     pub path: String,
     pub stem: String,
+    pub demo_sha256: String,
     pub map: String,
     pub tick_rate: f32,
     pub round_freeze_end_ticks: Vec<i32>,
@@ -352,6 +353,8 @@ pub struct DemoAnalysis {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ConversionManifest {
     pub demo_path: String,
+    pub demo_id: String,
+    pub demo_sha256: String,
     pub map: String,
     pub tick_rate: f32,
     pub abi: i32,

@@ -1,3 +1,4 @@
+use crate::demo_id::{demo_id, unique_demo_id};
 use crate::demo_reader::read_demo;
 use crate::export::{export_demo, ConvertOptions};
 use crate::model::{RoundPoolCandidate, RoundPoolManifest, Side, SubtickMode, DEMOTRACER_ABI};
@@ -58,7 +59,8 @@ pub fn build_round_pool(options: &BuildPoolOptions) -> Result<BuildPoolReport> {
                     continue;
                 }
                 demos_matched += 1;
-                let demo_id = unique_demo_id(&parsed.stem, demo_path, &mut used_ids);
+                let base_demo_id = demo_id(&parsed.stem, &parsed.demo_sha256);
+                let demo_id = unique_demo_id(&base_demo_id, &mut used_ids);
                 let report = export_demo(
                     &parsed,
                     &ConvertOptions {
@@ -163,41 +165,4 @@ fn map_matches(actual: &str, expected: &str) -> bool {
     let actual = actual.trim().to_ascii_lowercase();
     let expected = expected.trim().to_ascii_lowercase();
     actual == expected || actual.strip_prefix("de_") == Some(expected.as_str())
-}
-
-fn unique_demo_id(stem: &str, path: &Path, used_ids: &mut BTreeSet<String>) -> String {
-    let base = slugify(stem);
-    let hash = fnv1a64(&path.to_string_lossy());
-    let mut id = format!("{base}_{hash:016x}");
-    let mut suffix = 2_u32;
-    while !used_ids.insert(id.clone()) {
-        id = format!("{base}_{hash:016x}_{suffix}");
-        suffix += 1;
-    }
-    id
-}
-
-fn slugify(value: &str) -> String {
-    let mut out = String::new();
-    for ch in value.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-            out.push(ch);
-        } else if ch.is_whitespace() {
-            out.push('_');
-        }
-    }
-    if out.is_empty() {
-        "demo".to_string()
-    } else {
-        out
-    }
-}
-
-fn fnv1a64(value: &str) -> u64 {
-    let mut hash = 0xcbf29ce484222325_u64;
-    for byte in value.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
 }

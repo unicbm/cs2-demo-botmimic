@@ -29,7 +29,7 @@ Plugin/runtime authors who only need to inspect replay fields can read the binar
 ## Who This Is For
 
 - People who want to replay pro match movement inside a local CS2 server.
-- People who prefer a simple GUI instead of command-line-only tooling.
+- People who want a simple PowerShell-friendly wizard.
 - Developers building CS2 route replay, bot playback, or demo analysis tooling.
 
 ## Requirements
@@ -41,34 +41,42 @@ Plugin/runtime authors who only need to inspect replay fields can read the binar
 
 Prebuilt packages are planned. For now, this development version is built locally.
 
-## Convert A Demo With The GUI
+## Quick Start With The Wizard
 
 Open PowerShell:
 
 ```powershell
 cd cs2-demotracer\converter
-cargo run --release -- gui
+cargo run --release -- wizard
 ```
 
-GUI flow:
+Packaged Windows releases use the same flow:
 
-1. Select a CS2 `.dem` file.
-2. Select an output folder.
-3. Click analyze rounds.
-4. Review the round table.
-5. Keep the recommended rounds selected.
-6. Export.
+```powershell
+cs2-demotracer.exe wizard
+```
 
-By default, exported replays stop before the C4 plant begins. This keeps the first version focused on opening routes; full-round export is still available from the CLI with `--full-round`.
+Wizard flow:
+
+1. Paste or type a CS2 `.dem` path.
+2. Choose an output folder. The default is `output`.
+3. Review the recommended and suspicious round summary.
+4. Press Enter to export recommended rounds, or type a comma/range list such as `0,1,5-8`.
+5. Choose whether to export full rounds, include suspicious rounds, limit by side, and keep subtick input on auto.
+6. Convert and validate the generated `.dtr` files.
+
+By default, exported replays stop before the C4 plant begins. This keeps the first version focused on opening routes; full-round export is available in the wizard and from the CLI with `--full-round`.
 
 The output looks like this:
 
 ```text
-output/<demo-name>/manifest.json
-output/<demo-name>/round00/t/<player>.dtr
-output/<demo-name>/round00/ct/<player>.dtr
-output/<demo-name>/round01/...
+output/<demo-id>/manifest.json
+output/<demo-id>/round00/t/<player>.dtr
+output/<demo-id>/round00/ct/<player>.dtr
+output/<demo-id>/round01/...
 ```
+
+`<demo-id>` is `<demo-stem>-<hash12>`, where `hash12` is derived from the demo file contents. This prevents repeated event/map names from overwriting each other.
 
 `manifest.json` is the easiest file to use for playback.
 
@@ -95,7 +103,7 @@ In the server console:
 ```text
 css_plugins reload DemoTracer
 dtr_weapon_align 1
-dtr_run_manifest "<output-dir>\<demo-name>\manifest.json" 0
+dtr_run_manifest "<output-dir>\<demo-id>\manifest.json" 0
 ```
 
 The last number is the starting round. Use `0` to start from round 0.
@@ -103,7 +111,7 @@ The last number is the starting round. Use `0` to start from round 0.
 To start from a specific round:
 
 ```text
-dtr_run_manifest "<output-dir>\<demo-name>\manifest.json" 12
+dtr_run_manifest "<output-dir>\<demo-id>\manifest.json" 12
 ```
 
 For a Mirage pool:
@@ -163,18 +171,20 @@ For normal use, export the recommended rounds only.
 - Some weapon/loadout details are still limited by CS2 slot behavior, especially default pistols.
 - This is for local servers, research, content creation, and plugin development. It is not intended for matchmaking or cheating.
 
-## Developer Commands
+## Advanced CLI
 
 ```powershell
 cd cs2-demotracer\converter
 cargo test
+cargo run --release -- wizard
 cargo run --release -- inspect --demo <demo.dem>
 cargo run --release -- convert --demo <demo.dem> --output <output-dir>
+cargo run --release -- validate --input <output-dir>
 ```
 
 Repository layout:
 
-- `converter/`: Rust GUI/CLI converter.
+- `converter/`: Rust CLI and prompt-style wizard converter.
 - `runtime/BotController/`: CS2 Metamod runtime.
 - `css/`: CounterStrikeSharp control plugin.
 - `docs/`: extra docs.

@@ -1,3 +1,4 @@
+pub mod demo_id;
 pub mod demo_reader;
 pub mod export;
 pub mod model;

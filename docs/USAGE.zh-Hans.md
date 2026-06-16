@@ -4,20 +4,21 @@
 
 ## 1. 转换 demo
 
-最推荐用 GUI：
+最推荐用向导：
 
 ```powershell
 cd cs2-demotracer\converter
-cargo run --release -- gui
+cargo run --release -- wizard
 ```
 
 流程：
 
-1. 选择 `.dem`。
-2. 选择输出目录。
-3. 分析回合。
-4. 保持默认勾选推荐回合。
-5. 导出。
+1. 输入或粘贴 `.dem` 路径。
+2. 选择输出目录，默认 `output`。
+3. 自动分析回合。
+4. 直接回车导出推荐回合，或输入指定回合列表。
+5. 选择是否整回合、是否允许可疑回合、导出哪一边、subtick 模式。
+6. 转换并自动校验 `.dtr`。
 
 默认会在 C4 开始安放前截断，只导出开局路线。CLI 需要整回合时加 `--full-round`。
 
@@ -28,6 +29,8 @@ manifest.json
 round00/t/*.dtr
 round00/ct/*.dtr
 ```
+
+实际输出目录名会是 `<demo-stem>-<hash12>`；`hash12` 来自 demo 文件内容，用来避免同名 demo 互相覆盖。
 
 播放整场或指定回合时，优先使用 `manifest.json`。
 
@@ -75,13 +78,13 @@ cargo run --release -- validate --input <输出目录>
 ```text
 css_plugins reload DemoTracer
 dtr_weapon_align 1
-dtr_run_manifest "<输出目录>\<demo名字>\manifest.json" 0
+dtr_run_manifest "<输出目录>\<demo-id>\manifest.json" 0
 ```
 
 从指定 round 开始：
 
 ```text
-dtr_run_manifest "<输出目录>\<demo名字>\manifest.json" 12
+dtr_run_manifest "<输出目录>\<demo-id>\manifest.json" 12
 ```
 
 使用 Mirage 回合池自动匹配经济：

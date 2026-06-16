@@ -1,3 +1,4 @@
+use crate::demo_id::demo_id;
 use crate::model::{
     ConversionManifest, ConvertedFile, ConvertedRound, EconomyClass, ParsedDemo, ParsedPlayerTick,
     Side, SubtickMode, TeamEconomy, DEMOTRACER_ABI, DTR_FORMAT_VERSION,
@@ -33,12 +34,17 @@ pub struct ConversionReport {
 
 pub fn export_demo(parsed: &ParsedDemo, options: &ConvertOptions) -> Result<ConversionReport> {
     let analysis = analyze_demo(parsed, options.analysis);
-    let output_stem = options.output_stem.as_deref().unwrap_or(&parsed.stem);
-    let root = options.output_dir.join(output_stem);
+    let output_stem = options
+        .output_stem
+        .clone()
+        .unwrap_or_else(|| demo_id(&parsed.stem, &parsed.demo_sha256));
+    let root = options.output_dir.join(&output_stem);
     fs::create_dir_all(&root).map_err(|e| io_error(&root, e))?;
 
     let mut manifest = ConversionManifest {
         demo_path: parsed.path.clone(),
+        demo_id: output_stem.clone(),
+        demo_sha256: parsed.demo_sha256.clone(),
         map: parsed.map.clone(),
         tick_rate: parsed.tick_rate,
         abi: DEMOTRACER_ABI,
@@ -49,8 +55,8 @@ pub fn export_demo(parsed: &ParsedDemo, options: &ConvertOptions) -> Result<Conv
     let mut log = Vec::new();
     let mut subtick_stats = SynthesisStats::default();
     log.push(format!(
-        "demo={} map={} tick_rate={:.3}",
-        parsed.path, parsed.map, parsed.tick_rate
+        "demo={} id={} sha256={} map={} tick_rate={:.3}",
+        parsed.path, output_stem, parsed.demo_sha256, parsed.map, parsed.tick_rate
     ));
 
     for round in &analysis.rounds {

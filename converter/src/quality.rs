@@ -463,6 +463,7 @@ mod tests {
         let parsed = ParsedDemo {
             path: "x.dem".to_string(),
             stem: "x".to_string(),
+            demo_sha256: "00".repeat(32),
             map: "de_test".to_string(),
             tick_rate: 64.0,
             round_freeze_end_ticks: Vec::new(),
@@ -486,6 +487,7 @@ mod tests {
         let parsed = ParsedDemo {
             path: "x.dem".to_string(),
             stem: "x".to_string(),
+            demo_sha256: "00".repeat(32),
             map: "de_test".to_string(),
             tick_rate: 64.0,
             round_freeze_end_ticks: Vec::new(),
@@ -531,6 +533,7 @@ mod tests {
         let parsed = ParsedDemo {
             path: "x.dem".to_string(),
             stem: "x".to_string(),
+            demo_sha256: "00".repeat(32),
             map: "de_test".to_string(),
             tick_rate: 64.0,
             round_freeze_end_ticks: Vec::new(),
@@ -559,6 +562,7 @@ mod tests {
         let parsed = ParsedDemo {
             path: "x.dem".to_string(),
             stem: "x".to_string(),
+            demo_sha256: "00".repeat(32),
             map: "de_test".to_string(),
             tick_rate: 64.0,
             round_freeze_end_ticks: vec![150],
@@ -594,6 +598,7 @@ mod tests {
         let parsed = ParsedDemo {
             path: "x.dem".to_string(),
             stem: "x".to_string(),
+            demo_sha256: "00".repeat(32),
             map: "de_test".to_string(),
             tick_rate: 64.0,
             round_freeze_end_ticks: vec![500, 2_000],
@@ -629,6 +634,7 @@ mod tests {
         let parsed = ParsedDemo {
             path: "x.dem".to_string(),
             stem: "x".to_string(),
+            demo_sha256: "00".repeat(32),
             map: "de_test".to_string(),
             tick_rate: 64.0,
             round_freeze_end_ticks: Vec::new(),

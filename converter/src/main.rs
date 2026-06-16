@@ -5,8 +5,10 @@ use cs2_demotracer::model::{Side, SubtickMode};
 use cs2_demotracer::pool::{build_round_pool, BuildPoolOptions};
 use cs2_demotracer::quality::{analyze_demo, AnalysisOptions};
 use cs2_demotracer::rec_writer::read_rec_file;
+use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::fmt::Display;
+use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
 #[command(name = "cs2-demotracer")]
@@ -18,12 +20,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Analyze a demo and print round quality.
     Inspect {
         #[arg(long)]
         demo: PathBuf,
         #[arg(long, default_value_t = 240.0)]
         max_round_seconds: f32,
     },
+    /// Convert many demos into a map-specific round pool.
     ConvertPool {
         #[arg(long)]
         demo_dir: PathBuf,
@@ -42,6 +46,7 @@ enum Command {
         #[arg(long, default_value_t = SubtickMode::Auto)]
         subticks: SubtickMode,
     },
+    /// Inspect per-player row coverage for one round.
     InspectRound {
         #[arg(long)]
         demo: PathBuf,
@@ -50,6 +55,7 @@ enum Command {
         #[arg(long, default_value_t = 240.0)]
         max_round_seconds: f32,
     },
+    /// Convert one demo into compressed .dtr files and a manifest.
     Convert {
         #[arg(long)]
         demo: PathBuf,
@@ -68,11 +74,15 @@ enum Command {
         #[arg(long, default_value_t = SubtickMode::Auto)]
         subticks: SubtickMode,
     },
+    /// Validate .dtr files under a file or directory.
     Validate {
         #[arg(long)]
         input: PathBuf,
     },
+    /// Run the interactive conversion wizard.
+    Wizard,
     #[cfg(feature = "gui")]
+    /// Run the experimental GUI build.
     Gui,
 }
 
@@ -225,18 +235,11 @@ fn run() -> cs2_demotracer::Result<()> {
             println!("pool manifest {}", report.manifest_path.display());
         }
         Command::Validate { input } => {
-            let mut count = 0_usize;
-            for path in collect_dtr_files(&input)? {
-                let rec = read_rec_file(&path)?;
-                if rec.ticks.is_empty() {
-                    return Err(cs2_demotracer::Error::InvalidRec(format!(
-                        "{} has no ticks",
-                        path.display()
-                    )));
-                }
-                count += 1;
-            }
+            let count = validate_dtr_path(&input)?;
             println!("validated {count} .dtr files");
+        }
+        Command::Wizard => {
+            run_wizard()?;
         }
         #[cfg(feature = "gui")]
         Command::Gui => {
@@ -244,6 +247,171 @@ fn run() -> cs2_demotracer::Result<()> {
         }
     }
     Ok(())
+}
+
+fn run_wizard() -> cs2_demotracer::Result<()> {
+    let theme = ColorfulTheme::default();
+    println!("CS2 DemoTracer wizard");
+    println!("Trace a CS2 .dem into compressed .dtr route replay files.\n");
+
+    let demo: String = Input::with_theme(&theme)
+        .with_prompt("Demo path")
+        .interact_text()
+        .map_err(dialog_error)?;
+    let demo = prompt_path(&demo);
+
+    let output: String = Input::with_theme(&theme)
+        .with_prompt("Output directory")
+        .default("output".to_string())
+        .interact_text()
+        .map_err(dialog_error)?;
+    let output = prompt_path(&output);
+
+    println!("\nAnalyzing {} ...", demo.display());
+    let parsed = read_demo(&demo)?;
+    let analysis = analyze_demo(&parsed, AnalysisOptions::default());
+    print_analysis_summary(&analysis);
+
+    let recommended_rounds: std::collections::BTreeSet<u32> = analysis
+        .rounds
+        .iter()
+        .filter(|round| round.recommended())
+        .map(|round| round.round)
+        .collect();
+    let default_rounds = format_round_list(&recommended_rounds);
+    let round_prompt = if default_rounds.is_empty() {
+        "Rounds to export (comma/ranges, e.g. 0,1,5-8)".to_string()
+    } else {
+        "Rounds to export (Enter = recommended)".to_string()
+    };
+    let rounds_input: String = Input::with_theme(&theme)
+        .with_prompt(round_prompt)
+        .default(default_rounds.clone())
+        .interact_text()
+        .map_err(dialog_error)?;
+    let selected_rounds = parse_wizard_rounds(&rounds_input, &recommended_rounds)?;
+
+    let include_suspicious = Confirm::with_theme(&theme)
+        .with_prompt("Allow suspicious rounds if selected")
+        .default(false)
+        .interact()
+        .map_err(dialog_error)?;
+    let full_round = Confirm::with_theme(&theme)
+        .with_prompt("Export full rounds instead of cutting before C4 plant")
+        .default(false)
+        .interact()
+        .map_err(dialog_error)?;
+
+    let side_idx = Select::with_theme(&theme)
+        .with_prompt("Side")
+        .items(&["both", "t", "ct"])
+        .default(0)
+        .interact()
+        .map_err(dialog_error)?;
+    let side = match side_idx {
+        1 => Side::T,
+        2 => Side::Ct,
+        _ => Side::Both,
+    };
+
+    let subtick_idx = Select::with_theme(&theme)
+        .with_prompt("Subtick input")
+        .items(&["auto", "off"])
+        .default(0)
+        .interact()
+        .map_err(dialog_error)?;
+    let subtick_mode = if subtick_idx == 1 {
+        SubtickMode::Off
+    } else {
+        SubtickMode::Auto
+    };
+
+    println!("\nConverting selected rounds ...");
+    let report = export_demo(
+        &parsed,
+        &ConvertOptions {
+            output_dir: output,
+            output_stem: None,
+            side,
+            selected_rounds: Some(selected_rounds),
+            include_suspicious,
+            cut_before_bomb_plant: !full_round,
+            subtick_mode,
+            analysis: AnalysisOptions::default(),
+        },
+    )?;
+
+    let validated = validate_dtr_path(&report.root)?;
+    println!("\nDone.");
+    println!("manifest {}", report.manifest_path.display());
+    println!(
+        "wrote {} .dtr files under {}",
+        report.files_written,
+        report.root.display()
+    );
+    println!("validated {validated} .dtr files");
+    Ok(())
+}
+
+fn prompt_path(input: &str) -> PathBuf {
+    PathBuf::from(input.trim().trim_matches('"').trim_matches('\''))
+}
+
+fn parse_wizard_rounds(
+    input: &str,
+    recommended_rounds: &std::collections::BTreeSet<u32>,
+) -> cs2_demotracer::Result<std::collections::BTreeSet<u32>> {
+    let trimmed = input.trim();
+    let rounds = if trimmed.is_empty() {
+        recommended_rounds.clone()
+    } else {
+        parse_round_list(trimmed)?
+    };
+    if rounds.is_empty() {
+        return Err(cs2_demotracer::Error::InvalidDemo(
+            "no rounds selected".to_string(),
+        ));
+    }
+    Ok(rounds)
+}
+
+fn format_round_list(rounds: &std::collections::BTreeSet<u32>) -> String {
+    rounds
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn print_analysis_summary(analysis: &cs2_demotracer::model::DemoAnalysis) {
+    println!(
+        "map={} tick_rate={:.1} rows={} rounds={}",
+        analysis.map,
+        analysis.tick_rate,
+        analysis.row_count,
+        analysis.rounds.len()
+    );
+    for round in &analysis.rounds {
+        println!(
+            "round {:02} {:?} T={} CT={} total={} {:.1}s rows={} {}",
+            round.round,
+            round.status,
+            round.t_players,
+            round.ct_players,
+            round.total_players,
+            round.duration_seconds,
+            round.valid_rows,
+            if round.problems.is_empty() {
+                "ok".to_string()
+            } else {
+                round.problems.join("; ")
+            }
+        );
+    }
+}
+
+fn dialog_error(err: impl Display) -> cs2_demotracer::Error {
+    cs2_demotracer::Error::InvalidDemo(format!("interactive prompt failed: {err}"))
 }
 
 #[derive(Default)]
@@ -362,6 +530,21 @@ fn collect_dtr_files(root: &PathBuf) -> cs2_demotracer::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     collect_recursively(root, &mut out)?;
     Ok(out)
+}
+
+fn validate_dtr_path(input: &Path) -> cs2_demotracer::Result<usize> {
+    let mut count = 0_usize;
+    for path in collect_dtr_files(&input.to_path_buf())? {
+        let rec = read_rec_file(&path)?;
+        if rec.ticks.is_empty() {
+            return Err(cs2_demotracer::Error::InvalidRec(format!(
+                "{} has no ticks",
+                path.display()
+            )));
+        }
+        count += 1;
+    }
+    Ok(count)
 }
 
 fn collect_recursively(path: &PathBuf, out: &mut Vec<PathBuf>) -> cs2_demotracer::Result<()> {

@@ -21,7 +21,8 @@ setups, local datasets, unrelated bot AI plugins, and legacy CS:GO codebases.
 
 ## Repository Layout
 
-- `converter/`: Rust GUI/CLI converter, package and CLI name `cs2-demotracer`.
+- `converter/`: Rust CLI and prompt-style wizard converter, package and CLI
+  name `cs2-demotracer`.
 - `css/`: CounterStrikeSharp control plugin, assembly/project name
   `DemoTracer`, and user-facing `dtr_` commands.
 - `runtime/BotController/`: CS2 Metamod runtime based on
@@ -32,7 +33,7 @@ setups, local datasets, unrelated bot AI plugins, and legacy CS:GO codebases.
 Keep module boundaries clear:
 
 - Rust converter owns demo parsing, round quality analysis, `.dtr` writing,
-  GUI, manifest generation, and pool generation.
+  the interactive wizard, manifest generation, and pool generation.
 - Metamod runtime owns CS2 hooks, replay buffers, movement injection, input
   injection, weapon locking, and C ABI exports.
 - CounterStrikeSharp plugin owns commands, manifest loading, bot-slot
@@ -61,7 +62,7 @@ Keep module boundaries clear:
 - Default conversion should prefer recommended rounds and avoid suspicious
   tail/garbage rounds.
 - Per-player export is one `.dtr` per player per round under
-  `output/<demo>/roundNN/t|ct/`.
+  `output/<demo-id>/roundNN/t|ct/`, where `<demo-id>` is content-hashed.
 - Do not silently include dead-player tail data. The current model exports
   alive rows inside the selected round window.
 - Preserve exact replay state. Do not use interpolation, quantization, or

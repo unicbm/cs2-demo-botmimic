@@ -25,7 +25,7 @@ bot 会回放从 CS2 demo 转换出的移动、视角、开火和武器状态；
 ## 适合谁
 
 - 想把职业比赛 demo 里的 10 人轨迹搬进本地 CS2 服务器。
-- 想用 GUI 点选 demo、分析回合、导出回放文件。
+- 想用简单向导选择 demo、分析回合、导出回放文件。
 - 想做 CS2 路线回放、bot playback 或 demo 分析工具。
 
 ## 你需要准备什么
@@ -37,34 +37,42 @@ bot 会回放从 CS2 demo 转换出的移动、视角、开火和武器状态；
 
 后面会尽量提供打包好的 exe 和插件包；当前开发版需要本地构建。
 
-## 第一步：用 GUI 转换 demo
+## 第一步：用向导转换 demo
 
 打开 PowerShell：
 
 ```powershell
 cd cs2-demotracer\converter
-cargo run --release -- gui
+cargo run --release -- wizard
 ```
 
-GUI 里按这个流程：
+打包好的 Windows 版本也是同一个入口：
 
-1. 选择一个 CS2 `.dem` 文件。
-2. 选择输出目录。
-3. 点击“分析回合”。
-4. 看表格里的回合人数、时长和问题说明。
-5. 默认勾选推荐回合即可。
-6. 点击导出。
+```powershell
+cs2-demotracer.exe wizard
+```
 
-默认导出的 rec 会在 C4 开始安放前截断，先专注“开局路线”。如果要整回合导出，CLI 可以加 `--full-round`。
+向导里按这个流程：
+
+1. 粘贴或输入 CS2 `.dem` 路径。
+2. 选择输出目录，默认是 `output`。
+3. 查看回合分析摘要。
+4. 直接回车导出推荐回合，或者输入 `0,1,5-8` 这样的回合列表。
+5. 选择是否导出整回合、是否允许可疑回合、是否只导出单边、subtick 是否保持 auto。
+6. 开始转换并自动校验生成的 `.dtr` 文件。
+
+默认导出的 replay 会在 C4 开始安放前截断，先专注“开局路线”。如果要整回合导出，向导里可以选择，CLI 也可以加 `--full-round`。
 
 导出后会生成类似这样的目录：
 
 ```text
-output/<demo名字>/manifest.json
-output/<demo名字>/round00/t/<玩家>.dtr
-output/<demo名字>/round00/ct/<玩家>.dtr
-output/<demo名字>/round01/...
+output/<demo-id>/manifest.json
+output/<demo-id>/round00/t/<玩家>.dtr
+output/<demo-id>/round00/ct/<玩家>.dtr
+output/<demo-id>/round01/...
 ```
+
+`<demo-id>` 是 `<demo-stem>-<hash12>`，其中 `hash12` 来自 demo 文件内容。这样即使不同赛事的文件名很像，也不会互相覆盖。
 
 `manifest.json` 是播放时最方便使用的入口文件。
 
@@ -91,7 +99,7 @@ cargo run --release -- convert-pool --demo-dir "<demo根目录>" --output "..\ou
 ```text
 css_plugins reload DemoTracer
 dtr_weapon_align 1
-dtr_run_manifest "<输出目录>\<demo名字>\manifest.json" 0
+dtr_run_manifest "<输出目录>\<demo-id>\manifest.json" 0
 ```
 
 含义：
@@ -103,7 +111,7 @@ dtr_run_manifest "<输出目录>\<demo名字>\manifest.json" 0
 如果只想测试某一回合，可以把最后的数字改成对应 round：
 
 ```text
-dtr_run_manifest "<输出目录>\<demo名字>\manifest.json" 12
+dtr_run_manifest "<输出目录>\<demo-id>\manifest.json" 12
 ```
 
 如果使用 Mirage 回合池：
@@ -170,13 +178,15 @@ dtr_stop_all
 ```powershell
 cd cs2-demotracer\converter
 cargo test
+cargo run --release -- wizard
 cargo run --release -- inspect --demo <demo.dem>
 cargo run --release -- convert --demo <demo.dem> --output <输出目录>
+cargo run --release -- validate --input <输出目录>
 ```
 
 目录：
 
-- `converter/`：Rust GUI/CLI 转换器。
+- `converter/`：Rust CLI 和 prompt-style 向导转换器。
 - `runtime/BotController/`：CS2 Metamod runtime。
 - `css/`：CounterStrikeSharp 控制插件。
 - `docs/`：格式和使用补充说明。

@@ -63,6 +63,7 @@ mod demoparser_impl {
         }
 
         let bytes = fs::read(path).map_err(|e| io_error(path, e))?;
+        let demo_sha256 = crate::demo_id::sha256_hex(&bytes);
         let huf = create_huffman_lookup_table();
         let settings = ParserInputs {
             real_name_to_og_name,
@@ -205,6 +206,7 @@ mod demoparser_impl {
         Ok(ParsedDemo {
             path: path.display().to_string(),
             stem,
+            demo_sha256,
             map,
             tick_rate,
             round_freeze_end_ticks,
