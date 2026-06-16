@@ -189,6 +189,9 @@ pub struct ParsedPlayerTick {
     pub pitch: f32,
     pub yaw: f32,
     pub buttons: u64,
+    pub buttonstate1: u64,
+    pub buttonstate2: u64,
+    pub buttonstate3: u64,
     pub item_def_idx: i32,
     pub inventory_as_ids: Vec<i32>,
     pub round_start_equip_value: u32,
@@ -206,7 +209,13 @@ impl ParsedPlayerTick {
         const FL_DUCKING: u32 = 1 << 1;
         const IN_DUCK: u64 = 1 << 2;
 
-        let ducking = (self.entity_flags & FL_DUCKING) != 0 || (self.buttons & IN_DUCK) != 0;
+        let (buttons, buttons1, buttons2) =
+            if self.buttonstate1 != 0 || self.buttonstate2 != 0 || self.buttonstate3 != 0 {
+                (self.buttonstate1, self.buttonstate2, self.buttonstate3)
+            } else {
+                (self.buttons, 0, 0)
+            };
+        let ducking = (self.entity_flags & FL_DUCKING) != 0 || (buttons & IN_DUCK) != 0;
         let duck_byte = u8::from(ducking);
 
         MovementSnapshot {
@@ -215,9 +224,9 @@ impl ParsedPlayerTick {
             angles: [self.pitch, self.yaw, 0.0],
             entity_flags: self.entity_flags,
             move_type: self.move_type,
-            buttons: self.buttons,
-            buttons1: 0,
-            buttons2: 0,
+            buttons,
+            buttons1,
+            buttons2,
             duck_amount: if ducking { 1.0 } else { 0.0 },
             duck_speed: if ducking { 8.0 } else { 0.0 },
             ladder_normal: [0.0, 0.0, 0.0],

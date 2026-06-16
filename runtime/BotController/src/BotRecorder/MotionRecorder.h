@@ -156,8 +156,8 @@ namespace BotController
         // ---- replay write hooks ----
         // ProcessMovement (pre): write pre snapshot into CMoveData + pawn angles + entity moveType
         void OnReplayPre(int slot, void *services, void *moveData);
-        // FinishMove (pre): write post snapshot into CMoveData + force
-        // scene-node origin resync (+1000 on Z).
+        // FinishMove (pre): write post snapshot into CMoveData + force a
+        // small scene-node mismatch so FinishMove resyncs from MoveData.
         void OnReplayFinishMove(int slot, void *services, void *moveData);
         // FinishMove (post): publish final post view before replay cursor advance.
         void OnReplayFinalView(int slot, void *services);

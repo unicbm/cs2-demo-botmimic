@@ -66,6 +66,7 @@ namespace BotController
 
         static constexpr float kSoftSnapDistance = 64.0f;
         static constexpr float kSoftSnapVerticalDistance = 48.0f;
+        static constexpr float kFinishMoveResyncNudgeZ = 1.0f;
 
         static bool ValidSlot(int s) { return s >= 0 && s < kMaxSlots; }
 
@@ -704,12 +705,18 @@ namespace BotController
             int cur = p.cursor.load(std::memory_order_relaxed);
             if (cur < 0 || cur >= total)
                 return false;
-            uint64_t heldNow = p.ticks[cur].pre.buttons;
-            // Previous tick's held mask; 0 before the first tick so the opening press registers as a fresh edge.
-            uint64_t heldPrev = (cur > 0) ? p.ticks[cur - 1].pre.buttons : 0;
-            b0 = heldNow;
-            b1 = heldNow & ~heldPrev; // pressed this tick
-            b2 = heldPrev & ~heldNow; // released this tick
+            const MovementSnapshot &pre = p.ticks[cur].pre;
+            b0 = pre.buttons;
+            b1 = pre.buttons1;
+            b2 = pre.buttons2;
+            if (b1 == 0 && b2 == 0)
+            {
+                // Older offline records only stored the held mask. Keep them
+                // playable by synthesizing edge masks from adjacent ticks.
+                uint64_t heldPrev = (cur > 0) ? p.ticks[cur - 1].pre.buttons : 0;
+                b1 = b0 & ~heldPrev;
+                b2 = heldPrev & ~b0;
+            }
             return true;
         }
 
@@ -1023,7 +1030,7 @@ namespace BotController
         }
 
         // FinishMove (pre): write post snapshot into CMoveData and force a
-        // scene-node origin resync (+1000 on Z).
+        // small scene-node origin mismatch so FinishMove resyncs from MoveData.
         void OnReplayFinishMove(int slot, void *services, void *moveData)
         {
             if (!ValidSlot(slot) || !services || !moveData)
@@ -1062,7 +1069,8 @@ namespace BotController
                     auto *n = reinterpret_cast<char *>(node);
                     *reinterpret_cast<float *>(n + tg::kNode_AbsOrigin + 0) = t.post.originX;
                     *reinterpret_cast<float *>(n + tg::kNode_AbsOrigin + 4) = t.post.originY;
-                    *reinterpret_cast<float *>(n + tg::kNode_AbsOrigin + 8) = t.post.originZ + 1000.0f;
+                    *reinterpret_cast<float *>(n + tg::kNode_AbsOrigin + 8) =
+                        t.post.originZ + kFinishMoveResyncNudgeZ;
                 }
             }
         }

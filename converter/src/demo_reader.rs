@@ -25,6 +25,9 @@ mod demoparser_impl {
             "pitch",
             "yaw",
             "buttons",
+            "usercmd_buttonstate_1",
+            "usercmd_buttonstate_2",
+            "usercmd_buttonstate_3",
             "item_def_idx",
             "inventory_as_ids",
             "round_start_equip_value",
@@ -137,6 +140,9 @@ mod demoparser_impl {
                 pitch: get_f32(&columns, "pitch", idx).unwrap_or_default(),
                 yaw: get_f32(&columns, "yaw", idx).unwrap_or_default(),
                 buttons: get_u64(&columns, "buttons", idx).unwrap_or_default(),
+                buttonstate1: get_u64(&columns, "usercmd_buttonstate_1", idx).unwrap_or_default(),
+                buttonstate2: get_u64(&columns, "usercmd_buttonstate_2", idx).unwrap_or_default(),
+                buttonstate3: get_u64(&columns, "usercmd_buttonstate_3", idx).unwrap_or_default(),
                 item_def_idx: get_i32(&columns, "item_def_idx", idx)
                     .or_else(|| get_u32(&columns, "item_def_idx", idx).map(|v| v as i32))
                     .unwrap_or(-1),
