@@ -68,6 +68,7 @@ cs2-demotracer.exe wizard
 ```text
 css_plugins reload DemoTracer
 dtr_weapon_align 1
+dtr_projectile_align 1
 dtr_run_manifest "<输出目录>\<demo-id>\manifest.json" 0
 ```
 

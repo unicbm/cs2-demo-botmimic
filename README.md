@@ -43,7 +43,7 @@ Plugin/runtime authors who only need to inspect replay fields can read the binar
 
 The converter is a standalone CLI executable. The playback plugins are only needed when loading generated `.dtr` files in CS2.
 
-If you only want to test plugin playback, download the pre-converted Mirage sample pack from the release assets: [`cs2-demotracer-sample-spirit-vs-falcons-m2-mirage-full.zip`](https://github.com/unicbm/cs2-demotracer/releases/download/v0.1.0/cs2-demotracer-sample-spirit-vs-falcons-m2-mirage-full.zip). Unzip it and run playback from the included `manifest.json`.
+If you only want to test plugin playback, download the pre-converted Mirage sample pack from the release assets: [`cs2-demotracer-sample-spirit-vs-falcons-m2-mirage-full.zip`](https://github.com/unicbm/cs2-demotracer/releases/download/v0.1.1/cs2-demotracer-sample-spirit-vs-falcons-m2-mirage-full.zip). Unzip it and run playback from the included `manifest.json`.
 
 ## Convert One Demo
 
@@ -114,6 +114,7 @@ In the server console:
 ```text
 css_plugins reload DemoTracer
 dtr_weapon_align 1
+dtr_projectile_align 1
 dtr_run_manifest "<output-dir>\<demo-id>\manifest.json" 0
 ```
 
@@ -165,7 +166,7 @@ For normal use, export the recommended rounds only.
 
 - Windows x64 local CS2 is the primary target.
 - The server should run the same map and have enough bots.
-- `.dtr` uses a lossless compressed BotController-compatible replay format. Full offline subtick/usercmd reconstruction is future work.
+- `.dtr` uses a lossless compressed BotController-compatible replay format with demo-derived projectile metadata for smoke alignment. Full offline subtick/usercmd reconstruction is future work.
 - Some weapon/loadout details are still limited by CS2 slot behavior, especially default pistols.
 - This is for local servers, research, content creation, and plugin development. It is not intended for matchmaking or cheating.
 
