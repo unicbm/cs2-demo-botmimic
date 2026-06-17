@@ -30,6 +30,10 @@ public sealed class DemoTracerPlugin : BasePlugin
     private const int BulletHandoffMinDamage = 10;
     private const int ProjectileAlignMatchAttempts = 8;
     private const int ProjectileAlignPostMatchWrites = 1;
+    private const float NadeClipStartSettleSeconds = 0.12f;
+    private const int NadeClipStartReadyRetries = 6;
+    private const float NadeCycleDefaultGapSeconds = 1.5f;
+    private const float NadeCycleMaxGapSeconds = 30.0f;
     private const int MaxPlayerSlots = 64;
     private static readonly string[] UtilityTraceColumns =
     [
@@ -114,6 +118,7 @@ public sealed class DemoTracerPlugin : BasePlugin
     private readonly Dictionary<int, PendingWeaponAlign> _pendingWeaponAlign = new();
     private readonly Dictionary<int, int> _projectileAlignNextBySlot = new();
     private readonly Dictionary<uint, PendingProjectileAlign> _pendingProjectileAlign = new();
+    private readonly Dictionary<int, int> _queuedNadeStartTokens = new();
     private readonly HashSet<int> _rebuiltInventorySlots = new();
     private readonly HashSet<int> _loadoutSyncedSlots = new();
     private readonly HashSet<int> _lastPlayingSlots = new();
@@ -148,6 +153,9 @@ public sealed class DemoTracerPlugin : BasePlugin
     private bool _handoffAllSlots;
     private bool _partialReplayEnabled = true;
     private bool _replayIdentityEnabled;
+    private int _nextNadeStartToken;
+    private NadeCycleState? _nadeCycle;
+    private int _nextNadeCycleToken;
 
     public override void Load(bool hotReload)
     {
@@ -419,6 +427,126 @@ public sealed class DemoTracerPlugin : BasePlugin
         command.ReplyToCommand(result.Message);
     }
 
+    [ConsoleCommand("dtr_list_nades", "dtr_list_nades <nade_manifest.json> [kind]")]
+    public void ListNadesCommand(CCSPlayerController? player, CommandInfo command)
+    {
+        if (command.ArgCount < 2)
+        {
+            command.ReplyToCommand("usage: dtr_list_nades <nade_manifest.json> [kind]");
+            return;
+        }
+
+        var manifestPath = command.GetArg(1);
+        if (!TryReadNadeManifest(manifestPath, out var manifest, out var error))
+        {
+            command.ReplyToCommand($"dtr: failed to read nade manifest: {error}");
+            return;
+        }
+
+        var kindFilter = command.ArgCount >= 3 ? command.GetArg(2) : string.Empty;
+        var clips = manifest.Clips
+            .Where(clip => NadeKindMatchesFilter(clip, kindFilter))
+            .OrderBy(clip => clip.Side, StringComparer.Ordinal)
+            .ThenBy(clip => clip.Phase, StringComparer.Ordinal)
+            .ThenBy(clip => clip.Kind, StringComparer.Ordinal)
+            .ThenBy(clip => clip.Round)
+            .ThenBy(clip => clip.ThrowTick)
+            .ToList();
+
+        command.ReplyToCommand($"dtr: nade clips {clips.Count}/{manifest.Clips.Count} map={manifest.Map}");
+        foreach (var clip in clips.Take(40))
+        {
+            command.ReplyToCommand(
+                $"dtr: {clip.ClipId} {clip.Side}/{clip.Phase}/{clip.Kind} round={clip.Round} player={clip.PlayerName} tick={clip.ThrowTick}");
+        }
+        if (clips.Count > 40)
+            command.ReplyToCommand($"dtr: ... {clips.Count - 40} more clips");
+    }
+
+    [ConsoleCommand("dtr_run_nade", "dtr_run_nade <nade_manifest.json> <clip_id> <slot> [loop:0|1]")]
+    public void RunNadeCommand(CCSPlayerController? player, CommandInfo command)
+    {
+        if (!CheckAbi(command))
+            return;
+        if (command.ArgCount < 4)
+        {
+            command.ReplyToCommand("usage: dtr_run_nade <nade_manifest.json> <clip_id> <slot> [loop:0|1]");
+            return;
+        }
+        if (!int.TryParse(command.GetArg(3), out var slot) || slot < 0)
+        {
+            command.ReplyToCommand("dtr: slot must be a non-negative integer");
+            return;
+        }
+
+        var manifestPath = command.GetArg(1);
+        var clipId = command.GetArg(2);
+        var loop = command.ArgCount >= 5 && command.GetArg(4) != "0";
+        var result = RunNadeClip(manifestPath, clipId, slot, loop);
+        command.ReplyToCommand(result.Message);
+    }
+
+    [ConsoleCommand("dtr_cycle_smokes", "dtr_cycle_smokes <nade_manifest.json> <slot> [t|ct|all] [combat|retake|all] [gap_seconds]")]
+    public void CycleSmokesCommand(CCSPlayerController? player, CommandInfo command)
+    {
+        RunNadeCycleCommand(command, "smoke", "dtr_cycle_smokes");
+    }
+
+    [ConsoleCommand("dtr_cycle_flashes", "dtr_cycle_flashes <nade_manifest.json> <slot> [t|ct|all] [combat|retake|all] [gap_seconds]")]
+    public void CycleFlashesCommand(CCSPlayerController? player, CommandInfo command)
+    {
+        RunNadeCycleCommand(command, "flash", "dtr_cycle_flashes");
+    }
+
+    [ConsoleCommand("dtr_cycle_he", "dtr_cycle_he <nade_manifest.json> <slot> [t|ct|all] [combat|retake|all] [gap_seconds]")]
+    public void CycleHeCommand(CCSPlayerController? player, CommandInfo command)
+    {
+        RunNadeCycleCommand(command, "he", "dtr_cycle_he");
+    }
+
+    [ConsoleCommand("dtr_cycle_fire", "dtr_cycle_fire <nade_manifest.json> <slot> [t|ct|all] [combat|retake|all] [gap_seconds]")]
+    public void CycleFireCommand(CCSPlayerController? player, CommandInfo command)
+    {
+        RunNadeCycleCommand(command, "molotov", "dtr_cycle_fire");
+    }
+
+    [ConsoleCommand("dtr_cycle_random_nades", "dtr_cycle_random_nades <nade_manifest.json> <slot> [t|ct|all] [combat|retake|all] [gap_seconds]")]
+    public void CycleRandomNadesCommand(CCSPlayerController? player, CommandInfo command)
+    {
+        RunNadeCycleCommand(command, "random", "dtr_cycle_random_nades");
+    }
+
+    private void RunNadeCycleCommand(CommandInfo command, string kindFilter, string commandName)
+    {
+        if (!CheckAbi(command))
+            return;
+        if (command.ArgCount < 3)
+        {
+            command.ReplyToCommand($"usage: {commandName} <nade_manifest.json> <slot> [t|ct|all] [combat|retake|all] [gap_seconds]");
+            return;
+        }
+        if (!int.TryParse(command.GetArg(2), out var slot) || slot < 0)
+        {
+            command.ReplyToCommand("dtr: slot must be a non-negative integer");
+            return;
+        }
+        if (!TryParseNadeCycleArgs(command, 3, commandName, out var sideFilter, out var phaseFilter, out var gapSeconds, out var parseError))
+        {
+            command.ReplyToCommand(parseError);
+            return;
+        }
+
+        var result = StartNadeCycle(command.GetArg(1), slot, kindFilter, sideFilter, phaseFilter, gapSeconds);
+        command.ReplyToCommand(result.Message);
+    }
+
+    [ConsoleCommand("dtr_stop_nade_cycle", "dtr_stop_nade_cycle")]
+    public void StopNadeCycleCommand(CCSPlayerController? player, CommandInfo command)
+    {
+        var stopped = StopNadeCycle("manual_stop_nade_cycle", stopCurrent: true);
+        command.ReplyToCommand(stopped ? "dtr: nade cycle stopped" : "dtr: no active nade cycle");
+    }
+
     [ConsoleCommand("dtr_arm_round", "dtr_arm_round <manifest.json> <round> [loop:0|1]")]
     public void ArmRoundCommand(CCSPlayerController? player, CommandInfo command)
     {
@@ -487,6 +615,8 @@ public sealed class DemoTracerPlugin : BasePlugin
             return;
         var ok = BotControllerNative.StopReplay(slot);
         ReleaseReplaySlot(slot, "manual_stop");
+        if (IsNadeCycleSlot(slot))
+            StopNadeCycle("manual_stop", stopCurrent: false);
         command.ReplyToCommand(ok
             ? $"dtr: stopped slot {slot}"
             : $"dtr: failed to stop slot {slot}");
@@ -495,6 +625,7 @@ public sealed class DemoTracerPlugin : BasePlugin
     [ConsoleCommand("dtr_stop_all", "dtr_stop_all")]
     public void StopAllCommand(CCSPlayerController? player, CommandInfo command)
     {
+        StopNadeCycle("manual_stop_all", stopCurrent: false);
         foreach (var slot in _loadedSlots.ToArray())
         {
             BotControllerNative.StopReplay(slot);
@@ -515,6 +646,7 @@ public sealed class DemoTracerPlugin : BasePlugin
         _pendingWeaponAlign.Clear();
         _projectileAlignNextBySlot.Clear();
         _pendingProjectileAlign.Clear();
+        _queuedNadeStartTokens.Clear();
         _rebuiltInventorySlots.Clear();
         _lastPlayingSlots.Clear();
         _replayStartedAt.Clear();
@@ -531,6 +663,8 @@ public sealed class DemoTracerPlugin : BasePlugin
         var ok = BotControllerNative.UnloadReplay(slot);
         if (ok)
         {
+            if (IsNadeCycleSlot(slot))
+                StopNadeCycle("manual_unload", stopCurrent: false);
             _loadedSlots.Remove(slot);
             _loadedReplays.Remove(slot);
             _lastEnsuredWeaponDef.Remove(slot);
@@ -665,7 +799,7 @@ public sealed class DemoTracerPlugin : BasePlugin
     [GameEventHandler]
     public HookResult OnGrenadeThrown(EventGrenadeThrown @event, GameEventInfo info)
     {
-        if (_utilityTraceEnabled)
+        if (_utilityTraceEnabled && _nadeCycle == null)
             TraceGrenadeThrown(@event);
 
         return HookResult.Continue;
@@ -674,7 +808,7 @@ public sealed class DemoTracerPlugin : BasePlugin
     [GameEventHandler]
     public HookResult OnSmokegrenadeDetonate(EventSmokegrenadeDetonate @event, GameEventInfo info)
     {
-        if (_utilityTraceEnabled)
+        if (_utilityTraceEnabled && _nadeCycle == null)
             TraceSmokeDetonate(@event);
 
         return HookResult.Continue;
@@ -683,7 +817,7 @@ public sealed class DemoTracerPlugin : BasePlugin
     [GameEventHandler]
     public HookResult OnSmokegrenadeExpired(EventSmokegrenadeExpired @event, GameEventInfo info)
     {
-        if (_utilityTraceEnabled)
+        if (_utilityTraceEnabled && _nadeCycle == null)
             TraceSmokeExpired(@event);
 
         return HookResult.Continue;
@@ -747,7 +881,7 @@ public sealed class DemoTracerPlugin : BasePlugin
     {
         ProcessPendingProjectileAlign();
 
-        if (_utilityTraceEnabled)
+        if (_utilityTraceEnabled && _nadeCycle == null)
             TraceUtilityTick();
 
         if (_loadedSlots.Count == 0)
@@ -759,7 +893,11 @@ public sealed class DemoTracerPlugin : BasePlugin
             if (!state.Playing)
             {
                 if (_lastPlayingSlots.Contains(slot))
+                {
                     ReleaseReplaySlot(slot, "replay_finished");
+                    if (IsNadeCycleSlot(slot))
+                        QueueNextNadeCycleClip("replay_finished");
+                }
                 continue;
             }
 
@@ -767,6 +905,8 @@ public sealed class DemoTracerPlugin : BasePlugin
             {
                 BotControllerNative.StopReplay(slot);
                 ReleaseReplaySlot(slot, "unsafe_replay_target");
+                if (IsNadeCycleSlot(slot))
+                    StopNadeCycle("unsafe_replay_target", stopCurrent: false);
                 continue;
             }
 
@@ -786,22 +926,28 @@ public sealed class DemoTracerPlugin : BasePlugin
             if (!hasReplayTick)
                 continue;
 
+            if (_loadedReplays.TryGetValue(slot, out var replay) && replay.UtilityOnly)
+            {
+                ApplyReplayWeaponPreset(slot, replay.UtilityWeaponDefIndex, allowSlotReplacement: false, force: true);
+                continue;
+            }
+
             ApplyReplayWeaponPreset(slot, tick.WeaponDefIndex, allowSlotReplacement: true, force: false);
         }
     }
 
     private void OnEntitySpawned(CEntityInstance entity)
     {
-        if (!IsSmokeProjectile(entity))
+        if (!TryGetProjectileKind(entity, out var kind, out var weaponDefIndex))
             return;
 
         try
         {
-            var projectile = new CSmokeGrenadeProjectile(entity.Handle);
+            var projectile = new CBaseCSGrenadeProjectile(entity.Handle);
             if (!projectile.IsValid)
                 return;
-            TrackProjectileAlignCandidate(projectile);
-            if (_utilityTraceEnabled)
+            TrackProjectileAlignCandidate(projectile, kind, weaponDefIndex);
+            if (_utilityTraceEnabled && _nadeCycle == null)
             {
                 _utilityTraceProjectiles[projectile.Index] =
                     new UtilityProjectileTrace(projectile.Index, entity.Handle, projectile.DesignerName);
@@ -810,17 +956,20 @@ public sealed class DemoTracerPlugin : BasePlugin
         }
         catch (Exception ex)
         {
-            if (_utilityTraceEnabled)
+            if (_utilityTraceEnabled && _nadeCycle == null)
                 TraceUtilityMessage("projectile_spawn_failed", ex.Message);
         }
     }
 
-    private void TrackProjectileAlignCandidate(CSmokeGrenadeProjectile projectile)
+    private void TrackProjectileAlignCandidate(
+        CBaseCSGrenadeProjectile projectile,
+        ReplayProjectileKind kind,
+        int weaponDefIndex)
     {
         if (!_projectileAlignEnabled)
             return;
 
-        var pending = new PendingProjectileAlign(projectile.Index, projectile.Handle)
+        var pending = new PendingProjectileAlign(projectile.Index, projectile.Handle, kind, weaponDefIndex)
         {
             MatchAttemptsRemaining = ProjectileAlignMatchAttempts,
             WritesRemaining = 0
@@ -840,7 +989,7 @@ public sealed class DemoTracerPlugin : BasePlugin
             var pending = entry.Value;
             try
             {
-                var projectile = new CSmokeGrenadeProjectile(pending.Handle);
+                var projectile = new CBaseCSGrenadeProjectile(pending.Handle);
                 if (!projectile.IsValid)
                 {
                     _pendingProjectileAlign.Remove(entry.Key);
@@ -870,17 +1019,24 @@ public sealed class DemoTracerPlugin : BasePlugin
             catch (Exception ex)
             {
                 _pendingProjectileAlign.Remove(entry.Key);
-                if (_utilityTraceEnabled)
+                if (_utilityTraceEnabled && _nadeCycle == null)
                     TraceUtilityMessage("projectile_align_failed", $"index={entry.Key} {ex.Message}");
             }
         }
     }
 
     private bool TryResolveAndApplyProjectileAlign(
-        CSmokeGrenadeProjectile projectile,
+        CBaseCSGrenadeProjectile projectile,
         PendingProjectileAlign pending)
     {
-        if (!_projectileAlignEnabled || !TryResolveProjectileAlign(projectile, out var slot, out var eventIndex, out var align))
+        if (!_projectileAlignEnabled ||
+            !TryResolveProjectileAlign(
+                projectile,
+                pending.Kind,
+                pending.WeaponDefIndex,
+                out var slot,
+                out var eventIndex,
+                out var align))
             return false;
 
         ApplyProjectileAlign(projectile, align);
@@ -892,7 +1048,7 @@ public sealed class DemoTracerPlugin : BasePlugin
         pending.WritesRemaining = ProjectileAlignPostMatchWrites;
         _pendingProjectileAlign[pending.Index] = pending;
 
-        if (_utilityTraceEnabled)
+        if (_utilityTraceEnabled && _nadeCycle == null)
         {
             TraceUtilityMessage(
                 "projectile_align",
@@ -902,7 +1058,9 @@ public sealed class DemoTracerPlugin : BasePlugin
     }
 
     private bool TryResolveProjectileAlign(
-        CSmokeGrenadeProjectile projectile,
+        CBaseCSGrenadeProjectile projectile,
+        ReplayProjectileKind kind,
+        int weaponDefIndex,
         out int slot,
         out int eventIndex,
         out ReplayProjectileEvent align)
@@ -921,7 +1079,7 @@ public sealed class DemoTracerPlugin : BasePlugin
             return false;
 
         var next = _projectileAlignNextBySlot.TryGetValue(slot, out var value) ? value : 0;
-        eventIndex = FindProjectileAlignEvent(replay.Projectiles, next, state.Cursor, ReplayProjectileKind.Smoke);
+        eventIndex = FindProjectileAlignEvent(replay.Projectiles, next, state.Cursor, kind, weaponDefIndex);
         if (eventIndex < 0)
             return false;
 
@@ -929,7 +1087,7 @@ public sealed class DemoTracerPlugin : BasePlugin
         return true;
     }
 
-    private static void ApplyProjectileAlign(CSmokeGrenadeProjectile projectile, ReplayProjectileEvent align)
+    private static void ApplyProjectileAlign(CBaseCSGrenadeProjectile projectile, ReplayProjectileEvent align)
     {
         SetVector(projectile.InitialPosition, align.InitialPosition);
         SetVector(projectile.InitialVelocity, align.InitialVelocity);
@@ -941,7 +1099,8 @@ public sealed class DemoTracerPlugin : BasePlugin
         IReadOnlyList<ReplayProjectileEvent> events,
         int start,
         int cursor,
-        ReplayProjectileKind kind)
+        ReplayProjectileKind kind,
+        int weaponDefIndex)
     {
         const int MaxCursorDistance = 96;
         var best = -1;
@@ -950,6 +1109,8 @@ public sealed class DemoTracerPlugin : BasePlugin
         {
             var candidate = events[i];
             if (candidate.Kind != kind)
+                continue;
+            if (!ProjectileWeaponDefMatches(kind, weaponDefIndex, candidate.WeaponDefIndex))
                 continue;
 
             var diff = Math.Abs((int)candidate.TickIndex - cursor);
@@ -965,7 +1126,25 @@ public sealed class DemoTracerPlugin : BasePlugin
         return bestDistance <= MaxCursorDistance ? best : -1;
     }
 
-    private static bool TryGetProjectileThrowerSlot(CSmokeGrenadeProjectile projectile, out int slot)
+    private static bool ProjectileWeaponDefMatches(
+        ReplayProjectileKind kind,
+        int liveWeaponDefIndex,
+        int replayWeaponDefIndex)
+    {
+        if (liveWeaponDefIndex <= 0 || replayWeaponDefIndex <= 0)
+            return true;
+        if (liveWeaponDefIndex == replayWeaponDefIndex)
+            return true;
+
+        // CS2 commonly exposes incendiary projectiles under the same molotov
+        // projectile class. Treat 46/48 as the same projectile kind for align,
+        // while still preparing the bot with the exact replay weapon def.
+        return kind == ReplayProjectileKind.Molotov &&
+               liveWeaponDefIndex is 46 or 48 &&
+               replayWeaponDefIndex is 46 or 48;
+    }
+
+    private static bool TryGetProjectileThrowerSlot(CBaseCSGrenadeProjectile projectile, out int slot)
     {
         slot = -1;
         var thrower = projectile.Thrower.Value;
@@ -1007,7 +1186,7 @@ public sealed class DemoTracerPlugin : BasePlugin
 
         try
         {
-            var projectile = new CSmokeGrenadeProjectile(tracked.Handle);
+            var projectile = new CBaseCSGrenadeProjectile(tracked.Handle);
             TraceProjectileEvent("projectile_deleted", projectile, tracked);
         }
         catch
@@ -1089,7 +1268,7 @@ public sealed class DemoTracerPlugin : BasePlugin
         {
             try
             {
-                var projectile = new CSmokeGrenadeProjectile(tracked.Handle);
+                var projectile = new CBaseCSGrenadeProjectile(tracked.Handle);
                 if (!projectile.IsValid)
                 {
                     _utilityTraceProjectiles.Remove(tracked.Index);
@@ -1229,15 +1408,18 @@ public sealed class DemoTracerPlugin : BasePlugin
 
     private void TraceProjectileEvent(
         string kind,
-        CSmokeGrenadeProjectile projectile,
+        CBaseCSGrenadeProjectile projectile,
         UtilityProjectileTrace? tracked)
     {
         var time = Server.CurrentTime;
+        var projectileName = SafeObject(() => projectile.DesignerName)?.ToString() ?? "";
         var origin = SafeVector(() => projectile.AbsOrigin);
         var absVelocity = SafeVector(() => projectile.AbsVelocity);
         var initialPosition = SafeVector(() => projectile.InitialPosition);
         var initialVelocity = SafeVector(() => projectile.InitialVelocity);
-        var smokeDetonationPosition = SafeVector(() => projectile.SmokeDetonationPos);
+        var smokeDetonationPosition = IsSmokeProjectileName(projectileName)
+            ? SafeVector(() => new CSmokeGrenadeProjectile(projectile.Handle).SmokeDetonationPos)
+            : TraceVector.Empty;
         var estimate = tracked?.EstimateVelocity(origin, time) ?? TraceVector.Empty;
         tracked?.Update(origin, time);
 
@@ -1245,7 +1427,7 @@ public sealed class DemoTracerPlugin : BasePlugin
             ("kind", kind),
             ("time", TimeField()),
             ("projectile_index", projectile.Index),
-            ("projectile_name", projectile.DesignerName),
+            ("projectile_name", projectileName),
             ("projectile_x", origin.X),
             ("projectile_y", origin.Y),
             ("projectile_z", origin.Z),
@@ -1266,6 +1448,73 @@ public sealed class DemoTracerPlugin : BasePlugin
             ("projectile_smoke_det_z", smokeDetonationPosition.Z),
             ("projectile_bounces", SafeObject(() => projectile.Bounces)),
             ("projectile_is_live", SafeObject(() => projectile.IsLive))
+        ));
+    }
+
+    private void TraceNadeStage(string kind, int slot, NadeClip clip, string message)
+    {
+        var state = BotControllerNative.GetReplayState(slot);
+        var hasTick = BotControllerNative.TryGetReplayTick(slot, out var tick);
+        var bot = Utilities.GetPlayerFromSlot(slot);
+        var pawn = bot?.PlayerPawn.Value;
+        var liveOrigin = SafeVector(() => pawn?.AbsOrigin);
+        var liveVelocity = SafeVector(() => pawn?.AbsVelocity);
+        var liveAngles = SafeQAngle(() => pawn?.EyeAngles);
+        var stashPosition = SafeVector(() => pawn?.StashedGrenadeThrowPosition);
+        var stashVelocity = SafeVector(() => pawn?.StashedVelocity);
+        var stashAngles = SafeQAngle(() => pawn?.StashedShootAngles);
+        var activeWeapon = ActiveWeaponName(pawn);
+        var activeDef = SafeObject(() => BotControllerNative.BotActiveWeaponDef(slot));
+        var clipSummary = string.IsNullOrWhiteSpace(clip.ClipId)
+            ? "clip=<unknown>"
+            : $"clip={clip.ClipId} side={clip.Side} phase={clip.Phase} kind={clip.Kind} round={clip.Round} throw_tick={clip.ThrowTick} def={clip.WeaponDefIndex} first_def={clip.FirstWeaponDefIndex}";
+        var fullMessage =
+            $"{clipSummary} active_def={activeDef} playing={state.Playing} cursor={state.Cursor}/{state.Total} {message}";
+
+        if (IsNadeCycleSlot(slot))
+            return;
+
+        Server.PrintToConsole($"dtr: nade_trace {kind} slot={slot} {fullMessage}");
+        TraceWrite(RowFields(
+            ("kind", kind),
+            ("time", TimeField()),
+            ("slot", slot),
+            ("player", bot?.PlayerName ?? clip.PlayerName),
+            ("steam_id", bot?.SteamID ?? clip.SteamId),
+            ("replay_cursor", state.Cursor),
+            ("replay_total", state.Total),
+            ("weapon_def", hasTick ? tick.WeaponDefIndex : clip.WeaponDefIndex),
+            ("live_weapon", activeWeapon),
+            ("live_x", liveOrigin.X),
+            ("live_y", liveOrigin.Y),
+            ("live_z", liveOrigin.Z),
+            ("live_vx", liveVelocity.X),
+            ("live_vy", liveVelocity.Y),
+            ("live_vz", liveVelocity.Z),
+            ("live_pitch", liveAngles.X),
+            ("live_yaw", liveAngles.Y),
+            ("replay_pre_x", hasTick ? tick.Pre.OriginX : null),
+            ("replay_pre_y", hasTick ? tick.Pre.OriginY : null),
+            ("replay_pre_z", hasTick ? tick.Pre.OriginZ : null),
+            ("replay_pre_vx", hasTick ? tick.Pre.VelX : null),
+            ("replay_pre_vy", hasTick ? tick.Pre.VelY : null),
+            ("replay_pre_vz", hasTick ? tick.Pre.VelZ : null),
+            ("replay_pre_pitch", hasTick ? tick.Pre.Pitch : null),
+            ("replay_pre_yaw", hasTick ? tick.Pre.Yaw : null),
+            ("replay_buttons", hasTick ? Hex(tick.Pre.Buttons) : null),
+            ("replay_buttons1", hasTick ? Hex(tick.Pre.Buttons1) : null),
+            ("replay_buttons2", hasTick ? Hex(tick.Pre.Buttons2) : null),
+            ("stash_set", SafeObject(() => pawn?.GrenadeParametersStashed.ToString())),
+            ("stash_time", SafeObject(() => pawn?.GrenadeParameterStashTime)),
+            ("stash_x", stashPosition.X),
+            ("stash_y", stashPosition.Y),
+            ("stash_z", stashPosition.Z),
+            ("stash_vx", stashVelocity.X),
+            ("stash_vy", stashVelocity.Y),
+            ("stash_vz", stashVelocity.Z),
+            ("stash_pitch", stashAngles.X),
+            ("stash_yaw", stashAngles.Y),
+            ("message", fullMessage)
         ));
     }
 
@@ -1293,12 +1542,61 @@ public sealed class DemoTracerPlugin : BasePlugin
         }
     }
 
-    private static bool IsSmokeProjectile(CEntityInstance entity)
+    private static bool TryGetProjectileKind(
+        CEntityInstance entity,
+        out ReplayProjectileKind kind,
+        out int weaponDefIndex)
     {
-        if (!entity.IsValid)
+        kind = ReplayProjectileKind.Unknown;
+        weaponDefIndex = -1;
+        if (!entity.IsValid || string.IsNullOrEmpty(entity.DesignerName))
             return false;
-        return entity.DesignerName.Contains("smokegrenade_projectile", StringComparison.OrdinalIgnoreCase);
+
+        var name = entity.DesignerName;
+        if (IsSmokeProjectileName(name))
+        {
+            kind = ReplayProjectileKind.Smoke;
+            weaponDefIndex = 45;
+            return true;
+        }
+        if (name.Contains("flashbang_projectile", StringComparison.OrdinalIgnoreCase))
+        {
+            kind = ReplayProjectileKind.Flash;
+            weaponDefIndex = 43;
+            return true;
+        }
+        if (name.Contains("hegrenade_projectile", StringComparison.OrdinalIgnoreCase) ||
+            name.Contains("he_grenade_projectile", StringComparison.OrdinalIgnoreCase))
+        {
+            kind = ReplayProjectileKind.He;
+            weaponDefIndex = 44;
+            return true;
+        }
+        if (name.Contains("incgrenade_projectile", StringComparison.OrdinalIgnoreCase) ||
+            name.Contains("incendiarygrenade_projectile", StringComparison.OrdinalIgnoreCase))
+        {
+            kind = ReplayProjectileKind.Molotov;
+            weaponDefIndex = 48;
+            return true;
+        }
+        if (name.Contains("molotov_projectile", StringComparison.OrdinalIgnoreCase))
+        {
+            kind = ReplayProjectileKind.Molotov;
+            weaponDefIndex = 46;
+            return true;
+        }
+        if (name.Contains("decoy_projectile", StringComparison.OrdinalIgnoreCase))
+        {
+            kind = ReplayProjectileKind.Decoy;
+            weaponDefIndex = 47;
+            return true;
+        }
+
+        return false;
     }
+
+    private static bool IsSmokeProjectileName(string name)
+        => name.Contains("smokegrenade_projectile", StringComparison.OrdinalIgnoreCase);
 
     private static string ActiveWeaponName(CCSPlayerPawn? pawn)
     {
@@ -1675,6 +1973,385 @@ public sealed class DemoTracerPlugin : BasePlugin
         return false;
     }
 
+    private LoadRoundResult RunNadeClip(string manifestPath, string clipId, int slot, bool loop)
+    {
+        try
+        {
+            if (!TryReadNadeManifest(manifestPath, out var manifest, out var readError))
+                return LoadRoundResult.Fail($"dtr: failed to read nade manifest: {readError}");
+
+            var clip = manifest.Clips.FirstOrDefault(item =>
+                string.Equals(item.ClipId, clipId, StringComparison.OrdinalIgnoreCase));
+            if (clip == null)
+                return LoadRoundResult.Fail($"dtr: nade clip not found: {clipId}");
+
+            return RunNadeClip(manifestPath, clip, slot, loop);
+        }
+        catch (Exception ex)
+        {
+            return LoadRoundResult.Fail($"dtr: failed to run nade clip: {ex.Message}");
+        }
+    }
+
+    private LoadRoundResult RunNadeClip(string manifestPath, NadeClip clip, int slot, bool loop)
+    {
+        try
+        {
+            if (!IsReplaySlotStillSafe(slot))
+                return LoadRoundResult.Fail($"dtr: refused to run nade on slot {slot}: not a safe bot target");
+
+            var recPath = ResolveManifestPath(manifestPath, clip.Path);
+            if (!File.Exists(recPath))
+                return LoadRoundResult.Fail($"dtr: nade clip file missing: {recPath}");
+            var utilityWeaponDefIndex = ChooseNadeClipUtilityWeaponDefIndex(clip);
+            if (!IsUtilityWeaponDefIndex(utilityWeaponDefIndex))
+            {
+                return LoadRoundResult.Fail(
+                    $"dtr: nade clip {clip.ClipId} has no valid utility weapon def (manifest={clip.WeaponDefIndex}, first={clip.FirstWeaponDefIndex})");
+            }
+
+            TraceNadeStage(
+                "nade_command",
+                slot,
+                clip,
+                $"loop={loop} target_def={utilityWeaponDefIndex} path=\"{recPath}\"");
+
+            if (_loadedSlots.Contains(slot) || BotControllerNative.GetReplayState(slot).Total > 0)
+            {
+                TraceNadeStage("nade_reload", slot, clip, "stopping previous replay before loading clip");
+                BotControllerNative.StopReplay(slot);
+                ReleaseReplaySlot(slot, "nade_reload");
+                BotControllerNative.UnloadReplay(slot);
+                _loadedSlots.Remove(slot);
+                ForgetLoadedReplayMetadata(slot);
+            }
+
+            if (!BotControllerNative.LoadReplayFromFile(slot, recPath))
+                return LoadRoundResult.Fail(
+                    $"dtr: failed to load nade clip {clip.ClipId} on slot {slot}: {BotControllerNative.LastLoadError}");
+
+            RememberLoadedSlot(slot);
+            TrackLoadedReplay(
+                slot,
+                recPath,
+                clip.PlayerName,
+                clip.SteamId,
+                utilityWeaponDefIndex,
+                new[] { utilityWeaponDefIndex },
+                null,
+                utilityOnly: true,
+                utilityWeaponDefIndex: utilityWeaponDefIndex);
+            TraceNadeStage("nade_loaded", slot, clip, "clip loaded and metadata tracked");
+            if (!PrepareNadeClipWeapon(slot, utilityWeaponDefIndex, out var weaponError))
+            {
+                TraceNadeStage("nade_prepare_failed", slot, clip, weaponError);
+                return LoadRoundResult.Fail($"dtr: failed to prepare nade weapon: {weaponError}");
+            }
+            TraceNadeStage("nade_prepare_ok", slot, clip, $"initial prepare completed target_def={utilityWeaponDefIndex}");
+
+            _pendingProjectileAlign.Clear();
+            var token = ++_nextNadeStartToken;
+            _queuedNadeStartTokens[slot] = token;
+            var settleUntilTime = Server.CurrentTime + NadeClipStartSettleSeconds;
+            TraceNadeStage(
+                "nade_queued",
+                slot,
+                clip,
+                $"token={token} target_def={utilityWeaponDefIndex} settle_seconds={F(NadeClipStartSettleSeconds)} ready_retries={NadeClipStartReadyRetries}");
+            QueueNadeClipStart(
+                slot,
+                token,
+                clip,
+                utilityWeaponDefIndex,
+                loop,
+                settleUntilTime,
+                NadeClipStartReadyRetries);
+            return LoadRoundResult.Success(
+                $"dtr: queued nade {clip.ClipId} slot={slot} {clip.Side}/{clip.Phase}/{clip.Kind} round={clip.Round} player={clip.PlayerName} loop={loop} start_delay_seconds={F(NadeClipStartSettleSeconds)}");
+        }
+        catch (Exception ex)
+        {
+            return LoadRoundResult.Fail($"dtr: failed to run nade clip: {ex.Message}");
+        }
+    }
+
+    private void QueueNadeClipStart(
+        int slot,
+        int token,
+        NadeClip clip,
+        int utilityWeaponDefIndex,
+        bool loop,
+        float settleUntilTime,
+        int readyRetriesRemaining)
+    {
+        if (!IsQueuedNadeStartCurrent(slot, token))
+            return;
+
+        var settleRemaining = settleUntilTime - Server.CurrentTime;
+        if (settleRemaining > 0.0f)
+        {
+            TraceNadeStage(
+                "nade_wait_settle",
+                slot,
+                clip,
+                $"token={token} settle_remaining={F(settleRemaining)} ready_retries={readyRetriesRemaining}");
+            Server.NextFrame(() =>
+                QueueNadeClipStart(
+                    slot,
+                    token,
+                    clip,
+                    utilityWeaponDefIndex,
+                    loop,
+                    settleUntilTime,
+                    readyRetriesRemaining));
+            return;
+        }
+
+        if (!IsReplaySlotStillSafe(slot))
+        {
+            FailQueuedNadeStart(slot, token, clip.ClipId, $"slot {slot} is not a safe bot target");
+            return;
+        }
+
+        if (!PrepareNadeClipWeapon(slot, utilityWeaponDefIndex, false, out var weaponError))
+        {
+            TraceNadeStage(
+                "nade_wait_ready",
+                slot,
+                clip,
+                $"token={token} target_def={utilityWeaponDefIndex} retries_remaining={readyRetriesRemaining} {weaponError}");
+            if (readyRetriesRemaining > 0)
+            {
+                Server.NextFrame(() =>
+                    QueueNadeClipStart(
+                        slot,
+                        token,
+                    clip,
+                    utilityWeaponDefIndex,
+                    loop,
+                    Server.CurrentTime,
+                    readyRetriesRemaining - 1));
+                return;
+            }
+
+            FailQueuedNadeStart(slot, token, clip.ClipId, $"weapon not ready: {weaponError}");
+            return;
+        }
+
+        TraceNadeStage("nade_ready", slot, clip, $"token={token} target_def={utilityWeaponDefIndex} starting next frame");
+        Server.NextFrame(() => StartQueuedNadeClip(slot, token, clip, loop));
+    }
+
+    private void StartQueuedNadeClip(int slot, int token, NadeClip clip, bool loop)
+    {
+        if (!IsQueuedNadeStartCurrent(slot, token))
+            return;
+
+        if (!IsReplaySlotStillSafe(slot))
+        {
+            FailQueuedNadeStart(slot, token, clip.ClipId, $"slot {slot} is not a safe bot target");
+            return;
+        }
+
+        if (!BotControllerNative.StartReplay(slot, loop))
+        {
+            var state = BotControllerNative.GetReplayState(slot);
+            FailQueuedNadeStart(
+                slot,
+                token,
+                clip.ClipId,
+                $"native start failed (cursor={state.Cursor}, total={state.Total})");
+            return;
+        }
+
+        _queuedNadeStartTokens.Remove(slot);
+        MarkReplayStarted(slot);
+        TraceNadeStage("nade_start_ok", slot, clip, $"loop={loop}");
+        Server.PrintToConsole(
+            $"dtr: playing nade {clip.ClipId} slot={slot} {clip.Side}/{clip.Phase}/{clip.Kind} round={clip.Round} player={clip.PlayerName} loop={loop}");
+    }
+
+    private bool IsQueuedNadeStartCurrent(int slot, int token)
+        => _queuedNadeStartTokens.TryGetValue(slot, out var current) && current == token;
+
+    private void FailQueuedNadeStart(int slot, int token, string clipId, string reason)
+    {
+        if (!IsQueuedNadeStartCurrent(slot, token))
+            return;
+
+        _queuedNadeStartTokens.Remove(slot);
+        BotControllerNative.StopReplay(slot);
+        ReleaseReplaySlot(slot, "nade_start_failed");
+        BotControllerNative.UnloadReplay(slot);
+        _loadedSlots.Remove(slot);
+        ForgetLoadedReplayMetadata(slot);
+        TraceNadeStage("nade_start_failed", slot, new NadeClip { ClipId = clipId }, reason);
+        Server.PrintToConsole($"dtr: failed to play nade {clipId} on slot {slot}: {reason}");
+        if (IsNadeCycleSlot(slot))
+            QueueNextNadeCycleClip("nade_start_failed");
+    }
+
+    private LoadRoundResult StartNadeCycle(
+        string manifestPath,
+        int slot,
+        string kindFilter,
+        string sideFilter,
+        string phaseFilter,
+        float gapSeconds)
+    {
+        try
+        {
+            if (!TryReadNadeManifest(manifestPath, out var manifest, out var readError))
+                return LoadRoundResult.Fail($"dtr: failed to read nade manifest: {readError}");
+            if (!IsReplaySlotStillSafe(slot))
+                return LoadRoundResult.Fail($"dtr: refused to cycle {kindFilter}s on slot {slot}: not a safe bot target");
+
+            var clips = manifest.Clips
+                .Where(clip => NadeCycleKindMatches(clip, kindFilter))
+                .Where(clip => NadeCycleSideMatches(clip, sideFilter))
+                .Where(clip => NadeCyclePhaseMatches(clip, phaseFilter))
+                .OrderBy(clip => clip.Side, StringComparer.Ordinal)
+                .ThenBy(clip => clip.Phase, StringComparer.Ordinal)
+                .ThenBy(clip => clip.Round)
+                .ThenBy(clip => clip.ThrowTick)
+                .ThenBy(clip => clip.ClipId, StringComparer.Ordinal)
+                .ToList();
+            if (NadeCycleIsRandom(kindFilter))
+                clips = clips.OrderBy(_ => Guid.NewGuid()).ToList();
+            if (clips.Count == 0)
+            {
+                return LoadRoundResult.Fail(
+                    $"dtr: {kindFilter} cycle has no clips for side={sideFilter} phase={phaseFilter}");
+            }
+
+            var disabledTrace = _utilityTraceEnabled;
+            if (disabledTrace)
+                StopUtilityTrace();
+            StopNadeCycle($"new_{kindFilter}_cycle", stopCurrent: true);
+            var token = ++_nextNadeCycleToken;
+            _nadeCycle = new NadeCycleState(
+                token,
+                Path.GetFullPath(manifestPath),
+                clips,
+                slot,
+                kindFilter,
+                sideFilter,
+                phaseFilter,
+                gapSeconds);
+            Server.PrintToConsole(
+                $"dtr: {kindFilter} cycle start clips={clips.Count} slot={slot} side={sideFilter} phase={phaseFilter} gap={F(gapSeconds)}s trace={(disabledTrace ? "disabled" : "off")}");
+            StartCurrentNadeCycleClip("cycle_start");
+            return LoadRoundResult.Success(
+                $"dtr: {kindFilter} cycle queued clips={clips.Count} slot={slot} side={sideFilter} phase={phaseFilter} gap={F(gapSeconds)}s");
+        }
+        catch (Exception ex)
+        {
+            return LoadRoundResult.Fail($"dtr: failed to start {kindFilter} cycle: {ex.Message}");
+        }
+    }
+
+    private void StartCurrentNadeCycleClip(string reason)
+    {
+        var cycle = _nadeCycle;
+        if (cycle == null || !IsNadeCycleCurrent(cycle.Token))
+            return;
+        if (cycle.Index >= cycle.Clips.Count)
+        {
+            CompleteNadeCycle("complete");
+            return;
+        }
+        if (!IsReplaySlotStillSafe(cycle.Slot))
+        {
+            StopNadeCycle("unsafe_cycle_target", stopCurrent: false);
+            return;
+        }
+
+        var clip = cycle.Clips[cycle.Index];
+        var displayIndex = cycle.Index + 1;
+        cycle.Index++;
+        cycle.Waiting = false;
+        Server.PrintToConsole(
+            $"dtr: {cycle.KindFilter} cycle {displayIndex}/{cycle.Clips.Count} slot={cycle.Slot} kind={clip.Kind} clip={clip.ClipId} {clip.Side}/{clip.Phase} round={clip.Round} player={clip.PlayerName} tick={clip.ThrowTick} reason={reason}");
+        var result = RunNadeClip(cycle.ManifestPath, clip, cycle.Slot, loop: false);
+        if (!result.Ok)
+        {
+            Server.PrintToConsole($"dtr: {cycle.KindFilter} cycle clip failed: {result.Message}");
+            QueueNextNadeCycleClip("clip_load_failed");
+        }
+    }
+
+    private void QueueNextNadeCycleClip(string reason)
+    {
+        var cycle = _nadeCycle;
+        if (cycle == null || !IsNadeCycleCurrent(cycle.Token))
+            return;
+        if (cycle.Waiting)
+            return;
+        if (cycle.Index >= cycle.Clips.Count)
+        {
+            CompleteNadeCycle(reason);
+            return;
+        }
+
+        cycle.Waiting = true;
+        var startTime = Server.CurrentTime + cycle.GapSeconds;
+        Server.PrintToConsole(
+            $"dtr: {cycle.KindFilter} cycle wait gap={F(cycle.GapSeconds)}s next={cycle.Index + 1}/{cycle.Clips.Count} reason={reason}");
+        Server.NextFrame(() => ContinueNadeCycleAfterGap(cycle.Token, startTime));
+    }
+
+    private void ContinueNadeCycleAfterGap(int token, float startTime)
+    {
+        var cycle = _nadeCycle;
+        if (cycle == null || cycle.Token != token)
+            return;
+        if (Server.CurrentTime < startTime)
+        {
+            Server.NextFrame(() => ContinueNadeCycleAfterGap(token, startTime));
+            return;
+        }
+
+        StartCurrentNadeCycleClip("gap_elapsed");
+    }
+
+    private bool StopNadeCycle(string reason, bool stopCurrent)
+    {
+        var cycle = _nadeCycle;
+        if (cycle == null)
+            return false;
+
+        _nadeCycle = null;
+        _nextNadeCycleToken++;
+        if (stopCurrent)
+        {
+            BotControllerNative.StopReplay(cycle.Slot);
+            ReleaseReplaySlot(cycle.Slot, reason);
+            BotControllerNative.UnloadReplay(cycle.Slot);
+            _loadedSlots.Remove(cycle.Slot);
+            ForgetLoadedReplayMetadata(cycle.Slot);
+        }
+        Server.PrintToConsole(
+            $"dtr: {cycle.KindFilter} cycle stopped reason={reason} played={cycle.Index}/{cycle.Clips.Count} slot={cycle.Slot}");
+        return true;
+    }
+
+    private void CompleteNadeCycle(string reason)
+    {
+        var cycle = _nadeCycle;
+        if (cycle == null)
+            return;
+        _nadeCycle = null;
+        _nextNadeCycleToken++;
+        Server.PrintToConsole(
+            $"dtr: {cycle.KindFilter} cycle complete reason={reason} played={cycle.Index}/{cycle.Clips.Count} slot={cycle.Slot}");
+    }
+
+    private bool IsNadeCycleCurrent(int token)
+        => _nadeCycle is { } cycle && cycle.Token == token;
+
+    private bool IsNadeCycleSlot(int slot)
+        => _nadeCycle is { } cycle && cycle.Slot == slot;
+
     private LoadRoundResult LoadRound(string manifestPath, int round)
     {
         try
@@ -1831,6 +2508,11 @@ public sealed class DemoTracerPlugin : BasePlugin
                 continue;
             if (_loadedReplays.TryGetValue(slot, out var replay))
             {
+                if (replay.UtilityOnly)
+                {
+                    PrepareNadeClipWeapon(slot, replay.UtilityWeaponDefIndex, out _);
+                    continue;
+                }
                 ApplyReplayLoadoutForSlot(slot, replay);
                 PreloadReplayWeaponsForSlot(slot, replay);
             }
@@ -1863,6 +2545,7 @@ public sealed class DemoTracerPlugin : BasePlugin
 
     private void StopAndUnloadLoaded()
     {
+        StopNadeCycle("unload_all", stopCurrent: false);
         foreach (var slot in _loadedSlots.ToArray())
         {
             BotControllerNative.StopReplay(slot);
@@ -1877,6 +2560,7 @@ public sealed class DemoTracerPlugin : BasePlugin
         _pendingWeaponAlign.Clear();
         _projectileAlignNextBySlot.Clear();
         _pendingProjectileAlign.Clear();
+        _queuedNadeStartTokens.Clear();
         _rebuiltInventorySlots.Clear();
         _loadoutSyncedSlots.Clear();
         _lastPlayingSlots.Clear();
@@ -1897,6 +2581,8 @@ public sealed class DemoTracerPlugin : BasePlugin
 
     private void ReleaseReplaySlot(int slot, string reason)
     {
+        if (_loadedReplays.TryGetValue(slot, out var releasedReplay) && releasedReplay.UtilityOnly)
+            _pendingProjectileAlign.Clear();
         _lastPlayingSlots.Remove(slot);
         _replayStartedAt.Remove(slot);
         _lastEnsuredWeaponDef.Remove(slot);
@@ -1904,6 +2590,7 @@ public sealed class DemoTracerPlugin : BasePlugin
         _lastLockedWeaponTarget.Remove(slot);
         _pendingWeaponAlign.Remove(slot);
         _projectileAlignNextBySlot.Remove(slot);
+        _queuedNadeStartTokens.Remove(slot);
         _rebuiltInventorySlots.Remove(slot);
         _loadoutSyncedSlots.Remove(slot);
         _pendingBulletHits.Remove(slot);
@@ -2154,6 +2841,7 @@ public sealed class DemoTracerPlugin : BasePlugin
         _lastReplayWeaponDef.Remove(slot);
         _lastLockedWeaponTarget.Remove(slot);
         _pendingWeaponAlign.Remove(slot);
+        _queuedNadeStartTokens.Remove(slot);
         _rebuiltInventorySlots.Remove(slot);
     }
 
@@ -2164,7 +2852,9 @@ public sealed class DemoTracerPlugin : BasePlugin
         ulong steamId = 0,
         int manifestFirstWeaponDefIndex = -1,
         IReadOnlyList<int>? manifestPreloadWeaponDefIndices = null,
-        ReplayLoadoutSnapshot? loadout = null)
+        ReplayLoadoutSnapshot? loadout = null,
+        bool utilityOnly = false,
+        int utilityWeaponDefIndex = -1)
     {
         TryReadWeaponPlan(path, out var scannedFirstDef, out var scannedPreloadDefs);
         _ = BotControllerNative.TryReadReplayProjectiles(path, out var projectiles);
@@ -2185,7 +2875,9 @@ public sealed class DemoTracerPlugin : BasePlugin
             preloadDefs,
             hasLoadout,
             NormalizeReplayLoadout(loadout ?? new ReplayLoadoutSnapshot()),
-            projectiles.ToArray());
+            projectiles.ToArray(),
+            utilityOnly,
+            NormalizeWeaponDefIndex(utilityWeaponDefIndex));
         _lastEnsuredWeaponDef.Remove(slot);
         _lastReplayWeaponDef.Remove(slot);
         _lastLockedWeaponTarget.Remove(slot);
@@ -2246,6 +2938,45 @@ public sealed class DemoTracerPlugin : BasePlugin
             ApplyReplayWeaponPreset(slot, ChooseStartWeaponDef(replay), true, true);
 
         _loadoutSyncedSlots.Add(slot);
+    }
+
+    private bool PrepareNadeClipWeapon(int slot, int weaponDefIndex, out string error)
+        => PrepareNadeClipWeapon(slot, weaponDefIndex, allowGive: true, out error);
+
+    private bool PrepareNadeClipWeapon(int slot, int weaponDefIndex, bool allowGive, out string error)
+    {
+        error = string.Empty;
+        var normalized = NormalizeWeaponDefIndex(weaponDefIndex);
+        if (!IsUtilityWeaponDefIndex(normalized))
+        {
+            error = $"weapon def {weaponDefIndex} is not a grenade";
+            return false;
+        }
+
+        var player = Utilities.GetPlayerFromSlot(slot);
+        if (player is not { IsValid: true } ||
+            player.PlayerPawn is not { IsValid: true, Value.IsValid: true })
+        {
+            error = $"slot {slot} is not a valid bot";
+            return false;
+        }
+
+        if (!TryEnsureReplayWeapon(
+                player,
+                normalized,
+                allowGive,
+                replaceConflictingSlot: false,
+                out var className))
+        {
+            error = allowGive ? $"could not ensure {normalized}" : $"weapon {normalized} is not present yet";
+            return false;
+        }
+
+        BotControllerNative.SwitchBotWeapon(slot, normalized);
+        _lastEnsuredWeaponDef[slot] = normalized;
+        _lastReplayWeaponDef[slot] = normalized;
+        Server.PrintToConsole($"dtr: prepared nade slot={slot} def={normalized} item={className}");
+        return true;
     }
 
     private static void ApplyReplayArmorAndKit(
@@ -2675,6 +3406,14 @@ public sealed class DemoTracerPlugin : BasePlugin
         if (pawn.WeaponServices == null)
             return false;
 
+        var activeWeapon = pawn.WeaponServices.ActiveWeapon.Value;
+        if (activeWeapon != null &&
+            activeWeapon.IsValid &&
+            WeaponClassMatches(activeWeapon.DesignerName, className))
+        {
+            return true;
+        }
+
         foreach (var handle in pawn.WeaponServices.MyWeapons)
         {
             var weapon = handle.Value;
@@ -2829,6 +3568,40 @@ public sealed class DemoTracerPlugin : BasePlugin
         return slot is not ReplayWeaponSlot.Other
             and not ReplayWeaponSlot.Knife
             and not ReplayWeaponSlot.C4;
+    }
+
+    private static bool IsUtilityWeaponDefIndex(int weaponDefIndex)
+    {
+        if (!TryGetWeaponClassByDefIndex(weaponDefIndex, out var className))
+            return false;
+        return GetReplayWeaponSlot(className) == ReplayWeaponSlot.Utility;
+    }
+
+    private static int ChooseNadeClipUtilityWeaponDefIndex(NadeClip clip)
+    {
+        var first = NormalizeWeaponDefIndex(clip.FirstWeaponDefIndex);
+        if (IsUtilityWeaponDefIndex(first) && NadeWeaponDefMatchesKind(clip.Kind, first))
+            return first;
+
+        var manifest = NormalizeWeaponDefIndex(clip.WeaponDefIndex);
+        if (IsUtilityWeaponDefIndex(manifest))
+            return manifest;
+
+        return first;
+    }
+
+    private static bool NadeWeaponDefMatchesKind(string kind, int weaponDefIndex)
+    {
+        var normalized = NormalizeWeaponDefIndex(weaponDefIndex);
+        return kind.Trim().ToLowerInvariant() switch
+        {
+            "flash" => normalized == 43,
+            "he" => normalized == 44,
+            "smoke" => normalized == 45,
+            "molotov" => normalized is 46 or 48,
+            "decoy" => normalized == 47,
+            _ => true
+        };
     }
 
     private static int WeaponDefIndex(string className)
@@ -3294,6 +4067,144 @@ public sealed class DemoTracerPlugin : BasePlugin
         }
     }
 
+    private static bool TryReadNadeManifest(
+        string manifestPath,
+        out NadeManifest manifest,
+        out string error)
+    {
+        manifest = new NadeManifest();
+        error = string.Empty;
+        try
+        {
+            manifest = JsonSerializer.Deserialize<NadeManifest>(
+                           ReadMaybeBrotliText(manifestPath),
+                           new JsonSerializerOptions
+                           {
+                               PropertyNameCaseInsensitive = true
+                           })
+                       ?? throw new InvalidOperationException("nade manifest JSON is empty");
+            return true;
+        }
+        catch (FileNotFoundException)
+        {
+            error = $"file not found: {manifestPath}";
+            return false;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    private static string ReadMaybeBrotliText(string path)
+    {
+        if (!path.EndsWith(".br", StringComparison.OrdinalIgnoreCase))
+            return File.ReadAllText(path);
+
+        using var input = File.OpenRead(path);
+        using var brotli = new BrotliStream(input, CompressionMode.Decompress);
+        using var reader = new StreamReader(brotli);
+        return reader.ReadToEnd();
+    }
+
+    private static string ResolveManifestPath(string manifestPath, string childPath)
+    {
+        if (Path.IsPathRooted(childPath))
+            return childPath;
+        var manifestDir = Path.GetDirectoryName(Path.GetFullPath(manifestPath)) ?? ".";
+        return Path.GetFullPath(Path.Combine(manifestDir, childPath.Replace('/', Path.DirectorySeparatorChar)));
+    }
+
+    private static bool NadeKindMatchesFilter(NadeClip clip, string filter)
+    {
+        if (string.IsNullOrWhiteSpace(filter) ||
+            filter.Equals("all", StringComparison.OrdinalIgnoreCase) ||
+            filter.Equals("*", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        var needle = filter.Trim();
+        return clip.Kind.Equals(needle, StringComparison.OrdinalIgnoreCase) ||
+               clip.GrenadeType.Contains(needle, StringComparison.OrdinalIgnoreCase) ||
+               clip.WeaponDefIndex.ToString(CultureInfo.InvariantCulture).Equals(needle, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool TryParseNadeCycleArgs(
+        CommandInfo command,
+        int startArg,
+        string commandName,
+        out string sideFilter,
+        out string phaseFilter,
+        out float gapSeconds,
+        out string error)
+    {
+        sideFilter = "all";
+        phaseFilter = "all";
+        gapSeconds = NadeCycleDefaultGapSeconds;
+        error = string.Empty;
+
+        for (var i = startArg; i < command.ArgCount; i++)
+        {
+            var arg = command.GetArg(i).Trim();
+            var lower = arg.ToLowerInvariant();
+            if (lower is "all" or "*")
+            {
+                continue;
+            }
+            if (lower is "both")
+            {
+                sideFilter = "all";
+            }
+            else if (lower is "t" or "terrorist" or "terrorists")
+            {
+                sideFilter = "t";
+            }
+            else if (lower is "ct" or "counterterrorist" or "counterterrorists")
+            {
+                sideFilter = "ct";
+            }
+            else if (lower is "combat" or "retake")
+            {
+                phaseFilter = lower;
+            }
+            else if (float.TryParse(arg, NumberStyles.Float, CultureInfo.InvariantCulture, out var parsedGap) &&
+                     parsedGap >= 0.0f &&
+                     parsedGap <= NadeCycleMaxGapSeconds)
+            {
+                gapSeconds = parsedGap;
+            }
+            else
+            {
+                error = $"usage: {commandName} <nade_manifest.json> <slot> [t|ct|all] [combat|retake|all] [gap_seconds]";
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool NadeCycleSideMatches(NadeClip clip, string sideFilter)
+        => sideFilter.Equals("all", StringComparison.OrdinalIgnoreCase) ||
+           clip.Side.Equals(sideFilter, StringComparison.OrdinalIgnoreCase);
+
+    private static bool NadeCyclePhaseMatches(NadeClip clip, string phaseFilter)
+        => phaseFilter.Equals("all", StringComparison.OrdinalIgnoreCase) ||
+           clip.Phase.Equals(phaseFilter, StringComparison.OrdinalIgnoreCase);
+
+    private static bool NadeCycleKindMatches(NadeClip clip, string kindFilter)
+    {
+        if (!NadeCycleIsRandom(kindFilter))
+            return clip.Kind.Equals(kindFilter, StringComparison.OrdinalIgnoreCase);
+
+        return clip.Kind.Equals("smoke", StringComparison.OrdinalIgnoreCase) ||
+               clip.Kind.Equals("flash", StringComparison.OrdinalIgnoreCase) ||
+               clip.Kind.Equals("he", StringComparison.OrdinalIgnoreCase) ||
+               clip.Kind.Equals("molotov", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool NadeCycleIsRandom(string kindFilter)
+        => kindFilter.Equals("random", StringComparison.OrdinalIgnoreCase);
+
     private static bool TryReadPoolManifest(
         string manifestPath,
         out RoundPoolManifest manifest,
@@ -3357,7 +4268,9 @@ public sealed class DemoTracerPlugin : BasePlugin
         int[] PreloadWeaponDefIndices,
         bool HasLoadout,
         ReplayLoadoutSnapshot Loadout,
-        ReplayProjectileEvent[] Projectiles);
+        ReplayProjectileEvent[] Projectiles,
+        bool UtilityOnly,
+        int UtilityWeaponDefIndex);
 
     private readonly record struct ReplayAssignment(ManifestFile File, CCSPlayerController Bot);
 
@@ -3369,10 +4282,38 @@ public sealed class DemoTracerPlugin : BasePlugin
 
     private readonly record struct TeamEconomySnapshot(uint EquipmentValue, string Class);
 
-    private sealed class PendingProjectileAlign(uint index, IntPtr handle)
+    private sealed class NadeCycleState(
+        int token,
+        string manifestPath,
+        List<NadeClip> clips,
+        int slot,
+        string kindFilter,
+        string sideFilter,
+        string phaseFilter,
+        float gapSeconds)
+    {
+        public int Token { get; } = token;
+        public string ManifestPath { get; } = manifestPath;
+        public List<NadeClip> Clips { get; } = clips;
+        public int Slot { get; } = slot;
+        public string KindFilter { get; } = kindFilter;
+        public string SideFilter { get; } = sideFilter;
+        public string PhaseFilter { get; } = phaseFilter;
+        public float GapSeconds { get; } = gapSeconds;
+        public int Index { get; set; }
+        public bool Waiting { get; set; }
+    }
+
+    private sealed class PendingProjectileAlign(
+        uint index,
+        IntPtr handle,
+        ReplayProjectileKind kind,
+        int weaponDefIndex)
     {
         public uint Index { get; } = index;
         public IntPtr Handle { get; } = handle;
+        public ReplayProjectileKind Kind { get; } = kind;
+        public int WeaponDefIndex { get; } = weaponDefIndex;
         public ReplayProjectileEvent Align { get; set; }
         public int Slot { get; set; } = -1;
         public int EventIndex { get; set; } = -1;
@@ -3512,6 +4453,63 @@ public sealed class DemoTracerPlugin : BasePlugin
     {
         [JsonPropertyName("files")]
         public List<ManifestFile> Files { get; set; } = new();
+    }
+
+    private sealed class NadeManifest
+    {
+        [JsonPropertyName("format_version")]
+        public int FormatVersion { get; set; }
+
+        [JsonPropertyName("map")]
+        public string Map { get; set; } = string.Empty;
+
+        [JsonPropertyName("clips")]
+        public List<NadeClip> Clips { get; set; } = new();
+    }
+
+    private sealed class NadeClip
+    {
+        [JsonPropertyName("clip_id")]
+        public string ClipId { get; set; } = string.Empty;
+
+        [JsonPropertyName("path")]
+        public string Path { get; set; } = string.Empty;
+
+        [JsonPropertyName("kind")]
+        public string Kind { get; set; } = string.Empty;
+
+        [JsonPropertyName("grenade_type")]
+        public string GrenadeType { get; set; } = string.Empty;
+
+        [JsonPropertyName("weapon_def_index")]
+        public int WeaponDefIndex { get; set; }
+
+        [JsonPropertyName("phase")]
+        public string Phase { get; set; } = string.Empty;
+
+        [JsonPropertyName("round")]
+        public int Round { get; set; }
+
+        [JsonPropertyName("side")]
+        public string Side { get; set; } = string.Empty;
+
+        [JsonPropertyName("steam_id")]
+        public ulong SteamId { get; set; }
+
+        [JsonPropertyName("player_name")]
+        public string PlayerName { get; set; } = string.Empty;
+
+        [JsonPropertyName("throw_tick")]
+        public int ThrowTick { get; set; }
+
+        [JsonPropertyName("first_weapon_def_index")]
+        public int FirstWeaponDefIndex { get; set; }
+
+        [JsonPropertyName("preload_weapon_def_indices")]
+        public int[]? PreloadWeaponDefIndices { get; set; }
+
+        [JsonPropertyName("loadout")]
+        public ReplayLoadoutSnapshot? Loadout { get; set; }
     }
 
     private sealed class RoundPoolManifest

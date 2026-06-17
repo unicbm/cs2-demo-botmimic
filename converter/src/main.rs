@@ -2,6 +2,9 @@ use clap::{Parser, Subcommand};
 use cs2_demotracer::demo_reader::read_demo;
 use cs2_demotracer::export::{export_demo, parse_round_list, ConvertOptions};
 use cs2_demotracer::model::{Side, SubtickMode};
+use cs2_demotracer::nade_export::{
+    export_nade_clips, NadeExportOptions, DEFAULT_POST_ROLL_SECONDS, DEFAULT_PRE_ROLL_SECONDS,
+};
 use cs2_demotracer::pool::{build_round_pool, BuildPoolOptions};
 use cs2_demotracer::quality::{analyze_demo, AnalysisOptions};
 use cs2_demotracer::rec_writer::read_rec_file;
@@ -73,6 +76,21 @@ enum Command {
         full_round: bool,
         #[arg(long, default_value_t = SubtickMode::Auto)]
         subticks: SubtickMode,
+    },
+    /// Convert grenade throws into short .dtr clips and a nade manifest.
+    ConvertNades {
+        #[arg(long)]
+        demo: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long, default_value_t = Side::Both)]
+        side: Side,
+        #[arg(long)]
+        rounds: Option<String>,
+        #[arg(long, default_value_t = DEFAULT_PRE_ROLL_SECONDS)]
+        pre_roll: f32,
+        #[arg(long, default_value_t = DEFAULT_POST_ROLL_SECONDS)]
+        post_roll: f32,
     },
     /// Validate .dtr files under a file or directory.
     Validate {
@@ -204,6 +222,36 @@ fn run() -> cs2_demotracer::Result<()> {
                 report.root.display()
             );
             println!("manifest {}", report.manifest_path.display());
+        }
+        Command::ConvertNades {
+            demo,
+            output,
+            side,
+            rounds,
+            pre_roll,
+            post_roll,
+        } => {
+            let parsed = read_demo(&demo)?;
+            let selected_rounds = rounds.as_deref().map(parse_round_list).transpose()?;
+            let report = export_nade_clips(
+                &parsed,
+                &NadeExportOptions {
+                    output_dir: output,
+                    output_stem: None,
+                    side,
+                    selected_rounds,
+                    pre_roll_seconds: pre_roll,
+                    post_roll_seconds: post_roll,
+                    subtick_mode: SubtickMode::Auto,
+                },
+            )?;
+            println!(
+                "wrote {} nade clips under {} (skipped {})",
+                report.clips_written,
+                report.root.display(),
+                report.skipped
+            );
+            println!("nade manifest {}", report.manifest_path.display());
         }
         Command::ConvertPool {
             demo_dir,

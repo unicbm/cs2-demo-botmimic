@@ -127,7 +127,7 @@ fn synthesize_projectiles(
             Some(ReplayProjectile {
                 tick_index,
                 kind: projectile.kind,
-                weapon_def_index: projectile.kind.weapon_def_index(),
+                weapon_def_index: projectile.weapon_def_index,
                 initial_position: projectile.initial_position,
                 initial_velocity: projectile.initial_velocity,
                 detonation_position: projectile.detonation_position,

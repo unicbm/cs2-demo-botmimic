@@ -319,6 +319,7 @@ mod demoparser_impl {
                 steam_id,
                 name: get_string(&columns, "name", idx).unwrap_or_default(),
                 kind: ProjectileKind::from_grenade_type(&grenade_type),
+                weapon_def_index: ProjectileKind::weapon_def_index_from_grenade_type(&grenade_type),
                 grenade_type,
                 initial_position,
                 initial_velocity,

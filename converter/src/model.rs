@@ -181,6 +181,25 @@ impl ProjectileKind {
             Self::Unknown => -1,
         }
     }
+
+    pub fn weapon_def_index_from_grenade_type(value: &str) -> i32 {
+        let lower = value.to_ascii_lowercase();
+        if lower.contains("flash") {
+            43
+        } else if lower.contains("hegrenade") || lower.contains("he_grenade") {
+            44
+        } else if lower.contains("smoke") {
+            45
+        } else if lower.contains("incgrenade") {
+            48
+        } else if lower.contains("molotov") || lower.contains("inferno") {
+            46
+        } else if lower.contains("decoy") {
+            47
+        } else {
+            -1
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -260,6 +279,7 @@ pub struct ParsedProjectile {
     pub name: String,
     pub grenade_type: String,
     pub kind: ProjectileKind,
+    pub weapon_def_index: i32,
     pub initial_position: [f32; 3],
     pub initial_velocity: [f32; 3],
     pub detonation_position: [f32; 3],

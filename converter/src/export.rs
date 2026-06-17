@@ -463,7 +463,7 @@ fn is_pistol_round(round: u32) -> bool {
     round == 0 || round == 12
 }
 
-fn first_weapon_def_index(rec: &crate::model::Cs2Rec) -> i32 {
+pub(crate) fn first_weapon_def_index(rec: &crate::model::Cs2Rec) -> i32 {
     rec.ticks
         .iter()
         .map(|tick| normalize_weapon_def_index(tick.weapon_def_index))
@@ -471,7 +471,10 @@ fn first_weapon_def_index(rec: &crate::model::Cs2Rec) -> i32 {
         .unwrap_or(-1)
 }
 
-fn preload_weapon_def_indices(rows: &[ParsedPlayerTick], rec: &crate::model::Cs2Rec) -> Vec<i32> {
+pub(crate) fn preload_weapon_def_indices(
+    rows: &[ParsedPlayerTick],
+    rec: &crate::model::Cs2Rec,
+) -> Vec<i32> {
     let mut seen = BTreeSet::new();
     let mut defs = Vec::new();
     for row in rows {
@@ -491,7 +494,7 @@ fn preload_weapon_def_indices(rows: &[ParsedPlayerTick], rec: &crate::model::Cs2
     defs
 }
 
-fn replay_loadout(row: &ParsedPlayerTick) -> ReplayLoadout {
+pub(crate) fn replay_loadout(row: &ParsedPlayerTick) -> ReplayLoadout {
     ReplayLoadout {
         weapon_def_indices: row
             .inventory_as_ids
