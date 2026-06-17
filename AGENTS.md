@@ -1,114 +1,82 @@
 # Agent Guidance
 
-This repository is the public project for **CS2 DemoTracer**: tracing CS2 demos
-into bot-executable route replays. Keep it independent from private server
-setups, local datasets, unrelated bot AI plugins, and legacy CS:GO codebases.
+This is the public repository for **CS2 DemoTracer**: convert CS2 `.dem`
+files into compressed `.dtr` route replays, then play them back through bots on
+a local CS2 server.
 
-## Project Scope
+Keep this repo public, portable, and focused. Do not mix in private server
+setup, local demo datasets, team roster tooling, unrelated bot AI experiments,
+or legacy CS:GO paths.
 
-- The core product is CS2 `.dem` -> compressed `.dtr` conversion plus local CS2
-  bot playback.
-- The public command prefix is `dtr_`. Do not add new public `cs2bm_` commands.
-- The `.dtr` file extension is the current public replay format. The binary
-  magic is still `CSDTRREC` for format continuity; do not change it without an
-  explicit format-version decision.
-- The converter should write `.dtr`, `manifest.json`, pool manifests, and
-  user-facing logs. Do not add CSV, Parquet, raw-position dumps, or other
-  intermediate export formats unless explicitly requested.
-- Keep README and docs focused on converting demos and playing route replays in
-  local CS2. Avoid turning public docs into troubleshooting notes for unrelated
-  plugins or local experiments.
+## Project Boundaries
+
+- The public CLI is `cs2-demotracer`; the public server command prefix is
+  `dtr_`.
+- The replay extension is `.dtr`. The binary magic is `CSDTRREC`; current
+  writer format is `.dtr` v4. Do not change magic, ABI, or format layout
+  without an explicit version decision and matching docs.
+- The maintained packaged converter target is Windows x64. Linux may work from
+  source, but do not claim or publish Linux binaries unless they are built and
+  verified.
+- Public docs and examples must use placeholders such as `<demo.dem>`,
+  `<output-dir>`, and `<manifest.json>`.
+- Never commit local paths, Steam install paths, usernames, private repo names,
+  `.dem` files, generated `.dtr` output, logs, `tmp/`, `target/`, `bin/`, or
+  `obj/` artifacts.
 
 ## Repository Layout
 
-- `converter/`: Rust CLI and prompt-style wizard converter, package and CLI
-  name `cs2-demotracer`.
-- `css/`: CounterStrikeSharp control plugin, assembly/project name
-  `DemoTracer`, and user-facing `dtr_` commands.
-- `runtime/BotController/`: CS2 Metamod runtime based on
-  XBribo/CS2-Bot-Controller.
-- `docs/`: user-facing supplemental docs and `.dtr` format notes.
-- `third_party/`: vendored third-party source and attribution.
-
-Keep module boundaries clear:
-
-- Rust converter owns demo parsing, round quality analysis, `.dtr` writing,
-  the interactive wizard, manifest generation, and pool generation.
-- Metamod runtime owns CS2 hooks, replay buffers, movement injection, input
-  injection, weapon locking, and C ABI exports.
-- CounterStrikeSharp plugin owns commands, manifest loading, bot-slot
-  assignment, replay sequencing, BotHider identity handoff, and user-facing
-  server messages.
-- Team rosters, bot AI setup, team logos, and bot-profile databases are outside
-  this repository's public scope. Do not add built-in team/roster commands.
-
-## Public Hygiene
-
-- Never commit local machine paths, Steam install paths, demo dataset paths,
-  usernames, private repo names, or server-specific deployment paths.
-- Use placeholders such as `<demo.dem>`, `<output-dir>`, and `<manifest.json>`
-  in docs and examples.
-- Do not commit `.dem`, `.dtr`, `output/`, `tmp/`, build outputs, `target/`,
-  `bin/`, `obj/`, generated logs, or local deployment packages unless the user
-  explicitly requests release packaging.
-- This repo is public GPL-3.0. Preserve third-party license notices and
-  attribution in `NOTICE.md` and vendored folders.
-- Avoid rewriting public Git history unless the user explicitly asks for
-  history cleanup.
+- `converter/`: Rust CLI, demo parsing, round analysis, `.dtr` writing,
+  manifest/pool generation, validation, and the wizard.
+- `runtime/BotController/`: Metamod runtime hooks, replay buffers, movement and
+  input injection, weapon/buy control, and native C ABI exports.
+- `css/`: CounterStrikeSharp plugin, `dtr_` commands, manifest loading, bot
+  assignment, replay sequencing, BotHider identity handoff, loadout alignment,
+  projectile alignment, and user-facing status.
+- `docs/`: user-facing usage and `.dtr` format documentation.
+- `third_party/`: vendored source and attribution. Keep vendor changes minimal.
 
 ## Converter Rules
 
-- Support CS2 demos only. Do not mix in Source1/CS:GO parser paths.
-- Keep round analysis visible and configurable: recommended/suspicious rounds,
-  player counts, duration, and problem text matter for real HLTV demos.
+- Support CS2 demos only.
 - Default conversion should prefer recommended rounds and avoid suspicious
   tail/garbage rounds.
-- Per-player export is one `.dtr` per player per round under
+- Export one `.dtr` per player per round under
   `output/<demo-id>/roundNN/t|ct/`, where `<demo-id>` is content-hashed.
-- Do not silently include dead-player tail data. The current model exports
-  alive rows inside the selected round window.
-- Preserve exact replay state. Do not use interpolation, quantization, or
-  precision-reducing compression when the requirement is lossless replay data.
-- If reducing file size later, prefer explicit format-versioned changes such as
-  delta encoding, keyframes, compression, or dictionaries. Do not break existing
-  reader/runtime compatibility without a version bump and clear migration plan.
+- Preserve replay state losslessly. Do not add interpolation, quantization, or
+  precision-reducing compression unless the format is explicitly versioned.
+- `.dtr` v4 includes projectile metadata used for smoke alignment. Older v3
+  files remain readable but do not contain projectile events.
+- The converter should write `.dtr`, `manifest.json`, pool manifests, and
+  user-facing logs. Do not add CSV/Parquet/raw dumps unless explicitly asked.
 
 ## Runtime And CSS Rules
 
-- The manifest ABI value, C# wrapper expectation, and native runtime ABI must
-  stay synchronized.
-- Never assign replay control to real human players. Safe candidates are strict
-  CS2 bots or slots known to be bot-managed by the local BotHider/shared-state
-  path.
-- `dtr_handoff death_or_contact slot` is the intended safe default: replay
-  controls opening movement, then releases only the contacted/dead replay slot
-  after contact/death. Use `all` only for explicit experiments where one trigger
-  should release every replaying bot.
+- Keep manifest ABI, C# reader expectations, and native runtime ABI in sync.
+- Never assign replay control to real human players. Valid targets are strict
+  CS2 bots or slots known to be bot-managed by the BotHider/shared-state path.
+- `dtr_handoff death_or_contact slot` is the safe default for opening-route
+  replay.
 - On stop, unload, finish, handoff, or failure, release replay state: stop
-  replay, clear input injection, unlock weapon locks, clear pending weapon
-  alignment, and reset bot brain state that would bias native AI.
-- Weapon alignment is intentionally soft. Do not delete or replace conflicting
-  primary/secondary weapons during live replay; that has caused unstable
-  entities and crashes. Prefer round-start inventory preset work for stronger
-  alignment.
-- Avoid teleport-as-primary-playback. Movement replay should flow through the
-  runtime movement hooks, with snapshots used for state seeding/correction.
-- Keep server commands concise and stable. If adding commands, make them useful
-  for local testing and status diagnosis, and use the `dtr_` prefix.
-- Do not add commands that manage team rosters, team branding, or bot AI
-  profiles. Those belong in external bot/server tooling.
+  replay, clear input injection, unlock weapon locks, clear pending alignments,
+  and reset bot state that would bias later rounds.
+- Movement replay should flow through runtime movement/input hooks. Avoid
+  teleport-as-primary-playback.
+- Keep commands concise, stable, and under the `dtr_` prefix. Do not add public
+  commands for team rosters, branding, bot profiles, or unrelated AI behavior.
+- Weapon/loadout and projectile alignment are part of replay fidelity. Keep
+  them defensive: avoid unstable entity deletion/replacement during live replay.
 
-## Documentation
+## Documentation And Releases
 
-- `README.md` should present the project as **CS2 DemoTracer** with the subtitle
-  “Trace CS2 demos into bot-executable route replays.”
+- README title/subtitle should stay: **CS2 DemoTracer** and “Trace CS2 demos
+  into bot-executable route replays.”
 - Keep English README and `docs/README.zh-Hans.md` aligned at a high level.
-- Do not mention private local paths or private repositories in docs.
-- Do not add detailed discussion of external aim plugins, headshot behavior, or
-  unrelated bot AI modules to the main README.
-- Credits should remain factual and concise: XBribo/CS2-Bot-Controller,
-  LaihoE/demoparser, csgowiki/minidemo-encoder inspiration, Metamod:Source, and
-  CounterStrikeSharp.
+- Keep `docs/FORMAT.md` aligned with the current `.dtr` writer/reader.
+- Release sample packs must be sanitized: no raw `.dem`, no local paths in
+  manifests, and no trace/debug CSVs.
+- Release notes should be factual and conservative. Do not claim Linux packages
+  or non-smoke projectile fixes unless they were built and verified.
 
 ## Validation
 
@@ -119,35 +87,27 @@ cd converter
 cargo test
 ```
 
-For CSS plugin changes, build the CounterStrikeSharp project with an available
-.NET SDK:
+For CSS changes:
 
 ```powershell
 dotnet build css\DemoTracer.csproj -c Release
 ```
 
-For runtime C++ changes, build with the local CS2 Metamod/SDK toolchain if
-configured. If the native toolchain is unavailable, state that explicitly in the
-final response.
+For converter release builds:
 
-Before publishing, also check:
+```powershell
+cd converter
+cargo build --release
+```
+
+For runtime C++ changes, build with the local CS2 Metamod/SDK toolchain if it is
+configured. If that toolchain is unavailable, say so in the final response.
+
+Before committing or publishing:
 
 ```powershell
 git status -sb
 git diff --check
 ```
 
-Also scan README/docs/source changes for accidental local absolute paths before
-publishing.
-
-`git diff --check` may report trailing whitespace inside vendored third-party
-source. Do not reformat vendored source solely to satisfy whitespace checks.
-
-## Third-Party Source
-
-- Treat `third_party/demoparser` as vendored source. Keep local changes minimal
-  and document why they were necessary.
-- Do not reformat or mechanically rewrite vendored source unless the user
-  explicitly asks for a vendor refresh or patch.
-- If updating vendored projects, preserve upstream license files and update
-  attribution notes.
+Also scan changed public docs/source for local absolute paths.
