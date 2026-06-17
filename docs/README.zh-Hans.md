@@ -12,12 +12,28 @@ Trace CS2 demos into bot-executable route replays.
 
 bot 会回放从 CS2 demo 转换出的移动、视角、开火和武器状态；第一人称观察视角会跟随 replay 状态同步。
 
-<p align="center">
-  <img src="media/first-person-replay-nuke.gif" alt="Nuke 第一人称 CS2 bot replay">
-</p>
-<p align="center">
-  <img src="media/first-person-replay-route.gif" alt="室内路线第一人称 CS2 bot replay">
-</p>
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="media/first-person-replay-nuke.gif" alt="Nuke 第一人称 CS2 bot replay" width="100%"><br>
+      <sub>第一人称路线回放</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="media/first-person-replay-route.gif" alt="室内路线第一人称 CS2 bot replay" width="100%"><br>
+      <sub>室内路线回放</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="media/mirage-opening-replay.gif" alt="Mirage 多 bot 开局回放" width="100%"><br>
+      <sub>Mirage 多 bot 开局路线</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="media/mirage-projectile-smokes.gif" alt="Mirage 烟雾弹投掷物对齐回放" width="100%"><br>
+      <sub>Mirage 烟雾弹投掷物对齐</sub>
+    </td>
+  </tr>
+</table>
 
 简单说：你给它一个 `.dem`，它会分析每个回合，导出压缩 `.dtr` 回放文件。进 CS2 本地服务器后，插件可以按回合让 bot 复刻 demo 里的走位、视角、跳跃、下蹲、开火和基础武器切换。
 

@@ -12,12 +12,28 @@ If this project helps you, please consider giving it a star. It makes the projec
 
 First-person spectator view stays synchronized while bots replay converted CS2 demo movement, view angles, firing, and weapon state.
 
-<p align="center">
-  <img src="docs/media/first-person-replay-nuke.gif" alt="First-person CS2 bot replay on Nuke">
-</p>
-<p align="center">
-  <img src="docs/media/first-person-replay-route.gif" alt="First-person CS2 bot replay through an indoor route">
-</p>
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/media/first-person-replay-nuke.gif" alt="First-person CS2 bot replay on Nuke" width="100%"><br>
+      <sub>First-person route replay</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/media/first-person-replay-route.gif" alt="First-person CS2 bot replay through an indoor route" width="100%"><br>
+      <sub>Indoor route replay</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="docs/media/mirage-opening-replay.gif" alt="Mirage multi-bot opening replay" width="100%"><br>
+      <sub>Mirage multi-bot opening</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="docs/media/mirage-projectile-smokes.gif" alt="Projectile-aligned Mirage smoke replay" width="100%"><br>
+      <sub>Projectile-aligned Mirage smokes</sub>
+    </td>
+  </tr>
+</table>
 
 ## What It Does
 
