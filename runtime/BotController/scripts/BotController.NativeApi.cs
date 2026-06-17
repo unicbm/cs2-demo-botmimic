@@ -1,4 +1,4 @@
-// P/Invoke wrapper for BotController.dll (ABI 10). Check IsCompatible() before use.
+// P/Invoke wrapper for BotController.dll (ABI 11). Check IsCompatible() before use.
 // Main-thread only.
 
 using System.Runtime.InteropServices;
@@ -79,7 +79,7 @@ namespace BotControllerApi
     // Thin static binding over the native exports. No orchestration here.
     public static class BotController
     {
-        private const int ExpectedAbiVersion = 10;
+        private const int ExpectedAbiVersion = 11;
 
         // Sentinel weapon def meaning "any knife"
         public const int KnifeDef = 9001;
@@ -147,6 +147,22 @@ namespace BotControllerApi
 
         [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
         private static extern int BotController_GetBotActiveWeaponDef(int slot);
+
+        [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int BotController_SetBuyPlan(int slot,
+            [MarshalAs(UnmanagedType.LPStr)] string aliases);
+
+        [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int BotController_SetBuySkip(int slot);
+
+        [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int BotController_ClearBuyPlan(int slot);
+
+        [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int BotController_ClearAllBuyPlans();
+
+        [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int BotController_GetBuyPlanItemCount(int slot);
 
         // Native ABI must match what this wrapper expects.
         public static bool IsCompatible() => BotController_GetVersion() == ExpectedAbiVersion;
@@ -246,5 +262,26 @@ namespace BotControllerApi
         // recorded WeaponDefIndex. <0 if unresolved.
         public static int BotActiveWeaponDef(int slot)
             => BotController_GetBotActiveWeaponDef(slot);
+
+        // ---- buy plans ----
+
+        // Force a bot's per-round buy.
+        public static bool SetBuyPlan(int slot, string aliases)
+            => BotController_SetBuyPlan(slot, aliases ?? "") == 0;
+
+        // Force a bot to buy nothing each round.
+        public static bool SetBuySkip(int slot)
+            => BotController_SetBuySkip(slot) == 0;
+
+        // Remove a bot's buy plan (back to vanilla AI buying).
+        public static bool ClearBuyPlan(int slot)
+            => BotController_ClearBuyPlan(slot) == 0;
+
+        public static bool ClearAllBuyPlans()
+            => BotController_ClearAllBuyPlans() == 0;
+
+        // Plan item count: -1 none, 0 skip/empty, >0 alias count.
+        public static int BuyPlanItemCount(int slot)
+            => BotController_GetBuyPlanItemCount(slot);
     }
 }

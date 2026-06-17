@@ -3,8 +3,10 @@
 #include "dispatch.h"
 #include "MotionRecorder.h"
 #include "InputInjector.h"
+#include "BuyControllerState.h"
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 extern "C" __declspec(dllexport) int BotController_Lock(int slot, int kind, int arg)
@@ -33,12 +35,77 @@ extern "C" __declspec(dllexport) int BotController_IsLocked(int slot, int kind)
 
 extern "C" __declspec(dllexport) int BotController_GetVersion()
 {
-    return 10;
+    return 11;
 }
 
 extern "C" __declspec(dllexport) int BotController_SetControllerControllingBotOffset(int offset)
 {
     return BotController::InputInjector::SetControllerControllingBotOffset(offset) ? 0 : -1;
+}
+
+// ---- Bot buy plans ----
+
+static std::vector<std::string> SplitAliases(const char *aliases)
+{
+    std::vector<std::string> out;
+    if (!aliases)
+        return out;
+
+    std::string cur;
+    for (const char *p = aliases; *p; ++p)
+    {
+        char c = *p;
+        if (c == ' ' || c == ',' || c == '\t')
+        {
+            if (!cur.empty())
+            {
+                out.push_back(cur);
+                cur.clear();
+            }
+        }
+        else
+        {
+            cur.push_back(c);
+        }
+    }
+    if (!cur.empty())
+        out.push_back(cur);
+    return out;
+}
+
+extern "C" __declspec(dllexport) int BotController_SetBuyPlan(int slot, const char *aliases)
+{
+    if (slot < 0 || slot >= BotController::BuyControllerState::kMaxSlots)
+        return -2;
+    BotController::BuyControllerState::Set(slot, SplitAliases(aliases), false);
+    return 0;
+}
+
+extern "C" __declspec(dllexport) int BotController_SetBuySkip(int slot)
+{
+    if (slot < 0 || slot >= BotController::BuyControllerState::kMaxSlots)
+        return -2;
+    BotController::BuyControllerState::Set(slot, {}, true);
+    return 0;
+}
+
+extern "C" __declspec(dllexport) int BotController_ClearBuyPlan(int slot)
+{
+    if (slot < 0 || slot >= BotController::BuyControllerState::kMaxSlots)
+        return -2;
+    BotController::BuyControllerState::Clear(slot);
+    return 0;
+}
+
+extern "C" __declspec(dllexport) int BotController_ClearAllBuyPlans()
+{
+    BotController::BuyControllerState::ClearAll();
+    return 0;
+}
+
+extern "C" __declspec(dllexport) int BotController_GetBuyPlanItemCount(int slot)
+{
+    return BotController::BuyControllerState::ItemCount(slot);
 }
 
 // ---- Motion recording & replay ----

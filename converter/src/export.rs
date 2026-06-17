@@ -1,7 +1,7 @@
 use crate::demo_id::demo_id;
 use crate::model::{
     ConversionManifest, ConvertedFile, ConvertedRound, EconomyClass, ParsedDemo, ParsedPlayerTick,
-    Side, SubtickMode, TeamEconomy, DEMOTRACER_ABI, DTR_FORMAT_VERSION,
+    ReplayLoadout, Side, SubtickMode, TeamEconomy, DEMOTRACER_ABI, DTR_FORMAT_VERSION,
 };
 use crate::quality::{analyze_demo, AnalysisOptions};
 use crate::rec_writer::write_rec_file;
@@ -171,6 +171,7 @@ pub fn export_demo(parsed: &ParsedDemo, options: &ConvertOptions) -> Result<Conv
                 subticks: rec.subticks.len(),
                 first_weapon_def_index: first_weapon_def_index(&rec),
                 preload_weapon_def_indices: preload_weapon_def_indices(&player_rows, &rec),
+                loadout: replay_loadout(&player_rows[0]),
             });
         }
 
@@ -398,6 +399,20 @@ fn preload_weapon_def_indices(rows: &[ParsedPlayerTick], rec: &crate::model::Cs2
     defs
 }
 
+fn replay_loadout(row: &ParsedPlayerTick) -> ReplayLoadout {
+    ReplayLoadout {
+        weapon_def_indices: row
+            .inventory_as_ids
+            .iter()
+            .map(|def| normalize_weapon_def_index(*def))
+            .filter(|def| is_loadout_weapon_def_index(*def))
+            .collect(),
+        armor_value: row.armor_value,
+        has_helmet: row.has_helmet,
+        has_defuser: row.has_defuser,
+    }
+}
+
 fn normalize_weapon_def_index(def: i32) -> i32 {
     if def == 42 || def == 59 || (500..600).contains(&def) {
         42
@@ -456,6 +471,10 @@ fn is_known_weapon_def_index(def: i32) -> bool {
 
 fn is_preload_weapon_def_index(def: i32) -> bool {
     is_known_weapon_def_index(def) && !matches!(def, 31 | 42 | 49)
+}
+
+fn is_loadout_weapon_def_index(def: i32) -> bool {
+    is_known_weapon_def_index(def) && !matches!(def, 42 | 49)
 }
 
 fn slugify(value: &str) -> String {
@@ -545,5 +564,22 @@ mod tests {
         ];
 
         assert_eq!(preload_weapon_def_indices(&rows, &rec), vec![7, 43, 44, 61]);
+    }
+
+    #[test]
+    fn replay_loadout_keeps_counts_and_skips_non_equipment() {
+        let row = ParsedPlayerTick {
+            inventory_as_ids: vec![7, 43, 43, 49, 508, 31],
+            armor_value: 87,
+            has_helmet: true,
+            has_defuser: true,
+            ..ParsedPlayerTick::default()
+        };
+
+        let loadout = replay_loadout(&row);
+        assert_eq!(loadout.weapon_def_indices, vec![7, 43, 43, 31]);
+        assert_eq!(loadout.armor_value, 87);
+        assert!(loadout.has_helmet);
+        assert!(loadout.has_defuser);
     }
 }

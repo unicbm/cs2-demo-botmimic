@@ -5,7 +5,7 @@ namespace DemoTracer;
 
 internal static class BotControllerNative
 {
-    public const int ExpectedAbiVersion = 10;
+    public const int ExpectedAbiVersion = 11;
     public const uint RecFormatVersion = 3;
     public const int MovementSnapshotByteSize = 92;
     public const int ReplayTickByteSize = 192;
@@ -64,6 +64,23 @@ internal static class BotControllerNative
 
     [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
     private static extern int BotController_GetBotActiveWeaponDef(int slot);
+
+    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int BotController_SetBuyPlan(
+        int slot,
+        [MarshalAs(UnmanagedType.LPStr)] string aliases);
+
+    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int BotController_SetBuySkip(int slot);
+
+    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int BotController_ClearBuyPlan(int slot);
+
+    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int BotController_ClearAllBuyPlans();
+
+    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int BotController_GetBuyPlanItemCount(int slot);
 
     public static string LastLoadError { get; private set; } = string.Empty;
 
@@ -167,6 +184,66 @@ internal static class BotControllerNative
 
     public static int BotActiveWeaponDef(int slot)
         => BotController_GetBotActiveWeaponDef(slot);
+
+    public static bool SetBuyPlan(int slot, string aliases)
+    {
+        try
+        {
+            return BotController_SetBuyPlan(slot, aliases ?? string.Empty) == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public static bool SetBuySkip(int slot)
+    {
+        try
+        {
+            return BotController_SetBuySkip(slot) == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public static bool ClearBuyPlan(int slot)
+    {
+        try
+        {
+            return BotController_ClearBuyPlan(slot) == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public static bool ClearAllBuyPlans()
+    {
+        try
+        {
+            return BotController_ClearAllBuyPlans() == 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public static int BuyPlanItemCount(int slot)
+    {
+        try
+        {
+            return BotController_GetBuyPlanItemCount(slot);
+        }
+        catch
+        {
+            return -1;
+        }
+    }
 
     public static bool LockWeaponSlot(int slot, int target)
         => target is >= 1 and <= 5 && BotController_Lock(slot, LockKindWeapon, target) == 0;

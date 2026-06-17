@@ -14,6 +14,8 @@
 #include <nlohmann/json.hpp>
 
 #include "WeaponLocker.h"
+#include "BuyController.h"
+#include "BuyControllerState.h"
 #include "BotController.h"
 #include "InputInjector.h"
 #include "MotionRecorder.h"
@@ -104,6 +106,8 @@ bool BotControllerPlugin::Load(PluginId id, ISmmAPI *ismm,
 
     // Engine interface used by console command output (ClientPrintf).
     BotController::Commands::g_pEngine = BotController::Dispatch::g_pEngine;
+    BotController::Dispatch::g_pGameClients =
+        static_cast<ISource2GameClients *>(serverIface);
 
     std::string gamedataPath = ComputeGamedataPath();
     if (gamedataPath.empty())
@@ -139,6 +143,18 @@ bool BotControllerPlugin::Load(PluginId id, ISmmAPI *ismm,
         return false;
     }
 
+    // BuyController is optional; missing sig only disables buy control.
+    char buyErr[256] = {0};
+    if (!BotController::BuyControllerHooks::Install(gd, serverModule, buyErr, sizeof(buyErr)))
+    {
+        char dbg[320];
+        std::snprintf(dbg, sizeof(dbg),
+                      "[BotController] WARN: BuyController::Install failed (%s); "
+                      "bot buy control disabled\n",
+                      buyErr);
+        BotController::DebugOut(dbg);
+    }
+
     // movement hooks for record/replay
     char injErr[256] = {0};
     if (!BotController::InputInjector::Install(gd, serverModule, injErr, sizeof(injErr)))
@@ -159,6 +175,8 @@ bool BotControllerPlugin::Unload(char * /*error*/, size_t /*maxlen*/)
 {
     BotController::MotionRecorder::ClearAll();
     BotController::InputInjector::Remove();
+    BotController::BuyControllerHooks::Remove();
+    BotController::BuyControllerState::ClearAll();
     BotController::BotControllerHooks::Remove();
     BotController::WeaponLockerHooks::Remove();
     BotController::WeaponLockerState::ClearAll();
@@ -166,6 +184,7 @@ bool BotControllerPlugin::Unload(char * /*error*/, size_t /*maxlen*/)
     BotController::BotControllerState::ClearAllAim();
     BotController::BotControllerState::ClearAllJump();
     BotController::Dispatch::g_pEngine = nullptr;
+    BotController::Dispatch::g_pGameClients = nullptr;
     BotController::Commands::g_pEngine = nullptr;
     ConVar_Unregister();
     g_pCVar = nullptr;

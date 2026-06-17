@@ -25,6 +25,8 @@ namespace BotController::targets
         kPawn_ViewAnglePrevious  = Sig::FindPlatformOffset(gd, "CCSPlayerPawn::ViewAnglePrevious", kPawn_ViewAnglePrevious);
         kPawn_ServerViewAngleChanges = Sig::FindPlatformOffset(gd, "CCSPlayerPawn::ServerViewAngleChanges", kPawn_ServerViewAngleChanges);
         kPawn_EyeAngles          = Sig::FindPlatformOffset(gd, "CCSPlayerPawn::EyeAngles", kPawn_EyeAngles);
+        kBuy_InitialDelay        = Sig::FindPlatformOffset(gd, "BuyState::InitialDelay", kBuy_InitialDelay);
+        kBuy_DoneBuying          = Sig::FindPlatformOffset(gd, "BuyState::DoneBuying", kBuy_DoneBuying);
         kWs_ActiveWeapon         = Sig::FindPlatformOffset(gd, "CCSPlayer_WeaponServices::ActiveWeapon", kWs_ActiveWeapon);
         kWeapon_ItemDefIndex     = Sig::FindPlatformOffset(gd, "CBasePlayerWeapon::ItemDefIndex", kWeapon_ItemDefIndex);
         kServices_Pawn           = Sig::FindPlatformOffset(gd, "CCSPlayer_MovementServices::Pawn", kServices_Pawn);

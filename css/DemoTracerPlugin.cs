@@ -36,6 +36,7 @@ public sealed class DemoTracerPlugin : BasePlugin
     private readonly Dictionary<int, int> _lastLockedWeaponTarget = new();
     private readonly Dictionary<int, PendingWeaponAlign> _pendingWeaponAlign = new();
     private readonly HashSet<int> _rebuiltInventorySlots = new();
+    private readonly HashSet<int> _loadoutSyncedSlots = new();
     private readonly HashSet<int> _lastPlayingSlots = new();
     private readonly Dictionary<int, float> _replayStartedAt = new();
     private readonly Dictionary<int, PendingBulletHit> _pendingBulletHits = new();
@@ -73,6 +74,8 @@ public sealed class DemoTracerPlugin : BasePlugin
 
     public override void Unload(bool hotReload)
     {
+        StopAndUnloadLoaded();
+        BotControllerNative.ClearAllBuyPlans();
         _botHiderProbe.Dispose();
     }
 
@@ -978,7 +981,9 @@ public sealed class DemoTracerPlugin : BasePlugin
                 file.PlayerName,
                 file.SteamId,
                 file.FirstWeaponDefIndex ?? -1,
-                file.PreloadWeaponDefIndices);
+                file.PreloadWeaponDefIndices,
+                file.Loadout);
+            BotControllerNative.SetBuySkip(slot);
             TryApplyReplayIdentity(slot, file);
             loaded.Add($"{file.Side}:slot{slot}:{file.PlayerName}");
         }
@@ -1045,7 +1050,10 @@ public sealed class DemoTracerPlugin : BasePlugin
             if (!IsReplaySlotStillSafe(slot))
                 continue;
             if (_loadedReplays.TryGetValue(slot, out var replay))
+            {
+                ApplyReplayLoadoutForSlot(slot, replay);
                 PreloadReplayWeaponsForSlot(slot, replay);
+            }
         }
     }
 
@@ -1088,6 +1096,7 @@ public sealed class DemoTracerPlugin : BasePlugin
         _lastLockedWeaponTarget.Clear();
         _pendingWeaponAlign.Clear();
         _rebuiltInventorySlots.Clear();
+        _loadoutSyncedSlots.Clear();
         _lastPlayingSlots.Clear();
         _replayStartedAt.Clear();
         _pendingBulletHits.Clear();
@@ -1112,8 +1121,10 @@ public sealed class DemoTracerPlugin : BasePlugin
         _lastLockedWeaponTarget.Remove(slot);
         _pendingWeaponAlign.Remove(slot);
         _rebuiltInventorySlots.Remove(slot);
+        _loadoutSyncedSlots.Remove(slot);
         _pendingBulletHits.Remove(slot);
         _pendingBulletDamages.Remove(slot);
+        BotControllerNative.ClearBuyPlan(slot);
         BotControllerNative.UnlockReplayControl(slot);
         BotControllerNative.UnlockWeaponSlot(slot);
         ResetBotBrainForHandoff(slot);
@@ -1368,7 +1379,8 @@ public sealed class DemoTracerPlugin : BasePlugin
         string playerName,
         ulong steamId = 0,
         int manifestFirstWeaponDefIndex = -1,
-        IReadOnlyList<int>? manifestPreloadWeaponDefIndices = null)
+        IReadOnlyList<int>? manifestPreloadWeaponDefIndices = null,
+        ReplayLoadoutSnapshot? loadout = null)
     {
         TryReadWeaponPlan(path, out var scannedFirstDef, out var scannedPreloadDefs);
         var firstDef = NormalizeWeaponDefIndex(manifestFirstWeaponDefIndex);
@@ -1379,11 +1391,294 @@ public sealed class DemoTracerPlugin : BasePlugin
             manifestPreloadWeaponDefIndices is { Count: > 0 }
                 ? manifestPreloadWeaponDefIndices
                 : scannedPreloadDefs);
-        _loadedReplays[slot] = new LoadedReplay(path, playerName, steamId, firstDef, preloadDefs);
+        var hasLoadout = loadout != null;
+        _loadedReplays[slot] = new LoadedReplay(
+            path,
+            playerName,
+            steamId,
+            firstDef,
+            preloadDefs,
+            hasLoadout,
+            NormalizeReplayLoadout(loadout ?? new ReplayLoadoutSnapshot()));
         _lastEnsuredWeaponDef.Remove(slot);
         _lastReplayWeaponDef.Remove(slot);
         _lastLockedWeaponTarget.Remove(slot);
         _rebuiltInventorySlots.Remove(slot);
+        _loadoutSyncedSlots.Remove(slot);
+    }
+
+    private static ReplayLoadoutSnapshot NormalizeReplayLoadout(ReplayLoadoutSnapshot loadout)
+    {
+        return new ReplayLoadoutSnapshot
+        {
+            WeaponDefIndices = loadout.WeaponDefIndices?
+                .Select(NormalizeWeaponDefIndex)
+                .Where(IsLoadoutWeaponDefIndex)
+                .ToArray() ?? Array.Empty<int>(),
+            ArmorValue = Math.Min(loadout.ArmorValue, 100),
+            HasHelmet = loadout.HasHelmet,
+            HasDefuser = loadout.HasDefuser
+        };
+    }
+
+    private void ApplyReplayLoadoutForSlot(int slot, LoadedReplay replay)
+    {
+        if (!_weaponAlignEnabled || !replay.HasLoadout || _loadoutSyncedSlots.Contains(slot))
+            return;
+
+        var player = Utilities.GetPlayerFromSlot(slot);
+        var pawn = player?.PlayerPawn.Value;
+        if (player is not { IsValid: true } || pawn is not { IsValid: true })
+            return;
+
+        ApplyReplayArmorAndKit(player, pawn, replay.Loadout);
+
+        var targetItems = BuildLoadoutItemCounts(replay.Loadout);
+        var deferredWeaponSync = false;
+        deferredWeaponSync |= SyncTargetWeaponSlot(
+            player,
+            targetItems,
+            ReplayWeaponSlot.Primary,
+            itemName => GetReplayWeaponSlot(itemName) == ReplayWeaponSlot.Primary);
+        deferredWeaponSync |= SyncTargetWeaponSlot(
+            player,
+            targetItems,
+            ReplayWeaponSlot.Secondary,
+            itemName => GetReplayWeaponSlot(itemName) == ReplayWeaponSlot.Secondary);
+        GiveMissingLoadoutItems(
+            player,
+            targetItems,
+            itemName => GetReplayWeaponSlot(itemName) is not ReplayWeaponSlot.Primary
+                and not ReplayWeaponSlot.Secondary
+                and not ReplayWeaponSlot.Knife
+                and not ReplayWeaponSlot.C4);
+
+        if (deferredWeaponSync)
+            Server.NextFrame(() => Server.NextFrame(() => ApplyReplayWeaponPreset(slot, ChooseStartWeaponDef(replay), true, true)));
+        else
+            ApplyReplayWeaponPreset(slot, ChooseStartWeaponDef(replay), true, true);
+
+        _loadoutSyncedSlots.Add(slot);
+    }
+
+    private static void ApplyReplayArmorAndKit(
+        CCSPlayerController player,
+        CCSPlayerPawn pawn,
+        ReplayLoadoutSnapshot loadout)
+    {
+        pawn.ArmorValue = (int)loadout.ArmorValue;
+        Utilities.SetStateChanged(pawn, "CCSPlayerPawn", "m_ArmorValue");
+
+        if (pawn.ItemServices == null || pawn.ItemServices.Handle == IntPtr.Zero)
+            return;
+
+        var itemServices = new CCSPlayer_ItemServices(pawn.ItemServices.Handle);
+        itemServices.HasHelmet = loadout.HasHelmet;
+        itemServices.HasDefuser = player.Team == CsTeam.CounterTerrorist && loadout.HasDefuser;
+    }
+
+    private static Dictionary<string, int> BuildLoadoutItemCounts(ReplayLoadoutSnapshot loadout)
+    {
+        var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach (var def in loadout.WeaponDefIndices ?? Array.Empty<int>())
+        {
+            if (!TryGetWeaponClassByDefIndex(def, out var className))
+                continue;
+            if (GetReplayWeaponSlot(className) is ReplayWeaponSlot.Knife or ReplayWeaponSlot.C4)
+                continue;
+            counts[className] = counts.GetValueOrDefault(className) + 1;
+        }
+        return counts;
+    }
+
+    private bool SyncTargetWeaponSlot(
+        CCSPlayerController player,
+        Dictionary<string, int> targetItems,
+        ReplayWeaponSlot slot,
+        Func<string, bool> predicate)
+    {
+        var targetItem = BestTargetSlotItem(targetItems, predicate);
+        if (targetItem == null)
+            return false;
+
+        var pawn = player.PlayerPawn.Value;
+        if (pawn == null || !pawn.IsValid || pawn.WeaponServices == null)
+        {
+            TryGiveNamedItem(player, targetItem);
+            return false;
+        }
+
+        if (HasReplayWeapon(pawn, targetItem))
+            return false;
+
+        var currentSlotWeapons = GetWeaponsInReplaySlot(pawn, slot).ToList();
+        if (currentSlotWeapons.Count == 0)
+        {
+            TryGiveNamedItem(player, targetItem);
+            return false;
+        }
+
+        var fallbackItem = currentSlotWeapons
+            .Select(weapon => NormalizeWeaponClassName(weapon.DesignerName))
+            .FirstOrDefault(itemName => !WeaponClassMatches(itemName, targetItem));
+        var weaponToDrop = currentSlotWeapons
+            .FirstOrDefault(weapon => !WeaponClassMatches(
+                NormalizeWeaponClassName(weapon.DesignerName),
+                targetItem));
+        if (fallbackItem == null || weaponToDrop == null)
+            return false;
+
+        if (!TrySelectWeapon(player, pawn, weaponToDrop))
+            return false;
+
+        try
+        {
+            player.DropActiveWeapon();
+        }
+        catch (Exception ex)
+        {
+            Server.PrintToConsole($"dtr: failed to drop slot={player.Slot} item={weaponToDrop.DesignerName}: {ex.Message}");
+            return false;
+        }
+
+        _lastEnsuredWeaponDef.Remove(player.Slot);
+        _lastReplayWeaponDef.Remove(player.Slot);
+        Server.NextFrame(() => CompleteWeaponSlotReplacement(player, targetItem, fallbackItem, slot));
+        return true;
+    }
+
+    private static string? BestTargetSlotItem(
+        Dictionary<string, int> targetItems,
+        Func<string, bool> predicate)
+    {
+        return targetItems.Keys
+            .Where(predicate)
+            .OrderByDescending(WeaponClassValue)
+            .ThenBy(itemName => itemName, StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault();
+    }
+
+    private void CompleteWeaponSlotReplacement(
+        CCSPlayerController player,
+        string targetItem,
+        string fallbackItem,
+        ReplayWeaponSlot slot)
+    {
+        if (!player.IsValid)
+            return;
+
+        var pawn = player.PlayerPawn.Value;
+        if (pawn == null || !pawn.IsValid || pawn.WeaponServices == null)
+            return;
+
+        if (HasReplayWeapon(pawn, targetItem) || GetWeaponsInReplaySlot(pawn, slot).Any())
+            return;
+
+        TryGiveNamedItem(player, targetItem);
+        Server.NextFrame(() => RestoreFallbackWeaponIfNeeded(player, targetItem, fallbackItem, slot));
+    }
+
+    private static void RestoreFallbackWeaponIfNeeded(
+        CCSPlayerController player,
+        string targetItem,
+        string fallbackItem,
+        ReplayWeaponSlot slot)
+    {
+        if (!player.IsValid)
+            return;
+
+        var pawn = player.PlayerPawn.Value;
+        if (pawn == null || !pawn.IsValid || pawn.WeaponServices == null)
+            return;
+
+        if (HasReplayWeapon(pawn, targetItem) || GetWeaponsInReplaySlot(pawn, slot).Any())
+            return;
+
+        TryGiveNamedItem(player, fallbackItem);
+    }
+
+    private static void GiveMissingLoadoutItems(
+        CCSPlayerController player,
+        Dictionary<string, int> targetItems,
+        Func<string, bool> predicate)
+    {
+        var currentItems = CountCurrentLoadoutItems(player);
+        foreach (var (itemName, targetCount) in targetItems.Where(pair => predicate(pair.Key)).ToList())
+        {
+            var missingCount = Math.Max(0, targetCount - currentItems.GetValueOrDefault(itemName));
+            for (var i = 0; i < missingCount; i++)
+                TryGiveNamedItem(player, itemName);
+        }
+    }
+
+    private static Dictionary<string, int> CountCurrentLoadoutItems(CCSPlayerController player)
+    {
+        var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var pawn = player.PlayerPawn.Value;
+        if (pawn?.WeaponServices == null)
+            return counts;
+
+        foreach (var handle in pawn.WeaponServices.MyWeapons)
+        {
+            var weapon = handle.Value;
+            if (weapon == null || !weapon.IsValid)
+                continue;
+
+            var itemName = NormalizeWeaponClassName(weapon.DesignerName);
+            if (GetReplayWeaponSlot(itemName) is ReplayWeaponSlot.Knife or ReplayWeaponSlot.C4 or ReplayWeaponSlot.Other)
+                continue;
+            counts[itemName] = counts.GetValueOrDefault(itemName) + 1;
+        }
+        return counts;
+    }
+
+    private static bool TryGiveNamedItem(CCSPlayerController player, string itemName)
+    {
+        try
+        {
+            player.GiveNamedItem(itemName);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Server.PrintToConsole($"dtr: failed to give slot={player.Slot} item={itemName}: {ex.Message}");
+            return false;
+        }
+    }
+
+    private static bool TrySelectWeapon(CCSPlayerController player, CCSPlayerPawn pawn, CBasePlayerWeapon weapon)
+    {
+        var defIndex = WeaponDefIndex(weapon.DesignerName);
+        if (player.Slot >= 0 && defIndex >= 0)
+            BotControllerNative.SwitchBotWeapon(player.Slot, defIndex);
+
+        var weaponServices = pawn.WeaponServices;
+        if (weaponServices == null)
+            return false;
+
+        weaponServices.ActiveWeapon.Raw = weapon.EntityHandle.Raw;
+        Utilities.SetStateChanged(pawn, "CBasePlayerPawn", "m_pWeaponServices");
+
+        if (player.UserId != null)
+            NativeAPI.IssueClientCommand(player.UserId.Value, $"use {weapon.DesignerName}");
+
+        return true;
+    }
+
+    private static IEnumerable<CBasePlayerWeapon> GetWeaponsInReplaySlot(CCSPlayerPawn pawn, ReplayWeaponSlot slot)
+    {
+        if (pawn.WeaponServices == null)
+            yield break;
+
+        foreach (var handle in pawn.WeaponServices.MyWeapons)
+        {
+            var weapon = handle.Value;
+            if (weapon == null || !weapon.IsValid)
+                continue;
+
+            if (GetReplayWeaponSlot(NormalizeWeaponClassName(weapon.DesignerName)) == slot)
+                yield return weapon;
+        }
     }
 
     private void PreloadReplayWeaponsForSlot(int slot, LoadedReplay replay)
@@ -1626,6 +1921,8 @@ public sealed class DemoTracerPlugin : BasePlugin
 
     private static bool WeaponClassMatches(string actual, string expected)
     {
+        actual = NormalizeWeaponClassName(actual);
+        expected = NormalizeWeaponClassName(expected);
         if (actual.Equals(expected, StringComparison.OrdinalIgnoreCase))
             return true;
         if (expected == "weapon_knife")
@@ -1636,8 +1933,19 @@ public sealed class DemoTracerPlugin : BasePlugin
         return false;
     }
 
+    private static string NormalizeWeaponClassName(string className)
+    {
+        return className switch
+        {
+            "weapon_decoy_grenade" => "weapon_decoy",
+            "weapon_c4_explosive" => "weapon_c4",
+            _ => className
+        };
+    }
+
     private static ReplayWeaponSlot GetReplayWeaponSlot(string className)
     {
+        className = NormalizeWeaponClassName(className);
         return className switch
         {
             "weapon_ak47" or "weapon_aug" or "weapon_awp" or "weapon_famas" or
@@ -1719,6 +2027,69 @@ public sealed class DemoTracerPlugin : BasePlugin
             and not ReplayWeaponSlot.Knife
             and not ReplayWeaponSlot.C4
             and not ReplayWeaponSlot.Taser;
+    }
+
+    private static bool IsLoadoutWeaponDefIndex(int weaponDefIndex)
+    {
+        if (!IsKnownWeaponDefIndex(weaponDefIndex))
+            return false;
+        var slot = GetReplayWeaponSlot(TryGetWeaponClassByDefIndex(weaponDefIndex, out var className)
+            ? className
+            : string.Empty);
+        return slot is not ReplayWeaponSlot.Other
+            and not ReplayWeaponSlot.Knife
+            and not ReplayWeaponSlot.C4;
+    }
+
+    private static int WeaponDefIndex(string className)
+    {
+        return NormalizeWeaponClassName(className).ToLowerInvariant() switch
+        {
+            "weapon_deagle" => 1,
+            "weapon_elite" => 2,
+            "weapon_fiveseven" => 3,
+            "weapon_glock" => 4,
+            "weapon_ak47" => 7,
+            "weapon_aug" => 8,
+            "weapon_awp" => 9,
+            "weapon_famas" => 10,
+            "weapon_g3sg1" => 11,
+            "weapon_galilar" => 13,
+            "weapon_m249" => 14,
+            "weapon_m4a1" => 16,
+            "weapon_mac10" => 17,
+            "weapon_p90" => 19,
+            "weapon_mp5sd" => 23,
+            "weapon_ump45" => 24,
+            "weapon_xm1014" => 25,
+            "weapon_bizon" => 26,
+            "weapon_mag7" => 27,
+            "weapon_negev" => 28,
+            "weapon_sawedoff" => 29,
+            "weapon_tec9" => 30,
+            "weapon_taser" => 31,
+            "weapon_hkp2000" => 32,
+            "weapon_mp7" => 33,
+            "weapon_mp9" => 34,
+            "weapon_nova" => 35,
+            "weapon_p250" => 36,
+            "weapon_scar20" => 38,
+            "weapon_sg556" => 39,
+            "weapon_ssg08" => 40,
+            "weapon_knife" => 42,
+            "weapon_flashbang" => 43,
+            "weapon_hegrenade" => 44,
+            "weapon_smokegrenade" => 45,
+            "weapon_molotov" => 46,
+            "weapon_decoy" => 47,
+            "weapon_incgrenade" => 48,
+            "weapon_c4" => 49,
+            "weapon_m4a1_silencer" => 60,
+            "weapon_usp_silencer" => 61,
+            "weapon_cz75a" => 63,
+            "weapon_revolver" => 64,
+            _ => -1
+        };
     }
 
     private static bool TryGetWeaponClassByDefIndex(int weaponDefIndex, out string className)
@@ -2189,7 +2560,9 @@ public sealed class DemoTracerPlugin : BasePlugin
         string PlayerName,
         ulong SteamId,
         int FirstWeaponDefIndex,
-        int[] PreloadWeaponDefIndices);
+        int[] PreloadWeaponDefIndices,
+        bool HasLoadout,
+        ReplayLoadoutSnapshot Loadout);
 
     private readonly record struct ReplayAssignment(ManifestFile File, CCSPlayerController Bot);
 
@@ -2384,5 +2757,23 @@ public sealed class DemoTracerPlugin : BasePlugin
 
         [JsonPropertyName("preload_weapon_def_indices")]
         public int[]? PreloadWeaponDefIndices { get; set; }
+
+        [JsonPropertyName("loadout")]
+        public ReplayLoadoutSnapshot? Loadout { get; set; }
+    }
+
+    private sealed class ReplayLoadoutSnapshot
+    {
+        [JsonPropertyName("weapon_def_indices")]
+        public int[]? WeaponDefIndices { get; set; }
+
+        [JsonPropertyName("armor_value")]
+        public uint ArmorValue { get; set; }
+
+        [JsonPropertyName("has_helmet")]
+        public bool HasHelmet { get; set; }
+
+        [JsonPropertyName("has_defuser")]
+        public bool HasDefuser { get; set; }
     }
 }

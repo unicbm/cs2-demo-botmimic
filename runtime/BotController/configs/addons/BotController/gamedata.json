@@ -55,6 +55,28 @@
     },
     "comment": "Bot requests a jump."
   },
+  "BuyState::OnUpdate": {
+    "signatures": {
+      "library": "server",
+      "windows": "48 89 54 24 ? 48 89 4C 24 ? 55 57 41 54 48 8D AC 24",
+      "linux": ""
+    },
+    "comment": "Bot buy state per-tick ordering; issues buy commands. linux: TODO"
+  },
+  "BuyState::InitialDelay": {
+    "offsets": {
+      "windows": 8,
+      "linux": 8
+    },
+    "comment": "m_isInitialDelay (0x08); rising edge = entered BuyState. linux: TODO"
+  },
+  "BuyState::DoneBuying": {
+    "offsets": {
+      "windows": 24,
+      "linux": 24
+    },
+    "comment": "m_doneBuying (0x18); set 1 to stop vanilla buying. linux: TODO"
+  },
   "CCSBot::UpdateLookAngles": {
     "signatures": {
       "library": "server",

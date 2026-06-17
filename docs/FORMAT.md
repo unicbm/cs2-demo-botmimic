@@ -53,7 +53,7 @@ The sum of all `num_subtick` values must equal header `subtick_count`.
 
 ## MovementSnapshotV3
 
-This layout matches BotController ABI 10 (`92` bytes with `Pack=4`).
+This layout matches BotController ABI 11 (`92` bytes with `Pack=4`).
 
 | Field | Type |
 | --- | --- |

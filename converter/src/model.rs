@@ -195,6 +195,9 @@ pub struct ParsedPlayerTick {
     pub buttonstate3: u64,
     pub item_def_idx: i32,
     pub inventory_as_ids: Vec<i32>,
+    pub armor_value: u32,
+    pub has_helmet: bool,
+    pub has_defuser: bool,
     pub round_start_equip_value: u32,
     pub equipment_value_total: u32,
     pub money_saved_total: u32,
@@ -410,6 +413,16 @@ pub struct ConvertedFile {
     pub subticks: usize,
     pub first_weapon_def_index: i32,
     pub preload_weapon_def_indices: Vec<i32>,
+    #[serde(default)]
+    pub loadout: ReplayLoadout,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ReplayLoadout {
+    pub weapon_def_indices: Vec<i32>,
+    pub armor_value: u32,
+    pub has_helmet: bool,
+    pub has_defuser: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

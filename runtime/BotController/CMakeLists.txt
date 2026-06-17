@@ -136,6 +136,8 @@ add_library(BotController SHARED
     src/plugin.cpp
     src/WeaponLocker/WeaponLocker.cpp
     src/WeaponLocker/WeaponLockerState.cpp
+    src/BuyController/BuyController.cpp
+    src/BuyController/BuyControllerState.cpp
     src/BotController/BotController.cpp
     src/BotController/BotControllerState.cpp
     src/BotRecorder/InputInjector.cpp
@@ -155,6 +157,7 @@ target_include_directories(BotController PRIVATE
     src
     src/common
     src/WeaponLocker
+    src/BuyController
     src/BotController
     src/BotRecorder
     ${CMAKE_SOURCE_DIR}/third_party

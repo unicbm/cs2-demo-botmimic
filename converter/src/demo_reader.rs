@@ -30,6 +30,9 @@ mod demoparser_impl {
             "usercmd_buttonstate_3",
             "item_def_idx",
             "inventory_as_ids",
+            "armor_value",
+            "has_helmet",
+            "has_defuser",
             "round_start_equip_value",
             "equipment_value_total",
             "money_saved_total",
@@ -158,6 +161,9 @@ mod demoparser_impl {
                     .into_iter()
                     .map(|v| v as i32)
                     .collect(),
+                armor_value: get_u32(&columns, "armor_value", idx).unwrap_or_default(),
+                has_helmet: get_bool(&columns, "has_helmet", idx).unwrap_or(false),
+                has_defuser: get_bool(&columns, "has_defuser", idx).unwrap_or(false),
                 round_start_equip_value: get_u32(&columns, "round_start_equip_value", idx)
                     .unwrap_or_default(),
                 equipment_value_total: get_u32(&columns, "equipment_value_total", idx)

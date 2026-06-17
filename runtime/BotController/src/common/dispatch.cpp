@@ -13,6 +13,7 @@ namespace BotController
     namespace Dispatch
     {
         IVEngineServer2 *g_pEngine = nullptr;
+        ISource2GameClients *g_pGameClients = nullptr;
 
         // Set lock; Weapon also triggers a one-shot switch.
         int Lock(int slot, LockKind kind, int arg, bool quiet)

@@ -52,6 +52,13 @@ namespace BotController::targets
     // m_angEyeAngles (QAngle) — written each replay tick alongside v_angle
     inline int kPawn_EyeAngles = 0x1340;
 
+    // ---- BuyState ----
+
+    // m_isInitialDelay; rising edge each round = freshly entered BuyState
+    inline int kBuy_InitialDelay = 0x08;
+    // m_doneBuying; set 1 to make vanilla skip the rest of buying
+    inline int kBuy_DoneBuying = 0x18;
+
     // ---- CCSPlayer_WeaponServices ----
 
     // m_hActiveWeapon (CHandle)

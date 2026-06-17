@@ -5,6 +5,7 @@
 #include "WeaponLockerState.h"
 
 class IVEngineServer2;
+class ISource2GameClients;
 
 namespace BotController
 {
@@ -20,6 +21,8 @@ namespace BotController
     namespace Dispatch
     {
         extern IVEngineServer2 *g_pEngine;
+        // Server-side command executor used for issuing bot "buy" commands.
+        extern ISource2GameClients *g_pGameClients;
 
         // arg = LockTarget int for Weapon kind. quiet skips DebugLine.
         int Lock(int slot, LockKind kind, int arg, bool quiet = false);

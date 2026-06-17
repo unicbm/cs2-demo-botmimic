@@ -8,6 +8,8 @@
 #include "MotionRecorder.h"
 #include "WeaponLockerState.h"
 #include "BotControllerState.h"
+#include "BuyController.h"
+#include "BuyControllerState.h"
 
 #include <tier0/dbg.h>
 #include <convar.h>
@@ -18,6 +20,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
+#include <vector>
 
 namespace BotController
 {
@@ -462,6 +466,10 @@ CON_COMMAND_F(bc_status,
                             "[BC] subtick_view_delta: %s\n",
                             InputInjector::ReplaySubtickViewDeltas() ? "on" : "off");
 
+    Commands::PrintToCaller(context, "[BC] buy hooks:       %s | OnUpdate=%p\n",
+                            BuyControllerHooks::Status(),
+                            BuyControllerHooks::OnUpdateAddress());
+
     // All lock
     int nAll = BotControllerState::CountAll();
     Commands::PrintToCaller(context, "[BC] all-locked count:    %d\n", nAll);
@@ -505,4 +513,104 @@ CON_COMMAND_F(bc_status,
                                         s, Commands::TargetName(t));
         }
     }
+
+    int nBuy = BuyControllerState::CountPlans();
+    Commands::PrintToCaller(context, "[BC] buy-plan count:      %d\n", nBuy);
+    if (nBuy > 0)
+    {
+        for (int s = 0; s < BuyControllerState::kMaxSlots; ++s)
+        {
+            BuyPlan plan;
+            if (!BuyControllerState::Copy(s, plan))
+                continue;
+            if (plan.skip)
+                Commands::PrintToCaller(context, "[BC]   buy slot %2d -> skip\n", s);
+            else
+                Commands::PrintToCaller(context, "[BC]   buy slot %2d -> %d items\n",
+                                        s, static_cast<int>(plan.items.size()));
+        }
+    }
+}
+
+CON_COMMAND_F(bc_buy,
+              "bc_buy <slot> <alias> [alias...]  Force a bot's buy plan for each round.",
+              FCVAR_NONE)
+{
+    using namespace BotController;
+
+    if (args.ArgC() < 3)
+    {
+        Commands::PrintToCaller(context, "usage: bc_buy <slot> <alias> [alias...]\n");
+        return;
+    }
+
+    const int slot = std::atoi(args.Arg(1));
+    if (slot < 0 || slot >= BuyControllerState::kMaxSlots)
+    {
+        Commands::PrintToCaller(context, "[BC] error: slot out of range\n");
+        return;
+    }
+
+    std::vector<std::string> items;
+    for (int i = 2; i < args.ArgC(); ++i)
+        items.emplace_back(args.Arg(i));
+
+    BuyControllerState::Set(slot, items, false);
+    Commands::PrintToCaller(context, "[BC] buy plan set slot %d (%d items)\n",
+                            slot, static_cast<int>(items.size()));
+}
+
+CON_COMMAND_F(bc_buy_skip,
+              "bc_buy_skip <slot>  Force a bot to buy nothing each round.",
+              FCVAR_NONE)
+{
+    using namespace BotController;
+
+    if (args.ArgC() < 2)
+    {
+        Commands::PrintToCaller(context, "usage: bc_buy_skip <slot>\n");
+        return;
+    }
+
+    const int slot = std::atoi(args.Arg(1));
+    if (slot < 0 || slot >= BuyControllerState::kMaxSlots)
+    {
+        Commands::PrintToCaller(context, "[BC] error: slot out of range\n");
+        return;
+    }
+
+    BuyControllerState::Set(slot, {}, true);
+    Commands::PrintToCaller(context, "[BC] buy plan set slot %d -> skip\n", slot);
+}
+
+CON_COMMAND_F(bc_unbuy,
+              "bc_unbuy <slot>  Remove a bot's buy plan (back to vanilla).",
+              FCVAR_NONE)
+{
+    using namespace BotController;
+
+    if (args.ArgC() < 2)
+    {
+        Commands::PrintToCaller(context, "usage: bc_unbuy <slot>\n");
+        return;
+    }
+
+    const int slot = std::atoi(args.Arg(1));
+    if (slot < 0 || slot >= BuyControllerState::kMaxSlots)
+    {
+        Commands::PrintToCaller(context, "[BC] error: slot out of range\n");
+        return;
+    }
+
+    BuyControllerState::Clear(slot);
+    Commands::PrintToCaller(context, "[BC] buy plan cleared slot %d\n", slot);
+}
+
+CON_COMMAND_F(bc_unbuy_all,
+              "bc_unbuy_all  Remove every bot buy plan.",
+              FCVAR_NONE)
+{
+    using namespace BotController;
+    BuyControllerState::ClearAll();
+    Commands::PrintToCaller(context, "[BC] all buy plans cleared\n");
 }
