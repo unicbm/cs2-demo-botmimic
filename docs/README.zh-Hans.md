@@ -39,7 +39,7 @@ bot 会回放从 CS2 demo 转换出的移动、视角、开火和武器状态；
 
 这个项目还在 MVP 阶段，但已经可以做端到端测试。
 
-如果你只想查看 `.dtr` 字段布局，可以看 [`FORMAT.md`](FORMAT.md)。服务器指令的用途和实现边界见 [`COMMANDS.zh-Hans.md`](COMMANDS.zh-Hans.md)。
+如果你只想查看 `.dtr` 字段布局，可以看主 README 里的 [`.dtr` Format Contract](../README.md#dtr-format-contract)。服务器指令的用途和实现边界见 [`COMMANDS.zh-Hans.md`](COMMANDS.zh-Hans.md)。
 
 ## 适合谁
 

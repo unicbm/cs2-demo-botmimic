@@ -33,7 +33,8 @@ or legacy CS:GO paths.
 - `css/`: CounterStrikeSharp plugin, `dtr_` commands, manifest loading, bot
   assignment, replay sequencing, BotHider identity handoff, loadout alignment,
   projectile alignment, and user-facing status.
-- `docs/`: user-facing usage and `.dtr` format documentation.
+- `docs/`: user-facing usage, command, and localized supplemental docs. The
+  `.dtr` format contract lives in the root `README.md`.
 - `third_party/`: vendored source and attribution. Keep vendor changes minimal.
 
 ## Converter Rules
@@ -72,7 +73,8 @@ or legacy CS:GO paths.
 - README title/subtitle should stay: **CS2 DemoTracer** and “Trace CS2 demos
   into bot-executable route replays.”
 - Keep English README and `docs/README.zh-Hans.md` aligned at a high level.
-- Keep `docs/FORMAT.md` aligned with the current `.dtr` writer/reader.
+- Keep the root README `.dtr Format Contract` aligned with the current `.dtr`
+  writer/reader.
 - Release sample packs must be sanitized: no raw `.dem`, no local paths in
   manifests, and no trace/debug CSVs.
 - Release notes should be factual and conservative. Do not claim Linux packages
