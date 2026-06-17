@@ -58,6 +58,8 @@ cs2-demotracer.exe wizard
 
 ## 3. 进 CS2 播放
 
+完整服务器指令参考见 [`COMMANDS.zh-Hans.md`](COMMANDS.zh-Hans.md)。
+
 服务器需要加载：
 
 - `runtime/BotController` 构建出的 Metamod DLL。

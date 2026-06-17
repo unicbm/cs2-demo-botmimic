@@ -23,7 +23,7 @@ bot 会回放从 CS2 demo 转换出的移动、视角、开火和武器状态；
 
 这个项目还在 MVP 阶段，但已经可以做端到端测试。
 
-如果你只想查看 `.dtr` 字段布局，可以看 [`FORMAT.md`](FORMAT.md)。
+如果你只想查看 `.dtr` 字段布局，可以看 [`FORMAT.md`](FORMAT.md)。服务器指令的用途和实现边界见 [`COMMANDS.zh-Hans.md`](COMMANDS.zh-Hans.md)。
 
 ## 适合谁
 
@@ -190,15 +190,16 @@ cargo run --release -- wizard
 - `runtime/BotController/`：CS2 Metamod runtime。
 - `css/`：CounterStrikeSharp 控制插件。
 - `docs/`：格式和使用补充说明。
-- `third_party/`：保留的第三方源码和许可说明。
+- `third_party/`：保留的第三方源码和上游许可文件。
 
 ## Credits
 
 感谢这些项目和作者：
 
-- [XBribo/CS2-Bot-Controller](https://github.com/XBribo/CS2-Bot-Controller)：CS2 bot hook、录制/回放、输入注入和武器锁定思路，本项目使用 BotController runtime 架构。
-- [LaihoE/demoparser](https://github.com/LaihoE/demoparser)：Rust CS2 demo parser，本项目 converter 使用它解析 demo。
-- [csgowiki/minidemo-encoder](https://github.com/csgowiki/minidemo-encoder)：历史 CS:GO demo-to-replay 工具链思路参考。
+- [XBribo/CS2-Bot-Controller](https://github.com/XBribo/CS2-Bot-Controller) / CS2-Bot-Locker，GPL-3.0：CS2 bot hook、录制/回放、输入注入和武器锁定思路，本项目使用 BotController runtime 架构。
+- [XBribo/CS2-Bot-Hider](https://github.com/XBribo/CS2-Bot-Hider)，GPL-3.0：用于可选的 BotHider 互操作，包括识别 BotHider 管理的 bot，以及 replay identity handoff 时对齐名字和 SteamID64。
+- [LaihoE/demoparser](https://github.com/LaihoE/demoparser)，MIT：Rust CS2 demo parser，本项目 converter 使用它解析 demo。`third_party/demoparser` 中保留了上游 license 和 README。
+- [csgowiki/minidemo-encoder](https://github.com/csgowiki/minidemo-encoder)，MIT：历史 `.dem -> replay file` 工具链思路参考；本项目没有复制它的 Go 源码。
 - Metamod:Source 和 CounterStrikeSharp 社区：CS2 本地插件生态。
 
-本项目使用 GPL-3.0 license。第三方项目的原始许可见 `NOTICE.md` 和对应源码目录。
+CS2 DemoTracer 自身代码按 GPL-3.0-only 发布。vendored 第三方源码在 `third_party/` 中保留各自的上游许可文件。

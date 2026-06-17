@@ -1,0 +1,255 @@
+# DemoTracer Command Reference
+
+These commands are entered in the CS2 server console after the Metamod
+`BotController` runtime and the CounterStrikeSharp `DemoTracer` plugin are
+loaded. Add semicolons only when you want to paste several commands as one
+console line.
+
+## Recommended Baseline
+
+```text
+css_plugins reload DemoTracer
+dtr_replay_identity 1
+dtr_weapon_align 1
+dtr_projectile_align 1
+dtr_handoff death_or_contact slot
+dtr_partial 1
+dtr_run_manifest "<output-dir>\<demo-id>\manifest.json" 0
+```
+
+`dtr_replay_identity 1` is useful when BotHider is present because the replay
+slots inherit demo names and SteamID64 values. If BotHider is unavailable, leave
+it off.
+
+## Defaults
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `dtr_weapon_align` | `1` | Align loadout, buy behavior, active weapon, and weapon slot locks. |
+| `dtr_projectile_align` | `1` | Align smoke projectile initial vectors from `.dtr` v4 data. |
+| `dtr_handoff` | `death_or_contact slot` | Release only the contacted/dead replay slot after contact or death. |
+| `dtr_partial` | `1` | Allow replay with fewer bots than manifest players. |
+| `dtr_replay_identity` | `0` | Do not write BotHider name/SteamID unless explicitly enabled. |
+| `dtr_util_trace` | `0` | Utility CSV trace disabled. |
+
+## Sequence Playback
+
+### `dtr_run_manifest <manifest.json> [start-round]`
+
+Arms sequential playback for a converted demo manifest.
+
+Implementation:
+
+- Reads all playable rounds from `manifest.json`.
+- Stops and unloads any current replay state.
+- On the next `round_start`, prepares the current round by loading per-player
+  `.dtr` files onto safe bot slots.
+- On `round_freeze_end`, starts all loaded replays.
+- After each started round, advances to the next round in the manifest.
+
+Use this for normal demo playback.
+
+### `dtr_stop_sequence`
+
+Stops an armed or running manifest sequence. It does not delete files and does
+not change plugin settings. It only stops future sequence scheduling; use
+`dtr_stop_all` if you also need to stop already playing slots.
+
+### `dtr_run_pool <pool_manifest.json> [start-round]`
+
+Arms economy-matched playback from a converted map pool.
+
+Implementation:
+
+- Reads `pool_manifest.json`.
+- On `round_freeze_end`, snapshots current T/CT equipment value.
+- Selects a candidate round by pistol-round status and economy similarity.
+- Loads that candidate round and starts replay immediately.
+- Tracks recently used candidates to reduce repeated picks.
+
+Use this when you want a local game to keep choosing similar opening routes from
+a pool instead of replaying one fixed demo.
+
+### `dtr_stop_pool`
+
+Stops future pool selection and clears the in-memory pool state. It does not
+stop slots that are already playing; use `dtr_stop_all` for that.
+
+## Manual Loading And Playback
+
+### `dtr_load_round <manifest.json> <round>`
+
+Loads one round from a manifest onto available replay bot slots, but does not
+start playback.
+
+Implementation:
+
+- Assigns T files to T bot slots and CT files to CT bot slots.
+- Uses safe candidates only: strict CS2 bots or BotHider-managed bot slots.
+- Applies buy skip for loaded slots so vanilla bot buying does not fight the
+  replay loadout.
+- Records per-slot manifest metadata such as player name, SteamID64, loadout,
+  preload weapon defs, and projectile events.
+
+### `dtr_arm_round <manifest.json> <round> [loop:0|1]`
+
+Loads one round and arms it to start on the next `round_freeze_end`.
+
+This is useful for testing a specific round with normal freeze-time timing.
+
+### `dtr_play_loaded [loop:0|1]`
+
+Starts every currently loaded slot immediately.
+
+Before starting, the plugin preloads replay loadouts and start weapons when
+`dtr_weapon_align` is enabled.
+
+### `dtr_load <slot> <absolute-or-game-path.dtr>`
+
+Loads a single `.dtr` file into one bot slot. This is a low-level manual command
+for experiments. It does not get manifest-only metadata such as `player_name`,
+`steam_id`, or full loadout unless those can be scanned from the `.dtr` itself.
+
+### `dtr_play <slot> [loop:0|1]`
+
+Starts replay for one loaded slot, after checking that the target is still a
+safe bot target.
+
+### `dtr_stop <slot>`
+
+Stops replay on one slot and releases runtime locks, pending alignments, buy
+plans, and replay brain state for that slot.
+
+### `dtr_stop_all`
+
+Stops all currently loaded slots and disables active sequence/pool/armed state.
+Loaded slot metadata may remain in memory; use `dtr_unload` when you want to
+remove a specific loaded replay from a slot.
+
+### `dtr_unload <slot>`
+
+Unloads one slot and clears the plugin metadata for that slot.
+
+## Fidelity And Handoff Controls
+
+### `dtr_weapon_align <0|1>`
+
+Enables or disables weapon/loadout alignment.
+
+Implementation when enabled:
+
+- At round load, native buy control is set to skip vanilla bot buying for replay
+  slots.
+- At pre-start, the plugin applies manifest loadout data: armor, helmet, CT kit,
+  grenades, primary/secondary candidates, and start weapon.
+- During replay ticks, the plugin follows `.dtr` weapon def indices and asks the
+  native runtime to switch active weapon and lock the matching inventory slot.
+- For missing weapons, the plugin uses CS2 item giving and cautious slot
+  replacement instead of trying to fake a buy menu purchase.
+
+Important limits:
+
+- This is replay fidelity alignment, not a full economy simulator.
+- Team-restricted live buying is bypassed; the plugin works from demo loadout
+  data where possible.
+- CS2 default pistol and inventory-slot behavior can still cause approximate
+  results in edge cases.
+
+### `dtr_projectile_align <0|1>`
+
+Enables or disables projectile initial-vector alignment.
+
+Implementation when enabled:
+
+- Requires `.dtr` v4 projectile events from the converter.
+- Currently matches smoke grenade projectile entities only.
+- The bot still performs the throw action naturally. The plugin waits for CS2 to
+  spawn the smoke projectile, resolves its thrower slot, matches the next demo
+  projectile event near the replay cursor, and writes:
+  `InitialPosition`, `InitialVelocity`, `AbsOrigin`, and `AbsVelocity`.
+- Matching is retried for a few ticks because CS2 may not attach the thrower or
+  final projectile fields immediately at spawn time.
+
+Why it exists:
+
+Replaying player origin, velocity, view angles, buttons, and subtick input does
+not always reproduce the same grenade initial velocity. Small velocity or height
+differences can make precision smokes hit a different collision edge. The v4
+projectile data records the demo result directly and corrects that bias.
+
+### `dtr_replay_identity <0|1>`
+
+Controls BotHider identity alignment.
+
+When enabled and BotHider is available, manifest loading queues name and
+SteamID64 updates for BotHider-managed bot slots using the demo player's
+`player_name` and `steam_id`.
+
+This is mainly for POV/spectator clarity. It is off by default because it
+depends on BotHider being installed and managing the replay bot slots.
+
+### `dtr_partial <0|1>`
+
+Controls whether a round may load with fewer safe bot slots than manifest
+players.
+
+- `1`: load as many safe same-side bot slots as available and report skipped
+  T/CT counts.
+- `0`: fail loading unless all manifest players can be assigned.
+
+### `dtr_handoff <off|death|contact|death_or_contact> [all|slot]`
+
+Controls when replay releases bot control back to normal bot behavior.
+
+Modes:
+
+- `off`: never hand off automatically.
+- `death`: hand off when a replay-controlled player dies or kills.
+- `contact`: hand off on combat/contact detection.
+- `death_or_contact`: use both death and contact triggers.
+
+Scope:
+
+- `slot`: release only the trigger slot. This is the intended safe default.
+- `all`: release every replaying slot when one trigger fires. Use only for
+  experiments.
+
+Contact implementation:
+
+- Uses bullet damage/hurt events and replay-bot enemy visibility checks.
+- Ignores the first short replay grace window after start to avoid immediate
+  false handoff.
+- Resets native locks and bot brain state when releasing a slot.
+
+## Diagnostics
+
+### `dtr_bots`
+
+Prints team players, strict bot status, BotHider-managed status, native
+`controllingBot` state, replay-candidate status, slot, team, and name.
+
+Use this before playback if a manifest refuses to load or assigns fewer slots
+than expected.
+
+### `dtr_status <slot>`
+
+Prints native ABI, replay cursor/total, playback state for one slot, handoff
+mode, partial mode, identity mode, projectile align state, and active
+sequence/pool pointer.
+
+### `dtr_util_trace <0|1> [path]`
+
+Writes a CSV trace for utility debugging.
+
+The trace includes slot replay cursor, live/replay positions and velocities,
+weapon state, grenade stash state, smoke projectile state, smoke detonation
+events, and internal projectile-align messages.
+
+This is a debugging command. It can produce large CSV files and should stay off
+for normal playback.
+
+### `bc_status`
+
+This command comes from the native `BotController` runtime, not the CSS
+DemoTracer plugin. It is still useful because it prints hook status, replay
+hook counters, lock counts, and buy-plan status.

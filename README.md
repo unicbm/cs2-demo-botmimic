@@ -27,7 +27,7 @@ In a local CS2 server, the runtime and CounterStrikeSharp plugin can then make b
 
 This is still an MVP, but the full demo -> replay -> in-game bot playback loop is already working.
 
-Plugin/runtime authors who only need to inspect replay fields can read the binary layout in [`docs/FORMAT.md`](docs/FORMAT.md).
+Plugin/runtime authors who only need to inspect replay fields can read the binary layout in [`docs/FORMAT.md`](docs/FORMAT.md). Server command details are documented in [`docs/COMMANDS.md`](docs/COMMANDS.md).
 
 ## Who This Is For
 
@@ -188,15 +188,16 @@ Repository layout:
 - `runtime/BotController/`: CS2 Metamod runtime.
 - `css/`: CounterStrikeSharp control plugin.
 - `docs/`: extra docs.
-- `third_party/`: vendored third-party source and license notes.
+- `third_party/`: vendored third-party source and upstream license files.
 
 ## Credits
 
 Thanks to:
 
-- [XBribo/CS2-Bot-Controller](https://github.com/XBribo/CS2-Bot-Controller): CS2 bot hooks, replay, recording, input injection, and weapon-locking ideas. This project uses the BotController runtime architecture.
-- [LaihoE/demoparser](https://github.com/LaihoE/demoparser): Rust CS2 demo parser used by the converter.
-- [csgowiki/minidemo-encoder](https://github.com/csgowiki/minidemo-encoder): inspiration for the historical CS:GO demo-to-replay tooling workflow.
-- The Metamod:Source and CounterStrikeSharp communities.
+- [XBribo/CS2-Bot-Controller](https://github.com/XBribo/CS2-Bot-Controller) / CS2-Bot-Locker, GPL-3.0: CS2 bot hooks, replay, recording, input injection, and weapon-locking ideas. This project uses the BotController runtime architecture.
+- [XBribo/CS2-Bot-Hider](https://github.com/XBribo/CS2-Bot-Hider), GPL-3.0: optional BotHider interoperability for managed bot detection plus name and SteamID64 alignment during replay identity handoff.
+- [LaihoE/demoparser](https://github.com/LaihoE/demoparser), MIT: Rust CS2 demo parser used by the converter. The vendored source under `third_party/demoparser` keeps its upstream license and README files.
+- [csgowiki/minidemo-encoder](https://github.com/csgowiki/minidemo-encoder), MIT: inspiration for the historical `.dem -> replay file` tooling workflow. No Go source from that project is copied here.
+- The Metamod:Source and CounterStrikeSharp communities for CS2 plugin infrastructure.
 
-This project is licensed under GPL-3.0. See `NOTICE.md` and the vendored source folders for third-party license details.
+CS2 DemoTracer's own code is licensed under GPL-3.0-only. Vendored third-party source keeps its upstream license files in `third_party/`.
