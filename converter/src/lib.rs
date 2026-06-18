@@ -4,6 +4,7 @@ pub mod demo_reader;
 pub mod export;
 pub mod model;
 pub mod nade_export;
+pub mod nade_library;
 pub mod pool;
 pub mod quality;
 pub mod rec_writer;

@@ -3,8 +3,10 @@ use cs2_demotracer::demo_reader::read_demo;
 use cs2_demotracer::export::{export_demo, parse_round_list, ConvertOptions};
 use cs2_demotracer::model::{Side, SubtickMode};
 use cs2_demotracer::nade_export::{
-    export_nade_clips, NadeExportOptions, DEFAULT_POST_ROLL_SECONDS, DEFAULT_PRE_ROLL_SECONDS,
+    export_nade_clips, NadeExportOptions, DEFAULT_OPENING_SECONDS, DEFAULT_POST_ROLL_SECONDS,
+    DEFAULT_PRE_ROLL_SECONDS,
 };
+use cs2_demotracer::nade_library::{build_nade_library, BuildNadeLibraryOptions};
 use cs2_demotracer::pool::{build_round_pool, BuildPoolOptions};
 use cs2_demotracer::quality::{analyze_demo, AnalysisOptions};
 use cs2_demotracer::rec_writer::read_rec_file;
@@ -91,6 +93,41 @@ enum Command {
         pre_roll: f32,
         #[arg(long, default_value_t = DEFAULT_POST_ROLL_SECONDS)]
         post_roll: f32,
+        #[arg(long, default_value_t = DEFAULT_OPENING_SECONDS)]
+        opening_seconds: f32,
+    },
+    /// Convert many demos into a local map-indexed nade library.
+    ConvertNadesLibrary {
+        #[arg(long)]
+        demo_dir: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        recursive: bool,
+        #[arg(long, default_value_t = 1)]
+        jobs: usize,
+        #[arg(long)]
+        max_demos: Option<usize>,
+        #[arg(long = "reuse-root")]
+        reuse_roots: Vec<PathBuf>,
+        #[arg(long)]
+        aggregate_only: bool,
+        #[arg(long, default_value_t = Side::Both)]
+        side: Side,
+        #[arg(long, default_value_t = DEFAULT_PRE_ROLL_SECONDS)]
+        pre_roll: f32,
+        #[arg(long, default_value_t = DEFAULT_POST_ROLL_SECONDS)]
+        post_roll: f32,
+        #[arg(long, default_value_t = DEFAULT_OPENING_SECONDS)]
+        opening_seconds: f32,
+        #[arg(long = "no-dedupe")]
+        no_dedupe: bool,
+        #[arg(long, default_value_t = 48.0)]
+        dedupe_origin_units: f32,
+        #[arg(long, default_value_t = 8.0)]
+        dedupe_yaw_degrees: f32,
+        #[arg(long, default_value_t = 120.0)]
+        dedupe_velocity_units: f32,
     },
     /// Validate .dtr files under a file or directory.
     Validate {
@@ -230,6 +267,7 @@ fn run() -> cs2_demotracer::Result<()> {
             rounds,
             pre_roll,
             post_roll,
+            opening_seconds,
         } => {
             let parsed = read_demo(&demo)?;
             let selected_rounds = rounds.as_deref().map(parse_round_list).transpose()?;
@@ -242,6 +280,7 @@ fn run() -> cs2_demotracer::Result<()> {
                     selected_rounds,
                     pre_roll_seconds: pre_roll,
                     post_roll_seconds: post_roll,
+                    opening_seconds,
                     subtick_mode: SubtickMode::Auto,
                 },
             )?;
@@ -252,6 +291,54 @@ fn run() -> cs2_demotracer::Result<()> {
                 report.skipped
             );
             println!("nade manifest {}", report.manifest_path.display());
+        }
+        Command::ConvertNadesLibrary {
+            demo_dir,
+            output,
+            recursive,
+            jobs,
+            max_demos,
+            reuse_roots,
+            aggregate_only,
+            side,
+            pre_roll,
+            post_roll,
+            opening_seconds,
+            no_dedupe,
+            dedupe_origin_units,
+            dedupe_yaw_degrees,
+            dedupe_velocity_units,
+        } => {
+            let report = build_nade_library(&BuildNadeLibraryOptions {
+                demo_dir,
+                output_dir: output,
+                recursive,
+                jobs,
+                max_demos,
+                reuse_roots,
+                aggregate_only,
+                side,
+                pre_roll_seconds: pre_roll,
+                post_roll_seconds: post_roll,
+                opening_seconds,
+                subtick_mode: SubtickMode::Auto,
+                dedupe: !no_dedupe,
+                dedupe_origin_units,
+                dedupe_yaw_degrees,
+                dedupe_velocity_units,
+            })?;
+            println!(
+                "nade library demos={} converted={} reused={} existing={} failures={} maps={} source_clips={} clips={} root={}",
+                report.demos_done,
+                report.demos_converted,
+                report.demos_reused,
+                report.demos_skipped_existing,
+                report.failures,
+                report.maps_written,
+                report.source_clips,
+                report.clips,
+                report.root.display()
+            );
         }
         Command::ConvertPool {
             demo_dir,

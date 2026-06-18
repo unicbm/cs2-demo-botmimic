@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 pub const NADE_MANIFEST_FORMAT_VERSION: u32 = 1;
 pub const DEFAULT_PRE_ROLL_SECONDS: f32 = 1.0;
 pub const DEFAULT_POST_ROLL_SECONDS: f32 = 0.5;
+pub const DEFAULT_OPENING_SECONDS: f32 = 20.0;
 const NADE_MANIFEST_BROTLI_BUFFER_SIZE: usize = 4096;
 const NADE_MANIFEST_BROTLI_QUALITY: u32 = 6;
 const NADE_MANIFEST_BROTLI_LGWIN: u32 = 22;
@@ -28,6 +29,7 @@ pub struct NadeExportOptions {
     pub selected_rounds: Option<BTreeSet<u32>>,
     pub pre_roll_seconds: f32,
     pub post_roll_seconds: f32,
+    pub opening_seconds: f32,
     pub subtick_mode: SubtickMode,
 }
 
@@ -53,6 +55,8 @@ pub struct NadeManifest {
     pub coordinate_mode: String,
     pub pre_roll_seconds: f32,
     pub post_roll_seconds: f32,
+    #[serde(default)]
+    pub opening_seconds: f32,
     pub clips: Vec<NadeClip>,
     pub skipped: Vec<NadeSkip>,
 }
@@ -105,6 +109,7 @@ pub struct NadeSkip {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NadePhase {
+    Opening,
     Combat,
     Retake,
 }
@@ -112,6 +117,7 @@ pub enum NadePhase {
 impl NadePhase {
     fn as_dir(self) -> &'static str {
         match self {
+            Self::Opening => "opening",
             Self::Combat => "combat",
             Self::Retake => "retake",
         }
@@ -143,6 +149,7 @@ pub fn export_nade_clips(
         coordinate_mode: "map_absolute".to_string(),
         pre_roll_seconds: options.pre_roll_seconds,
         post_roll_seconds: options.post_roll_seconds,
+        opening_seconds: options.opening_seconds,
         clips: Vec::new(),
         skipped: Vec::new(),
     };
@@ -315,7 +322,13 @@ fn build_clip(
     }];
 
     let side = Side::team_dir(release_row.team_num).to_string();
-    let phase = classify_phase(release_row.round, projectile.tick, parsed, round_bounds);
+    let phase = classify_phase(
+        release_row.round,
+        projectile.tick,
+        parsed,
+        round_bounds,
+        options.opening_seconds,
+    );
     let kind_dir = grenade_dir(effective_weapon_def_index, projectile.kind);
     let clip_id = clip_id(
         &parsed.demo_sha256,
@@ -395,6 +408,11 @@ fn validate_options(options: &NadeExportOptions) -> Result<()> {
             "post-roll must be a finite non-negative number".to_string(),
         ));
     }
+    if !options.opening_seconds.is_finite() || options.opening_seconds < 0.0 {
+        return Err(Error::InvalidDemo(
+            "opening-seconds must be a finite non-negative number".to_string(),
+        ));
+    }
     if options.pre_roll_seconds == 0.0 && options.post_roll_seconds == 0.0 {
         return Err(Error::InvalidDemo(
             "pre-roll and post-roll cannot both be zero".to_string(),
@@ -422,6 +440,7 @@ fn classify_phase(
     tick: i32,
     parsed: &ParsedDemo,
     round_bounds: &BTreeMap<u32, (i32, i32)>,
+    opening_seconds: f32,
 ) -> NadePhase {
     let Some((min_tick, max_tick)) = round_bounds.get(&round).copied() else {
         return NadePhase::Combat;
@@ -434,8 +453,41 @@ fn classify_phase(
         .min();
     match planted_tick {
         Some(plant_tick) if tick >= plant_tick => NadePhase::Retake,
+        _ if is_opening_throw(round, tick, parsed, min_tick, max_tick, opening_seconds) => {
+            NadePhase::Opening
+        }
         _ => NadePhase::Combat,
     }
+}
+
+fn is_opening_throw(
+    round: u32,
+    tick: i32,
+    parsed: &ParsedDemo,
+    min_tick: i32,
+    max_tick: i32,
+    opening_seconds: f32,
+) -> bool {
+    if opening_seconds <= 0.0 || !opening_seconds.is_finite() {
+        return false;
+    }
+    let live_start = parsed
+        .round_freeze_end_ticks
+        .iter()
+        .copied()
+        .filter(|freeze_end_tick| *freeze_end_tick >= min_tick && *freeze_end_tick <= max_tick)
+        .min()
+        .unwrap_or_else(|| {
+            parsed
+                .rows
+                .iter()
+                .filter(|row| row.round == round && row.round_in_progress)
+                .map(|row| row.tick)
+                .min()
+                .unwrap_or(min_tick)
+        });
+    let opening_ticks = seconds_to_ticks(opening_seconds, parsed.tick_rate);
+    tick < live_start.saturating_add(opening_ticks)
 }
 
 fn find_release_row<'a>(
@@ -582,6 +634,7 @@ mod tests {
                 selected_rounds: None,
                 pre_roll_seconds: DEFAULT_PRE_ROLL_SECONDS,
                 post_roll_seconds: DEFAULT_POST_ROLL_SECONDS,
+                opening_seconds: DEFAULT_OPENING_SECONDS,
                 subtick_mode: SubtickMode::Auto,
             },
         )
@@ -591,12 +644,12 @@ mod tests {
         assert_eq!(report.skipped, 0);
         let clip = &report.manifest.clips[0];
         assert_eq!(clip.kind, ProjectileKind::Smoke);
-        assert_eq!(clip.phase, NadePhase::Combat);
+        assert_eq!(clip.phase, NadePhase::Opening);
         assert_eq!(clip.clip_start_tick, 100);
         assert_eq!(clip.clip_end_tick, 196);
         assert_eq!(clip.release_tick_index, 64);
         assert_eq!(clip.side, "t");
-        assert!(clip.path.starts_with("nades/t/combat/smoke/"));
+        assert!(clip.path.starts_with("nades/t/opening/smoke/"));
 
         let rec = read_rec_file(&report.root.join(&clip.path)).unwrap();
         assert_eq!(rec.projectiles.len(), 1);
@@ -605,6 +658,21 @@ mod tests {
         assert!(report.manifest_path.exists());
         assert!(report.root.join("nade_manifest.json.br").exists());
         assert!(report.root.join("nade_conversion.log").exists());
+    }
+
+    #[test]
+    fn marks_after_opening_pre_plant_clip_as_combat() {
+        let parsed = sample_demo_with_rows(
+            vec![sample_projectile(1500, [10.0, 20.0, 30.0])],
+            100..=1600,
+        );
+        let temp = tempfile::tempdir().unwrap();
+        let report = export_nade_clips(&parsed, &test_options(temp.path())).unwrap();
+
+        assert_eq!(report.manifest.clips[0].phase, NadePhase::Combat);
+        assert!(report.manifest.clips[0]
+            .path
+            .starts_with("nades/t/combat/smoke/"));
     }
 
     #[test]
@@ -680,7 +748,7 @@ mod tests {
 
         let clip = &report.manifest.clips[0];
         assert_eq!(clip.weapon_def_index, 48);
-        assert!(clip.path.starts_with("nades/t/combat/incgrenade/"));
+        assert!(clip.path.starts_with("nades/t/opening/incgrenade/"));
 
         let rec = read_rec_file(&report.root.join(&clip.path)).unwrap();
         assert_eq!(rec.projectiles[0].weapon_def_index, 48);
@@ -694,12 +762,20 @@ mod tests {
             selected_rounds: None,
             pre_roll_seconds: DEFAULT_PRE_ROLL_SECONDS,
             post_roll_seconds: DEFAULT_POST_ROLL_SECONDS,
+            opening_seconds: DEFAULT_OPENING_SECONDS,
             subtick_mode: SubtickMode::Auto,
         }
     }
 
     fn sample_demo(projectiles: Vec<ParsedProjectile>) -> ParsedDemo {
-        let rows = (100..=260).map(sample_row).collect();
+        sample_demo_with_rows(projectiles, 100..=260)
+    }
+
+    fn sample_demo_with_rows(
+        projectiles: Vec<ParsedProjectile>,
+        range: std::ops::RangeInclusive<i32>,
+    ) -> ParsedDemo {
+        let rows = range.map(sample_row).collect();
         ParsedDemo {
             path: "<demo.dem>".to_string(),
             stem: "demo".to_string(),
