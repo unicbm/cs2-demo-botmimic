@@ -372,6 +372,7 @@ For normal use, export the recommended rounds only.
 - The server should run the same map and have enough bots.
 - `.dtr` uses a lossless compressed BotController-compatible replay format with demo-derived projectile metadata for smoke alignment. Full offline subtick/usercmd reconstruction is future work.
 - Some weapon/loadout details are still limited by CS2 slot behavior, especially default pistols.
+- The converter intentionally does not preserve or spoof cosmetic inventory state such as weapon finishes, knives, gloves, agents, stickers, or keychains/charms. CS2 demo/econ metadata can expose parts of that state, and third-party `.dtr`-adjacent plugins could extend it, but Valve's [Game Server Operation Guidelines](https://blog.counter-strike.net/server_guidelines/) prohibit community servers from falsifying player inventories or granting items players do not own. Valve has previously disabled Game Server Login Tokens (GSLTs) for operators that offered those services; cosmetic overrides are outside this project and are used at your own risk.
 - This is for local servers, research, content creation, and plugin development. It is not intended for matchmaking or cheating.
 
 ## Advanced CLI
