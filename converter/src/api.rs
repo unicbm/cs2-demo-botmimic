@@ -370,6 +370,18 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn prelude_exposes_public_nade_api_types() {
+        use crate::prelude::{NadeClipExportRequest, NadeContextOptions, Side, SubtickMode};
+
+        let mut request = NadeClipExportRequest::for_parsed("out");
+        request.side = Side::Both;
+        request.subtick_mode = SubtickMode::Auto;
+        request.context = NadeContextOptions::default();
+
+        assert_eq!(request.context.pre_roll_seconds, DEFAULT_PRE_ROLL_SECONDS);
+    }
+
     fn write_brotli_json(path: &Path, value: &impl serde::Serialize) {
         let file = fs::File::create(path).unwrap();
         let json = serde_json::to_vec(value).unwrap();

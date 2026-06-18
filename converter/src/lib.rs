@@ -14,6 +14,24 @@ pub mod synthesis;
 #[cfg(feature = "gui")]
 pub mod gui;
 
+pub mod dtr {
+    pub use crate::model::{
+        Cs2Rec, Cs2RecHeader, MovementSnapshot, ReplayProjectile, ReplayTick, SubtickMove,
+        DTR_FORMAT_VERSION,
+    };
+    pub use crate::rec_writer::{read_rec_file, write_rec_file};
+}
+
+pub mod prelude {
+    pub use crate::api::{
+        build_nade_library, build_nade_library_with_progress, export_nade_clips_from_demo_path,
+        export_nade_clips_from_parsed, read_nade_library_manifest, read_nade_manifest,
+        read_nade_map_manifest, NadeClipExportRequest, NadeContextOptions, NadeDedupeOptions,
+        NadeLibraryExportRequest,
+    };
+    pub use crate::model::{ProjectileKind, Side, SubtickMode};
+}
+
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, thiserror::Error)]

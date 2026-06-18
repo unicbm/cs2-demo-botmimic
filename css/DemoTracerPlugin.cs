@@ -3,7 +3,6 @@ using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Core.Attributes.Registration;
 using CounterStrikeSharp.API.Modules.Commands;
 using CounterStrikeSharp.API.Modules.Memory;
-using CounterStrikeSharp.API.Modules.Memory.DynamicFunctions;
 using CounterStrikeSharp.API.Modules.Utils;
 using System.Globalization;
 using System.IO.Compression;
@@ -32,28 +31,9 @@ public sealed class DemoTracerPlugin : BasePlugin
     private const int ProjectileAlignMatchAttempts = 8;
     private const int ProjectileAlignPostMatchWrites = 1;
     private const float NadeClipStartSettleSeconds = 0.12f;
-    private const float NadeClipFinishSettleSeconds = 0.35f;
     private const int NadeClipStartReadyRetries = 6;
     private const float NadeCycleDefaultGapSeconds = 1.5f;
     private const float NadeCycleMaxGapSeconds = 30.0f;
-    private const float NadeRoamDefaultSearchRadius = 2000.0f;
-    private const float NadeRoamMaxSearchRadius = 10000.0f;
-    private const float NadeRoamStartTolerance = 56.0f;
-    private const float NadeEntryStartTolerance = 56.0f;
-    private const float NadeEntryMoveTimeoutSeconds = 25.0f;
-    private const float NadeEntryStuckSeconds = 7.0f;
-    private const float NadeEntryProgressEpsilon = 12.0f;
-    private const float NadeRoamMoveTimeoutSeconds = 25.0f;
-    private const float NadeRoamStuckSeconds = 7.0f;
-    private const float NadeRoamProgressEpsilon = 12.0f;
-    private const float NadeRoamMaxStartZDelta = 192.0f;
-    private const float NadeRoamMinGapSeconds = 0.5f;
-    private const float NadeRoamRepeatStartRadius = 240.0f;
-    private const float NadeRoamRepeatDetonationRadius = 300.0f;
-    private const float NadeRoamFailedStartRadius = 700.0f;
-    private const int NadeRoamRecentStartLimit = 10;
-    private const int NadeRoamFailedStartLimit = 16;
-    private const int NadeRoamCandidateSampleSize = 32;
     private const int MaxPlayerSlots = 64;
     private static readonly string[] UtilityTraceColumns =
     [
@@ -143,7 +123,6 @@ public sealed class DemoTracerPlugin : BasePlugin
     private readonly HashSet<int> _loadoutSyncedSlots = new();
     private readonly HashSet<int> _lastPlayingSlots = new();
     private readonly Dictionary<int, float> _replayStartedAt = new();
-    private readonly Dictionary<int, PendingUtilityRelease> _pendingUtilityReleases = new();
     private readonly Dictionary<int, PendingBulletHit> _pendingBulletHits = new();
     private readonly Dictionary<int, PendingBulletDamage> _pendingBulletDamages = new();
     private readonly Dictionary<uint, UtilityProjectileTrace> _utilityTraceProjectiles = new();
@@ -175,21 +154,14 @@ public sealed class DemoTracerPlugin : BasePlugin
     private bool _partialReplayEnabled = true;
     private bool _replayIdentityEnabled;
     private int _nextNadeStartToken;
-    private NadeEntryState? _nadeEntry;
-    private int _nextNadeEntryToken;
     private NadeCycleState? _nadeCycle;
     private int _nextNadeCycleToken;
-    private NadeRoamState? _nadeRoam;
-    private int _nextNadeRoamToken;
-    private readonly BotMoveToAdapter _nadeRoamMoveTo = new();
-    private readonly Random _random = new();
 
     public override void Load(bool hotReload)
     {
         RegisterListener<Listeners.OnTick>(OnTick);
         RegisterListener<Listeners.OnEntitySpawned>(OnEntitySpawned);
         RegisterListener<Listeners.OnEntityDeleted>(OnEntityDeleted);
-        _nadeRoamMoveTo.Load();
         ConfigureNativeSafetyOffsets();
         Server.PrintToConsole("dtr: CSS control plugin loaded");
     }
@@ -197,8 +169,6 @@ public sealed class DemoTracerPlugin : BasePlugin
     public override void Unload(bool hotReload)
     {
         StopAndUnloadLoaded();
-        StopNadeRoam("unload", stopCurrent: true);
-        _nadeRoamMoveTo.ClearAll();
         StopUtilityTrace();
         BotControllerNative.ClearAllBuyPlans();
         _botHiderProbe.Dispose();
@@ -512,109 +482,38 @@ public sealed class DemoTracerPlugin : BasePlugin
         var manifestPath = command.GetArg(1);
         var clipId = command.GetArg(2);
         var loop = command.ArgCount >= 5 && command.GetArg(4) != "0";
-        if (IsNadeEntrySlot(slot))
-            StopNadeEntry("manual_run_nade", stopCurrent: false);
-        if (IsNadeRoamSlot(slot))
-            StopNadeRoam("manual_run_nade", stopCurrent: false);
-        if (IsNadeCycleSlot(slot))
-            StopNadeCycle("manual_run_nade", stopCurrent: false);
         var result = RunNadeClip(manifestPath, clipId, slot, loop);
         command.ReplyToCommand(result.Message);
     }
 
-    [ConsoleCommand("dtr_cycle_smokes", "dtr_cycle_smokes <nade_manifest.json> <slot> [t|ct|all] [opening|combat|retake|all] [gap_seconds]")]
+    [ConsoleCommand("dtr_cycle_smokes", "dtr_cycle_smokes <nade_manifest.json> <slot> [t|ct|all] [combat|retake|all] [gap_seconds]")]
     public void CycleSmokesCommand(CCSPlayerController? player, CommandInfo command)
     {
         RunNadeCycleCommand(command, "smoke", "dtr_cycle_smokes");
     }
 
-    [ConsoleCommand("dtr_cycle_flashes", "dtr_cycle_flashes <nade_manifest.json> <slot> [t|ct|all] [opening|combat|retake|all] [gap_seconds]")]
+    [ConsoleCommand("dtr_cycle_flashes", "dtr_cycle_flashes <nade_manifest.json> <slot> [t|ct|all] [combat|retake|all] [gap_seconds]")]
     public void CycleFlashesCommand(CCSPlayerController? player, CommandInfo command)
     {
         RunNadeCycleCommand(command, "flash", "dtr_cycle_flashes");
     }
 
-    [ConsoleCommand("dtr_cycle_he", "dtr_cycle_he <nade_manifest.json> <slot> [t|ct|all] [opening|combat|retake|all] [gap_seconds]")]
+    [ConsoleCommand("dtr_cycle_he", "dtr_cycle_he <nade_manifest.json> <slot> [t|ct|all] [combat|retake|all] [gap_seconds]")]
     public void CycleHeCommand(CCSPlayerController? player, CommandInfo command)
     {
         RunNadeCycleCommand(command, "he", "dtr_cycle_he");
     }
 
-    [ConsoleCommand("dtr_cycle_fire", "dtr_cycle_fire <nade_manifest.json> <slot> [t|ct|all] [opening|combat|retake|all] [gap_seconds]")]
+    [ConsoleCommand("dtr_cycle_fire", "dtr_cycle_fire <nade_manifest.json> <slot> [t|ct|all] [combat|retake|all] [gap_seconds]")]
     public void CycleFireCommand(CCSPlayerController? player, CommandInfo command)
     {
         RunNadeCycleCommand(command, "molotov", "dtr_cycle_fire");
     }
 
-    [ConsoleCommand("dtr_cycle_random_nades", "dtr_cycle_random_nades <nade_manifest.json> <slot> [t|ct|all] [opening|combat|retake|all] [gap_seconds]")]
+    [ConsoleCommand("dtr_cycle_random_nades", "dtr_cycle_random_nades <nade_manifest.json> <slot> [t|ct|all] [combat|retake|all] [gap_seconds]")]
     public void CycleRandomNadesCommand(CCSPlayerController? player, CommandInfo command)
     {
         RunNadeCycleCommand(command, "random", "dtr_cycle_random_nades");
-    }
-
-    [ConsoleCommand("dtr_roam_nades", "dtr_roam_nades <nade_manifest.json> <slot> [random|smoke|flash|he|molotov|fire] [t|ct|all] [opening|combat|retake|all] [search_radius] [gap_seconds]")]
-    public void RoamNadesCommand(CCSPlayerController? player, CommandInfo command)
-    {
-        if (!CheckAbi(command))
-            return;
-        if (command.ArgCount < 3)
-        {
-            command.ReplyToCommand(
-                "usage: dtr_roam_nades <nade_manifest.json> <slot> [random|smoke|flash|he|molotov|fire] [t|ct|all] [opening|combat|retake|all] [search_radius] [gap_seconds]");
-            return;
-        }
-        if (!int.TryParse(command.GetArg(2), out var slot) || slot < 0)
-        {
-            command.ReplyToCommand("dtr: slot must be a non-negative integer");
-            return;
-        }
-
-        var kindFilter = command.ArgCount >= 4 ? NormalizeNadeKindFilter(command.GetArg(3)) : "random";
-        var sideFilter = command.ArgCount >= 5 ? NormalizeNadeSideFilter(command.GetArg(4)) : "all";
-        var phaseFilter = command.ArgCount >= 6 ? NormalizeNadePhaseFilter(command.GetArg(5)) : "all";
-        if (kindFilter.Length == 0 || sideFilter.Length == 0 || phaseFilter.Length == 0)
-        {
-            command.ReplyToCommand(
-                "usage: dtr_roam_nades <nade_manifest.json> <slot> [random|smoke|flash|he|molotov|fire] [t|ct|all] [opening|combat|retake|all] [search_radius] [gap_seconds]");
-            return;
-        }
-
-        var searchRadius = NadeRoamDefaultSearchRadius;
-        if (command.ArgCount >= 7 &&
-            (!float.TryParse(command.GetArg(6), NumberStyles.Float, CultureInfo.InvariantCulture, out searchRadius) ||
-             searchRadius <= 0.0f ||
-             searchRadius > NadeRoamMaxSearchRadius))
-        {
-            command.ReplyToCommand($"dtr: search_radius must be in (0,{F(NadeRoamMaxSearchRadius)}]");
-            return;
-        }
-
-        var gapSeconds = NadeCycleDefaultGapSeconds;
-        if (command.ArgCount >= 8 &&
-            (!float.TryParse(command.GetArg(7), NumberStyles.Float, CultureInfo.InvariantCulture, out gapSeconds) ||
-             gapSeconds < 0.0f ||
-             gapSeconds > NadeCycleMaxGapSeconds))
-        {
-            command.ReplyToCommand($"dtr: gap_seconds must be in [0,{F(NadeCycleMaxGapSeconds)}]");
-            return;
-        }
-
-        var result = StartNadeRoam(
-            command.GetArg(1),
-            slot,
-            kindFilter,
-            sideFilter,
-            phaseFilter,
-            searchRadius,
-            gapSeconds);
-        command.ReplyToCommand(result.Message);
-    }
-
-    [ConsoleCommand("dtr_stop_nade_roam", "dtr_stop_nade_roam")]
-    public void StopNadeRoamCommand(CCSPlayerController? player, CommandInfo command)
-    {
-        var stopped = StopNadeRoam("manual_stop_nade_roam", stopCurrent: true);
-        command.ReplyToCommand(stopped ? "dtr: nade roam stopped" : "dtr: no active nade roam");
     }
 
     private void RunNadeCycleCommand(CommandInfo command, string kindFilter, string commandName)
@@ -623,7 +522,7 @@ public sealed class DemoTracerPlugin : BasePlugin
             return;
         if (command.ArgCount < 3)
         {
-            command.ReplyToCommand($"usage: {commandName} <nade_manifest.json> <slot> [t|ct|all] [opening|combat|retake|all] [gap_seconds]");
+            command.ReplyToCommand($"usage: {commandName} <nade_manifest.json> <slot> [t|ct|all] [combat|retake|all] [gap_seconds]");
             return;
         }
         if (!int.TryParse(command.GetArg(2), out var slot) || slot < 0)
@@ -716,10 +615,6 @@ public sealed class DemoTracerPlugin : BasePlugin
             return;
         var ok = BotControllerNative.StopReplay(slot);
         ReleaseReplaySlot(slot, "manual_stop");
-        if (IsNadeEntrySlot(slot))
-            StopNadeEntry("manual_stop", stopCurrent: false);
-        if (IsNadeRoamSlot(slot))
-            StopNadeRoam("manual_stop", stopCurrent: false);
         if (IsNadeCycleSlot(slot))
             StopNadeCycle("manual_stop", stopCurrent: false);
         command.ReplyToCommand(ok
@@ -730,10 +625,7 @@ public sealed class DemoTracerPlugin : BasePlugin
     [ConsoleCommand("dtr_stop_all", "dtr_stop_all")]
     public void StopAllCommand(CCSPlayerController? player, CommandInfo command)
     {
-        StopNadeEntry("manual_stop_all", stopCurrent: false);
-        StopNadeRoam("manual_stop_all", stopCurrent: false);
         StopNadeCycle("manual_stop_all", stopCurrent: false);
-        _nadeRoamMoveTo.ClearAll();
         foreach (var slot in _loadedSlots.ToArray())
         {
             BotControllerNative.StopReplay(slot);
@@ -758,7 +650,6 @@ public sealed class DemoTracerPlugin : BasePlugin
         _rebuiltInventorySlots.Clear();
         _lastPlayingSlots.Clear();
         _replayStartedAt.Clear();
-        _pendingUtilityReleases.Clear();
         _pendingBulletHits.Clear();
         _pendingBulletDamages.Clear();
         command.ReplyToCommand($"dtr: stopped {_loadedSlots.Count} loaded slots");
@@ -772,10 +663,6 @@ public sealed class DemoTracerPlugin : BasePlugin
         var ok = BotControllerNative.UnloadReplay(slot);
         if (ok)
         {
-            if (IsNadeEntrySlot(slot))
-                StopNadeEntry("manual_unload", stopCurrent: false);
-            if (IsNadeRoamSlot(slot))
-                StopNadeRoam("manual_unload", stopCurrent: false);
             if (IsNadeCycleSlot(slot))
                 StopNadeCycle("manual_unload", stopCurrent: false);
             _loadedSlots.Remove(slot);
@@ -992,13 +879,9 @@ public sealed class DemoTracerPlugin : BasePlugin
 
     private void OnTick()
     {
-        _nadeRoamMoveTo.ReissueGoals();
-        ProcessNadeEntry();
-        ProcessNadeRoam();
-
         ProcessPendingProjectileAlign();
 
-        if (_utilityTraceEnabled && _nadeCycle == null && _nadeRoam == null)
+        if (_utilityTraceEnabled && _nadeCycle == null)
             TraceUtilityTick();
 
         if (_loadedSlots.Count == 0)
@@ -1011,12 +894,9 @@ public sealed class DemoTracerPlugin : BasePlugin
             {
                 if (_lastPlayingSlots.Contains(slot))
                 {
-                    if (TryBeginUtilityReplayFinishSettle(slot))
-                    {
-                        continue;
-                    }
-
-                    CompleteReplayFinished(slot);
+                    ReleaseReplaySlot(slot, "replay_finished");
+                    if (IsNadeCycleSlot(slot))
+                        QueueNextNadeCycleClip("replay_finished");
                 }
                 continue;
             }
@@ -1025,8 +905,6 @@ public sealed class DemoTracerPlugin : BasePlugin
             {
                 BotControllerNative.StopReplay(slot);
                 ReleaseReplaySlot(slot, "unsafe_replay_target");
-                if (IsNadeRoamSlot(slot))
-                    StopNadeRoam("unsafe_replay_target", stopCurrent: false);
                 if (IsNadeCycleSlot(slot))
                     StopNadeCycle("unsafe_replay_target", stopCurrent: false);
                 continue;
@@ -2115,20 +1993,12 @@ public sealed class DemoTracerPlugin : BasePlugin
         }
     }
 
-    private LoadRoundResult RunNadeClip(string manifestPath, NadeClip clip, int slot, bool loop, bool allowEntryMove = true)
+    private LoadRoundResult RunNadeClip(string manifestPath, NadeClip clip, int slot, bool loop)
     {
         try
         {
             if (!IsReplaySlotStillSafe(slot))
                 return LoadRoundResult.Fail($"dtr: refused to run nade on slot {slot}: not a safe bot target");
-
-            if (allowEntryMove &&
-                !IsNadeCycleSlot(slot) &&
-                !IsNadeRoamSlot(slot) &&
-                TryStartNadeEntry(manifestPath, clip, slot, loop, out var entryResult))
-            {
-                return entryResult;
-            }
 
             var recPath = ResolveManifestPath(manifestPath, clip.Path);
             if (!File.Exists(recPath))
@@ -2319,8 +2189,6 @@ public sealed class DemoTracerPlugin : BasePlugin
         Server.PrintToConsole($"dtr: failed to play nade {clipId} on slot {slot}: {reason}");
         if (IsNadeCycleSlot(slot))
             QueueNextNadeCycleClip("nade_start_failed");
-        if (IsNadeRoamSlot(slot))
-            QueueNextNadeRoamClip("nade_start_failed");
     }
 
     private LoadRoundResult StartNadeCycle(
@@ -2359,7 +2227,6 @@ public sealed class DemoTracerPlugin : BasePlugin
             var disabledTrace = _utilityTraceEnabled;
             if (disabledTrace)
                 StopUtilityTrace();
-            StopNadeRoam($"new_{kindFilter}_cycle", stopCurrent: true);
             StopNadeCycle($"new_{kindFilter}_cycle", stopCurrent: true);
             var token = ++_nextNadeCycleToken;
             _nadeCycle = new NadeCycleState(
@@ -2484,527 +2351,6 @@ public sealed class DemoTracerPlugin : BasePlugin
 
     private bool IsNadeCycleSlot(int slot)
         => _nadeCycle is { } cycle && cycle.Slot == slot;
-
-    private bool TryStartNadeEntry(
-        string manifestPath,
-        NadeClip clip,
-        int slot,
-        bool loop,
-        out LoadRoundResult result)
-    {
-        result = default;
-        if (!_nadeRoamMoveTo.IsReady)
-            return false;
-        if (!TryGetNadeStartPoint(clip, out var start) ||
-            !TryGetSlotOrigin(slot, out var origin))
-            return false;
-
-        var distance = origin.DistanceTo(start);
-        if (distance <= NadeEntryStartTolerance)
-            return false;
-
-        if (_loadedSlots.Contains(slot) || BotControllerNative.GetReplayState(slot).Total > 0)
-        {
-            BotControllerNative.StopReplay(slot);
-            ReleaseReplaySlot(slot, "nade_entry_reload");
-            BotControllerNative.UnloadReplay(slot);
-            _loadedSlots.Remove(slot);
-            ForgetLoadedReplayMetadata(slot);
-        }
-
-        StopNadeEntry("new_nade_entry", stopCurrent: false);
-        var token = ++_nextNadeEntryToken;
-        _nadeEntry = new NadeEntryState(
-            token,
-            Path.GetFullPath(manifestPath),
-            clip,
-            slot,
-            loop,
-            start,
-            Server.CurrentTime,
-            distance);
-        _nadeRoamMoveTo.SetGoal(slot, start);
-        Server.PrintToConsole(
-            $"dtr: nade entry move slot={slot} clip={clip.ClipId} dist={F(distance)} goal={start} tolerance={F(NadeEntryStartTolerance)}");
-        result = LoadRoundResult.Success(
-            $"dtr: moving slot {slot} to nade start for {clip.ClipId} dist={F(distance)} tolerance={F(NadeEntryStartTolerance)}");
-        return true;
-    }
-
-    private void ProcessNadeEntry()
-    {
-        var entry = _nadeEntry;
-        if (entry == null || !IsNadeEntryCurrent(entry.Token))
-            return;
-
-        if (!IsReplaySlotStillSafe(entry.Slot))
-        {
-            StopNadeEntry("unsafe_entry_target", stopCurrent: false);
-            return;
-        }
-
-        if (!TryGetSlotOrigin(entry.Slot, out var origin))
-            return;
-
-        var distance = origin.DistanceTo(entry.Start);
-        if (distance + NadeEntryProgressEpsilon < entry.BestDistance)
-        {
-            entry.BestDistance = distance;
-            entry.LastProgressTime = Server.CurrentTime;
-        }
-
-        if (distance <= NadeEntryStartTolerance)
-        {
-            StartNadeEntryClip(entry, distance, "entry_reached");
-            return;
-        }
-
-        var moveElapsed = Server.CurrentTime - entry.StartedTime;
-        var stuckElapsed = Server.CurrentTime - entry.LastProgressTime;
-        if (moveElapsed < NadeEntryMoveTimeoutSeconds && stuckElapsed < NadeEntryStuckSeconds)
-            return;
-
-        Server.PrintToConsole(
-            $"dtr: nade entry failed slot={entry.Slot} clip={entry.Clip.ClipId} reason={(moveElapsed >= NadeEntryMoveTimeoutSeconds ? "move_timeout" : "stuck")} dist={F(distance)} best={F(entry.BestDistance)}");
-        StopNadeEntry("entry_move_failed", stopCurrent: false);
-    }
-
-    private void StartNadeEntryClip(NadeEntryState entry, float distance, string reason)
-    {
-        if (!IsNadeEntryCurrent(entry.Token))
-            return;
-
-        _nadeEntry = null;
-        _nextNadeEntryToken++;
-        _nadeRoamMoveTo.ClearGoal(entry.Slot);
-        Server.PrintToConsole(
-            $"dtr: nade entry reached slot={entry.Slot} clip={entry.Clip.ClipId} offset={F(distance)} reason={reason}");
-        var result = RunNadeClip(entry.ManifestPath, entry.Clip, entry.Slot, entry.Loop, allowEntryMove: false);
-        if (!result.Ok)
-            Server.PrintToConsole($"dtr: nade entry clip failed: {result.Message}");
-    }
-
-    private bool StopNadeEntry(string reason, bool stopCurrent)
-    {
-        var entry = _nadeEntry;
-        if (entry == null)
-            return false;
-
-        _nadeEntry = null;
-        _nextNadeEntryToken++;
-        _nadeRoamMoveTo.ClearGoal(entry.Slot);
-        if (stopCurrent)
-        {
-            BotControllerNative.StopReplay(entry.Slot);
-            ReleaseReplaySlot(entry.Slot, reason);
-        }
-        Server.PrintToConsole(
-            $"dtr: nade entry stopped reason={reason} slot={entry.Slot} clip={entry.Clip.ClipId}");
-        return true;
-    }
-
-    private bool IsNadeEntryCurrent(int token)
-        => _nadeEntry is { } entry && entry.Token == token;
-
-    private bool IsNadeEntrySlot(int slot)
-        => _nadeEntry is { } entry && entry.Slot == slot;
-
-    private LoadRoundResult StartNadeRoam(
-        string manifestPath,
-        int slot,
-        string kindFilter,
-        string sideFilter,
-        string phaseFilter,
-        float searchRadius,
-        float gapSeconds)
-    {
-        try
-        {
-            gapSeconds = Math.Max(gapSeconds, NadeRoamMinGapSeconds);
-            if (!_nadeRoamMoveTo.IsReady)
-                return LoadRoundResult.Fail("dtr: CCSBot::MoveTo unavailable; nade roam cannot move bots");
-            if (!TryReadNadeManifest(manifestPath, out var manifest, out var readError))
-                return LoadRoundResult.Fail($"dtr: failed to read nade manifest: {readError}");
-            if (!IsReplaySlotStillSafe(slot))
-                return LoadRoundResult.Fail($"dtr: refused to roam nades on slot {slot}: not a safe bot target");
-            if (!TryGetSlotOrigin(slot, out _))
-                return LoadRoundResult.Fail($"dtr: slot {slot} has no valid live origin");
-
-            var clips = manifest.Clips
-                .Where(clip => NadeCycleKindMatches(clip, kindFilter))
-                .Where(clip => NadeCycleSideMatches(clip, sideFilter))
-                .Where(clip => NadeCyclePhaseMatches(clip, phaseFilter))
-                .Where(clip => TryGetNadeStartPoint(clip, out _))
-                .OrderBy(clip => clip.Side, StringComparer.Ordinal)
-                .ThenBy(clip => clip.Phase, StringComparer.Ordinal)
-                .ThenBy(clip => clip.Kind, StringComparer.Ordinal)
-                .ThenBy(clip => clip.Round)
-                .ThenBy(clip => clip.ThrowTick)
-                .ThenBy(clip => clip.ClipId, StringComparer.Ordinal)
-                .ToList();
-            if (clips.Count == 0)
-            {
-                return LoadRoundResult.Fail(
-                    $"dtr: nade roam has no clips for kind={kindFilter} side={sideFilter} phase={phaseFilter}");
-            }
-
-            var disabledTrace = _utilityTraceEnabled;
-            if (disabledTrace)
-                StopUtilityTrace();
-            StopNadeCycle("new_nade_roam", stopCurrent: true);
-            StopNadeRoam("new_nade_roam", stopCurrent: true);
-
-            var token = ++_nextNadeRoamToken;
-            _nadeRoam = new NadeRoamState(
-                token,
-                Path.GetFullPath(manifestPath),
-                clips,
-                slot,
-                kindFilter,
-                sideFilter,
-                phaseFilter,
-                searchRadius,
-                gapSeconds);
-            Server.PrintToConsole(
-                $"dtr: nade roam start clips={clips.Count} slot={slot} kind={kindFilter} side={sideFilter} phase={phaseFilter} radius={F(searchRadius)} gap={F(gapSeconds)}s trace={(disabledTrace ? "disabled" : "off")}");
-            StartNextNadeRoamClip("roam_start");
-            return LoadRoundResult.Success(
-                $"dtr: nade roam started clips={clips.Count} slot={slot} kind={kindFilter} side={sideFilter} phase={phaseFilter} radius={F(searchRadius)} gap={F(gapSeconds)}s");
-        }
-        catch (Exception ex)
-        {
-            return LoadRoundResult.Fail($"dtr: failed to start nade roam: {ex.Message}");
-        }
-    }
-
-    private void ProcessNadeRoam()
-    {
-        var roam = _nadeRoam;
-        if (roam == null || !IsNadeRoamCurrent(roam.Token))
-            return;
-
-        if (roam.Phase == NadeRoamPhase.Waiting)
-        {
-            if (Server.CurrentTime >= roam.WaitUntilTime)
-                StartNextNadeRoamClip("gap_elapsed");
-            return;
-        }
-
-        if (roam.Phase != NadeRoamPhase.MovingToClip)
-            return;
-
-        if (!IsReplaySlotStillSafe(roam.Slot))
-        {
-            StopNadeRoam("unsafe_roam_target", stopCurrent: false);
-            return;
-        }
-
-        if (roam.PendingClip == null)
-        {
-            QueueNextNadeRoamClip("missing_pending_clip");
-            return;
-        }
-
-        if (!TryGetSlotOrigin(roam.Slot, out var origin))
-            return;
-
-        var distance = origin.DistanceTo(roam.PendingStart);
-        if (distance + NadeRoamProgressEpsilon < roam.BestDistance)
-        {
-            roam.BestDistance = distance;
-            roam.LastProgressTime = Server.CurrentTime;
-        }
-
-        if (distance <= NadeRoamStartTolerance)
-        {
-            StartPendingNadeRoamClip(roam, distance, "entry_reached");
-            return;
-        }
-
-        var moveElapsed = Server.CurrentTime - roam.MoveStartedTime;
-        var stuckElapsed = Server.CurrentTime - roam.LastProgressTime;
-        if (moveElapsed < NadeRoamMoveTimeoutSeconds && stuckElapsed < NadeRoamStuckSeconds)
-            return;
-
-        var clip = roam.PendingClip;
-        roam.FailedCount++;
-        roam.UsedClipIds.Add(clip.ClipId);
-        AddFailedNadeRoamStart(roam, roam.PendingStart);
-        _nadeRoamMoveTo.ClearGoal(roam.Slot);
-        Server.PrintToConsole(
-            $"dtr: nade roam skip clip={clip.ClipId} slot={roam.Slot} reason={(moveElapsed >= NadeRoamMoveTimeoutSeconds ? "move_timeout" : "stuck")} dist={F(distance)} best={F(roam.BestDistance)}");
-        QueueNextNadeRoamClip("move_failed");
-    }
-
-    private void StartNextNadeRoamClip(string reason)
-    {
-        var roam = _nadeRoam;
-        if (roam == null || !IsNadeRoamCurrent(roam.Token))
-            return;
-        if (!IsReplaySlotStillSafe(roam.Slot))
-        {
-            StopNadeRoam("unsafe_roam_target", stopCurrent: false);
-            return;
-        }
-        if (!TryGetSlotOrigin(roam.Slot, out var origin))
-        {
-            StopNadeRoam("missing_roam_origin", stopCurrent: false);
-            return;
-        }
-
-        if (!TrySelectNadeRoamCandidate(roam, origin, out var clip, out var start, out var distance) || clip == null)
-        {
-            StopNadeRoam("no_nearby_roam_clip", stopCurrent: false);
-            Server.PrintToConsole(
-                $"dtr: nade roam stopped slot={roam.Slot}: no clips within radius={F(roam.SearchRadius)} kind={roam.KindFilter} side={roam.SideFilter} phase={roam.PhaseFilter}");
-            return;
-        }
-
-        roam.PendingClip = clip;
-        roam.PendingStart = start;
-        roam.Phase = NadeRoamPhase.MovingToClip;
-        roam.MoveStartedTime = Server.CurrentTime;
-        roam.LastProgressTime = Server.CurrentTime;
-        roam.BestDistance = distance;
-        _nadeRoamMoveTo.SetGoal(roam.Slot, start);
-        Server.PrintToConsole(
-            $"dtr: nade roam move slot={roam.Slot} clip={clip.ClipId} {clip.Side}/{clip.Phase}/{clip.Kind} round={clip.Round} player={clip.PlayerName} dist={F(distance)} goal={start} reason={reason}");
-
-        if (distance <= NadeRoamStartTolerance)
-            StartPendingNadeRoamClip(roam, distance, "already_near_start");
-    }
-
-    private void StartPendingNadeRoamClip(NadeRoamState roam, float distance, string reason)
-    {
-        var clip = roam.PendingClip;
-        if (clip == null)
-        {
-            QueueNextNadeRoamClip("missing_pending_clip");
-            return;
-        }
-
-        _nadeRoamMoveTo.ClearGoal(roam.Slot);
-        roam.Phase = NadeRoamPhase.ClipReplay;
-        var start = roam.PendingStart;
-        roam.PendingClip = null;
-        roam.UsedClipIds.Add(clip.ClipId);
-        AddRecentNadeRoamThrow(roam, clip, start);
-        roam.StartedCount++;
-        Server.PrintToConsole(
-            $"dtr: nade roam play slot={roam.Slot} clip={clip.ClipId} {clip.Side}/{clip.Phase}/{clip.Kind} round={clip.Round} player={clip.PlayerName} offset={F(distance)} reason={reason}");
-
-        var result = RunNadeClip(roam.ManifestPath, clip, roam.Slot, loop: false);
-        if (!result.Ok)
-        {
-            roam.FailedCount++;
-            Server.PrintToConsole($"dtr: nade roam clip failed: {result.Message}");
-            QueueNextNadeRoamClip("clip_load_failed");
-        }
-    }
-
-    private void QueueNextNadeRoamClip(string reason)
-    {
-        var roam = _nadeRoam;
-        if (roam == null || !IsNadeRoamCurrent(roam.Token))
-            return;
-        if (roam.Phase == NadeRoamPhase.Waiting)
-            return;
-
-        _nadeRoamMoveTo.ClearGoal(roam.Slot);
-        roam.PendingClip = null;
-        roam.Phase = NadeRoamPhase.Waiting;
-        roam.WaitUntilTime = Server.CurrentTime + roam.GapSeconds;
-        Server.PrintToConsole(
-            $"dtr: nade roam wait gap={F(roam.GapSeconds)}s played={roam.StartedCount} failed={roam.FailedCount} reason={reason}");
-    }
-
-    private bool StopNadeRoam(string reason, bool stopCurrent)
-    {
-        var roam = _nadeRoam;
-        if (roam == null)
-            return false;
-
-        _nadeRoam = null;
-        _nextNadeRoamToken++;
-        _queuedNadeStartTokens.Remove(roam.Slot);
-        _nadeRoamMoveTo.ClearGoal(roam.Slot);
-        if (stopCurrent)
-        {
-            BotControllerNative.StopReplay(roam.Slot);
-            ReleaseReplaySlot(roam.Slot, reason);
-            BotControllerNative.UnloadReplay(roam.Slot);
-            _loadedSlots.Remove(roam.Slot);
-            ForgetLoadedReplayMetadata(roam.Slot);
-        }
-        Server.PrintToConsole(
-            $"dtr: nade roam stopped reason={reason} played={roam.StartedCount} failed={roam.FailedCount} slot={roam.Slot}");
-        return true;
-    }
-
-    private bool TrySelectNadeRoamCandidate(
-        NadeRoamState roam,
-        NadeRoamPoint origin,
-        out NadeClip? clip,
-        out NadeRoamPoint start,
-        out float distance)
-    {
-        if (TrySelectNadeRoamCandidate(roam, origin, allowUsedReset: false, out clip, out start, out distance))
-            return true;
-        if (roam.UsedClipIds.Count == 0)
-            return false;
-
-        roam.UsedClipIds.Clear();
-        return TrySelectNadeRoamCandidate(roam, origin, allowUsedReset: true, out clip, out start, out distance);
-    }
-
-    private bool TrySelectNadeRoamCandidate(
-        NadeRoamState roam,
-        NadeRoamPoint origin,
-        bool allowUsedReset,
-        out NadeClip? clip,
-        out NadeRoamPoint start,
-        out float distance)
-    {
-        clip = null;
-        start = default;
-        distance = 0.0f;
-
-        var candidates = new List<(NadeClip Clip, NadeRoamPoint Start, float Distance)>();
-        foreach (var candidate in roam.Clips)
-        {
-            if (!allowUsedReset && roam.UsedClipIds.Contains(candidate.ClipId))
-                continue;
-            if (!TryGetNadeStartPoint(candidate, out var candidateStart))
-                continue;
-            if (MathF.Abs(candidateStart.Z - origin.Z) > NadeRoamMaxStartZDelta)
-                continue;
-
-            var candidateDistance = origin.DistanceTo(candidateStart);
-            if (candidateDistance <= roam.SearchRadius)
-                candidates.Add((candidate, candidateStart, candidateDistance));
-        }
-
-        if (candidates.Count == 0)
-            return false;
-
-        var unfailedCandidates = candidates
-            .Where(item => !IsNearFailedNadeRoamStart(roam, item.Start))
-            .ToList();
-        var primaryCandidates = unfailedCandidates.Count > 0 ? unfailedCandidates : candidates;
-        var freshCandidates = primaryCandidates
-            .Where(item => !IsNearRecentNadeRoamThrow(roam, item.Clip, item.Start))
-            .ToList();
-        var selected = SelectNadeRoamCandidate(
-            freshCandidates.Count > 0 ? freshCandidates :
-            primaryCandidates);
-        clip = selected.Clip;
-        start = selected.Start;
-        distance = selected.Distance;
-        return true;
-    }
-
-    private (NadeClip Clip, NadeRoamPoint Start, float Distance) SelectNadeRoamCandidate(
-        List<(NadeClip Clip, NadeRoamPoint Start, float Distance)> candidates)
-    {
-        candidates.Sort((a, b) =>
-        {
-            var distanceCompare = a.Distance.CompareTo(b.Distance);
-            return distanceCompare != 0
-                ? distanceCompare
-                : string.Compare(a.Clip.ClipId, b.Clip.ClipId, StringComparison.Ordinal);
-        });
-        var sampleSize = Math.Min(NadeRoamCandidateSampleSize, candidates.Count);
-        return candidates[_random.Next(sampleSize)];
-    }
-
-    private static void AddRecentNadeRoamThrow(NadeRoamState roam, NadeClip clip, NadeRoamPoint start)
-    {
-        roam.RecentThrows.Enqueue(new NadeRoamThrowSignature(
-            clip.Kind.Trim().ToLowerInvariant(),
-            start,
-            TryGetNadeDetonationPoint(clip, out var detonation) ? detonation : start));
-        while (roam.RecentThrows.Count > NadeRoamRecentStartLimit)
-            roam.RecentThrows.Dequeue();
-    }
-
-    private static bool IsNearRecentNadeRoamThrow(NadeRoamState roam, NadeClip clip, NadeRoamPoint start)
-    {
-        var kind = clip.Kind.Trim().ToLowerInvariant();
-        var detonation = TryGetNadeDetonationPoint(clip, out var point) ? point : start;
-        foreach (var recent in roam.RecentThrows)
-        {
-            if (!kind.Equals(recent.Kind, StringComparison.OrdinalIgnoreCase))
-                continue;
-            if (start.DistanceTo(recent.Start) <= NadeRoamRepeatStartRadius &&
-                detonation.DistanceTo(recent.Detonation) <= NadeRoamRepeatDetonationRadius)
-                return true;
-        }
-
-        return false;
-    }
-
-    private static void AddFailedNadeRoamStart(NadeRoamState roam, NadeRoamPoint start)
-    {
-        roam.FailedStarts.Enqueue(start);
-        while (roam.FailedStarts.Count > NadeRoamFailedStartLimit)
-            roam.FailedStarts.Dequeue();
-    }
-
-    private static bool IsNearFailedNadeRoamStart(NadeRoamState roam, NadeRoamPoint start)
-    {
-        foreach (var failed in roam.FailedStarts)
-        {
-            if (start.DistanceTo(failed) <= NadeRoamFailedStartRadius)
-                return true;
-        }
-
-        return false;
-    }
-
-    private bool IsNadeRoamCurrent(int token)
-        => _nadeRoam is { } roam && roam.Token == token;
-
-    private bool IsNadeRoamSlot(int slot)
-        => _nadeRoam is { } roam && roam.Slot == slot;
-
-    private static bool TryGetNadeStartPoint(NadeClip clip, out NadeRoamPoint start)
-    {
-        start = default;
-        var values = clip.StartOriginValues;
-        if (values == null || values.Length < 3)
-            return false;
-
-        start = new NadeRoamPoint(values[0], values[1], values[2]);
-        return start.IsFinite;
-    }
-
-    private static bool TryGetNadeDetonationPoint(NadeClip clip, out NadeRoamPoint detonation)
-    {
-        detonation = default;
-        var values = clip.ProjectileDetonationPositionValues;
-        if (values == null || values.Length < 3)
-            return false;
-
-        detonation = new NadeRoamPoint(values[0], values[1], values[2]);
-        return detonation.IsFinite;
-    }
-
-    private static bool TryGetSlotOrigin(int slot, out NadeRoamPoint origin)
-    {
-        origin = default;
-        var player = Utilities.GetPlayerFromSlot(slot);
-        if (player is not { IsValid: true } ||
-            !player.PawnIsAlive ||
-            player.PlayerPawn is not { IsValid: true, Value.IsValid: true })
-            return false;
-
-        var liveOrigin = player.PlayerPawn.Value.AbsOrigin;
-        if (liveOrigin == null)
-            return false;
-
-        origin = new NadeRoamPoint(liveOrigin.X, liveOrigin.Y, liveOrigin.Z);
-        return origin.IsFinite;
-    }
 
     private LoadRoundResult LoadRound(string manifestPath, int round)
     {
@@ -3199,10 +2545,7 @@ public sealed class DemoTracerPlugin : BasePlugin
 
     private void StopAndUnloadLoaded()
     {
-        StopNadeEntry("unload_all", stopCurrent: false);
-        StopNadeRoam("unload_all", stopCurrent: false);
         StopNadeCycle("unload_all", stopCurrent: false);
-        _nadeRoamMoveTo.ClearAll();
         foreach (var slot in _loadedSlots.ToArray())
         {
             BotControllerNative.StopReplay(slot);
@@ -3222,7 +2565,6 @@ public sealed class DemoTracerPlugin : BasePlugin
         _loadoutSyncedSlots.Clear();
         _lastPlayingSlots.Clear();
         _replayStartedAt.Clear();
-        _pendingUtilityReleases.Clear();
         _pendingBulletHits.Clear();
         _pendingBulletDamages.Clear();
         _armed = false;
@@ -3237,50 +2579,9 @@ public sealed class DemoTracerPlugin : BasePlugin
         _projectileAlignNextBySlot[slot] = 0;
     }
 
-    private bool TryBeginUtilityReplayFinishSettle(int slot)
-    {
-        if (!_loadedReplays.TryGetValue(slot, out var replay) || !replay.UtilityOnly)
-            return false;
-        if (_pendingUtilityReleases.ContainsKey(slot))
-            return true;
-
-        var releaseAt = Server.CurrentTime + NadeClipFinishSettleSeconds;
-        _pendingUtilityReleases[slot] = new PendingUtilityRelease(slot, releaseAt);
-        _lastPlayingSlots.Remove(slot);
-        Server.PrintToConsole(
-            $"dtr: utility replay settle slot={slot} seconds={F(NadeClipFinishSettleSeconds)}");
-        Server.NextFrame(() => ContinueUtilityReplayFinishSettle(slot));
-        return true;
-    }
-
-    private void ContinueUtilityReplayFinishSettle(int slot)
-    {
-        if (!_pendingUtilityReleases.TryGetValue(slot, out var pending))
-            return;
-        if (Server.CurrentTime < pending.ReleaseAt)
-        {
-            Server.NextFrame(() => ContinueUtilityReplayFinishSettle(slot));
-            return;
-        }
-
-        _pendingUtilityReleases.Remove(slot);
-        CompleteReplayFinished(slot);
-    }
-
-    private void CompleteReplayFinished(int slot)
-    {
-        ReleaseReplaySlot(slot, "replay_finished");
-        if (IsNadeRoamSlot(slot))
-            QueueNextNadeRoamClip("replay_finished");
-        else if (IsNadeCycleSlot(slot))
-            QueueNextNadeCycleClip("replay_finished");
-    }
-
     private void ReleaseReplaySlot(int slot, string reason)
     {
-        _pendingUtilityReleases.Remove(slot);
-        var releasedUtilityReplay = _loadedReplays.TryGetValue(slot, out var releasedReplay) && releasedReplay.UtilityOnly;
-        if (releasedUtilityReplay)
+        if (_loadedReplays.TryGetValue(slot, out var releasedReplay) && releasedReplay.UtilityOnly)
             _pendingProjectileAlign.Clear();
         _lastPlayingSlots.Remove(slot);
         _replayStartedAt.Remove(slot);
@@ -3299,33 +2600,6 @@ public sealed class DemoTracerPlugin : BasePlugin
         BotControllerNative.UnlockWeaponSlot(slot);
         ResetBotBrainForHandoff(slot);
         Server.PrintToConsole($"dtr: released slot={slot} reason={reason}");
-        if (releasedUtilityReplay && reason.Equals("replay_finished", StringComparison.OrdinalIgnoreCase))
-            Server.NextFrame(() => EquipBestWeaponAfterUtilityReplay(slot));
-    }
-
-    private void EquipBestWeaponAfterUtilityReplay(int slot)
-    {
-        if (!IsReplaySlotStillSafe(slot) || BotControllerNative.GetReplayState(slot).Playing)
-            return;
-
-        var player = Utilities.GetPlayerFromSlot(slot);
-        if (player is not { IsValid: true } ||
-            player.PlayerPawn is not { IsValid: true, Value.IsValid: true })
-            return;
-
-        var pawn = player.PlayerPawn.Value;
-        var weapon = GetBestWeaponInReplaySlot(pawn, ReplayWeaponSlot.Primary)
-                     ?? GetBestWeaponInReplaySlot(pawn, ReplayWeaponSlot.Secondary);
-        if (weapon == null)
-            return;
-
-        if (TrySelectWeapon(player, pawn, weapon))
-        {
-            var def = WeaponDefIndex(weapon.DesignerName);
-            if (def >= 0)
-                _lastReplayWeaponDef[slot] = NormalizeWeaponDefIndex(def);
-            Server.PrintToConsole($"dtr: equipped best weapon slot={slot} item={weapon.DesignerName}");
-        }
     }
 
     private bool HasActiveReplaySlots()
@@ -3568,7 +2842,6 @@ public sealed class DemoTracerPlugin : BasePlugin
         _lastLockedWeaponTarget.Remove(slot);
         _pendingWeaponAlign.Remove(slot);
         _queuedNadeStartTokens.Remove(slot);
-        _pendingUtilityReleases.Remove(slot);
         _rebuiltInventorySlots.Remove(slot);
     }
 
@@ -3924,14 +3197,6 @@ public sealed class DemoTracerPlugin : BasePlugin
             if (GetReplayWeaponSlot(NormalizeWeaponClassName(weapon.DesignerName)) == slot)
                 yield return weapon;
         }
-    }
-
-    private static CBasePlayerWeapon? GetBestWeaponInReplaySlot(CCSPlayerPawn pawn, ReplayWeaponSlot slot)
-    {
-        return GetWeaponsInReplaySlot(pawn, slot)
-            .OrderByDescending(weapon => WeaponClassValue(weapon.DesignerName))
-            .ThenBy(weapon => NormalizeWeaponClassName(weapon.DesignerName), StringComparer.OrdinalIgnoreCase)
-            .FirstOrDefault();
     }
 
     private void PreloadReplayWeaponsForSlot(int slot, LoadedReplay replay)
@@ -4898,7 +4163,7 @@ public sealed class DemoTracerPlugin : BasePlugin
             {
                 sideFilter = "ct";
             }
-            else if (lower is "opening" or "combat" or "retake")
+            else if (lower is "combat" or "retake")
             {
                 phaseFilter = lower;
             }
@@ -4910,55 +4175,12 @@ public sealed class DemoTracerPlugin : BasePlugin
             }
             else
             {
-                error = $"usage: {commandName} <nade_manifest.json> <slot> [t|ct|all] [opening|combat|retake|all] [gap_seconds]";
+                error = $"usage: {commandName} <nade_manifest.json> <slot> [t|ct|all] [combat|retake|all] [gap_seconds]";
                 return false;
             }
         }
 
         return true;
-    }
-
-    private static string NormalizeNadeKindFilter(string raw)
-    {
-        var lower = raw.Trim().ToLowerInvariant();
-        return lower switch
-        {
-            "" => string.Empty,
-            "all" or "*" or "random" => "random",
-            "smoke" or "smokegrenade" => "smoke",
-            "flash" or "flashbang" => "flash",
-            "he" or "frag" or "grenade" or "hegrenade" => "he",
-            "molotov" or "inc" or "incgrenade" or "incendiary" or "fire" => "molotov",
-            "decoy" or "decoygrenade" => "decoy",
-            _ => string.Empty
-        };
-    }
-
-    private static string NormalizeNadeSideFilter(string raw)
-    {
-        var lower = raw.Trim().ToLowerInvariant();
-        return lower switch
-        {
-            "" => string.Empty,
-            "all" or "*" or "both" => "all",
-            "t" or "terrorist" or "terrorists" => "t",
-            "ct" or "counterterrorist" or "counterterrorists" => "ct",
-            _ => string.Empty
-        };
-    }
-
-    private static string NormalizeNadePhaseFilter(string raw)
-    {
-        var lower = raw.Trim().ToLowerInvariant();
-        return lower switch
-        {
-            "" => string.Empty,
-            "all" or "*" => "all",
-            "opening" => "opening",
-            "combat" => "combat",
-            "retake" => "retake",
-            _ => string.Empty
-        };
     }
 
     private static bool NadeCycleSideMatches(NadeClip clip, string sideFilter)
@@ -5054,34 +4276,11 @@ public sealed class DemoTracerPlugin : BasePlugin
 
     private readonly record struct PendingWeaponAlign(int WeaponDefIndex, bool ForceSwitch);
 
-    private readonly record struct PendingUtilityRelease(int Slot, float ReleaseAt);
-
     private readonly record struct PendingBulletHit(int AttackerSlot, float Time);
 
     private readonly record struct PendingBulletDamage(int AttackerSlot, int Damage, float Time);
 
     private readonly record struct TeamEconomySnapshot(uint EquipmentValue, string Class);
-
-    private sealed class NadeEntryState(
-        int token,
-        string manifestPath,
-        NadeClip clip,
-        int slot,
-        bool loop,
-        NadeRoamPoint start,
-        float startedTime,
-        float initialDistance)
-    {
-        public int Token { get; } = token;
-        public string ManifestPath { get; } = manifestPath;
-        public NadeClip Clip { get; } = clip;
-        public int Slot { get; } = slot;
-        public bool Loop { get; } = loop;
-        public NadeRoamPoint Start { get; } = start;
-        public float StartedTime { get; } = startedTime;
-        public float LastProgressTime { get; set; } = startedTime;
-        public float BestDistance { get; set; } = initialDistance;
-    }
 
     private sealed class NadeCycleState(
         int token,
@@ -5103,186 +4302,6 @@ public sealed class DemoTracerPlugin : BasePlugin
         public float GapSeconds { get; } = gapSeconds;
         public int Index { get; set; }
         public bool Waiting { get; set; }
-    }
-
-    private enum NadeRoamPhase
-    {
-        MovingToClip,
-        ClipReplay,
-        Waiting
-    }
-
-    private sealed class NadeRoamState(
-        int token,
-        string manifestPath,
-        List<NadeClip> clips,
-        int slot,
-        string kindFilter,
-        string sideFilter,
-        string phaseFilter,
-        float searchRadius,
-        float gapSeconds)
-    {
-        public int Token { get; } = token;
-        public string ManifestPath { get; } = manifestPath;
-        public List<NadeClip> Clips { get; } = clips;
-        public int Slot { get; } = slot;
-        public string KindFilter { get; } = kindFilter;
-        public string SideFilter { get; } = sideFilter;
-        public string PhaseFilter { get; } = phaseFilter;
-        public float SearchRadius { get; } = searchRadius;
-        public float GapSeconds { get; } = gapSeconds;
-        public HashSet<string> UsedClipIds { get; } = new(StringComparer.OrdinalIgnoreCase);
-        public Queue<NadeRoamThrowSignature> RecentThrows { get; } = new();
-        public Queue<NadeRoamPoint> FailedStarts { get; } = new();
-        public NadeRoamPhase Phase { get; set; } = NadeRoamPhase.Waiting;
-        public NadeClip? PendingClip { get; set; }
-        public NadeRoamPoint PendingStart { get; set; }
-        public float MoveStartedTime { get; set; }
-        public float LastProgressTime { get; set; }
-        public float BestDistance { get; set; }
-        public float WaitUntilTime { get; set; }
-        public int StartedCount { get; set; }
-        public int FailedCount { get; set; }
-    }
-
-    private readonly record struct NadeRoamPoint(float X, float Y, float Z)
-    {
-        public bool IsFinite =>
-            float.IsFinite(X) &&
-            float.IsFinite(Y) &&
-            float.IsFinite(Z);
-
-        public float DistanceTo(NadeRoamPoint other)
-        {
-            var dx = X - other.X;
-            var dy = Y - other.Y;
-            var dz = Z - other.Z;
-            return MathF.Sqrt(dx * dx + dy * dy + dz * dz);
-        }
-
-        public override string ToString()
-            => $"({F(X)},{F(Y)},{F(Z)})";
-    }
-
-    private readonly record struct NadeRoamThrowSignature(
-        string Kind,
-        NadeRoamPoint Start,
-        NadeRoamPoint Detonation);
-
-    private sealed class BotMoveToAdapter
-    {
-        private const string MoveToSignature =
-            "F2 0F 10 02 F2 0F 11 81 E8 02 00 00 8B 42 08 48 8D 91 E0 02 00 00 89 81 F0 02 00 00 44 89 81 F4 02 00 00 E9 ? ? ? ?";
-        private const float IssueIntervalSeconds = 0.1f;
-        private const float ReachThresholdSqr = 40.0f * 40.0f;
-        private readonly Dictionary<int, NadeRoamPoint> _goals = new();
-        private readonly Vector _argVec = new(0, 0, 0);
-        private MemoryFunctionVoid<nint, nint, int>? _moveTo;
-        private float _nextIssueTime;
-
-        public bool IsReady { get; private set; }
-
-        public void Load()
-        {
-            try
-            {
-                _moveTo = new MemoryFunctionVoid<nint, nint, int>(MoveToSignature);
-                IsReady = true;
-                Server.PrintToConsole("dtr: CCSBot::MoveTo ready for nade roam");
-            }
-            catch (Exception ex)
-            {
-                IsReady = false;
-                Server.PrintToConsole($"dtr: CCSBot::MoveTo unavailable for nade roam: {ex.Message}");
-            }
-        }
-
-        public void SetGoal(int slot, NadeRoamPoint goal)
-        {
-            if (!IsReady)
-                return;
-            _goals[slot] = goal;
-        }
-
-        public void ClearGoal(int slot)
-        {
-            _goals.Remove(slot);
-        }
-
-        public void ClearAll()
-        {
-            _goals.Clear();
-        }
-
-        public void ReissueGoals()
-        {
-            if (!IsReady || _moveTo == null || _goals.Count == 0)
-                return;
-            if (Server.CurrentTime < _nextIssueTime)
-                return;
-
-            _nextIssueTime = Server.CurrentTime + IssueIntervalSeconds;
-            foreach (var slot in _goals.Keys.ToList())
-            {
-                var controller = Utilities.GetPlayerFromSlot(slot);
-                if (controller is not { IsValid: true } || !controller.PawnIsAlive)
-                {
-                    _goals.Remove(slot);
-                    continue;
-                }
-
-                if (controller.PlayerPawn is not { IsValid: true, Value.IsValid: true })
-                {
-                    _goals.Remove(slot);
-                    continue;
-                }
-
-                var pawn = controller.PlayerPawn.Value;
-                if (!pawn.BotAllowActive)
-                    continue;
-
-                var bot = pawn.Bot;
-                if (bot == null || bot.Handle == nint.Zero)
-                    continue;
-
-                var origin = pawn.AbsOrigin;
-                if (origin == null)
-                    continue;
-
-                var goal = _goals[slot];
-                var dx = origin.X - goal.X;
-                var dy = origin.Y - goal.Y;
-                var dz = origin.Z - goal.Z;
-                if (dx * dx + dy * dy + dz * dz <= ReachThresholdSqr)
-                {
-                    _goals.Remove(slot);
-                    continue;
-                }
-
-                Invoke(bot, goal);
-            }
-        }
-
-        private void Invoke(CCSBot bot, NadeRoamPoint goal)
-        {
-            if (_moveTo == null || bot.Handle == nint.Zero)
-                return;
-
-            try
-            {
-                _argVec.X = goal.X;
-                _argVec.Y = goal.Y;
-                _argVec.Z = goal.Z;
-                _moveTo.Invoke(bot.Handle, _argVec.Handle, 1);
-            }
-            catch (Exception ex)
-            {
-                IsReady = false;
-                _goals.Clear();
-                Server.PrintToConsole($"dtr: CCSBot::MoveTo failed, disabling nade roam movement: {ex.Message}");
-            }
-        }
     }
 
     private sealed class PendingProjectileAlign(
@@ -5482,12 +4501,6 @@ public sealed class DemoTracerPlugin : BasePlugin
 
         [JsonPropertyName("throw_tick")]
         public int ThrowTick { get; set; }
-
-        [JsonPropertyName("start_origin")]
-        public float[]? StartOriginValues { get; set; }
-
-        [JsonPropertyName("projectile_detonation_position")]
-        public float[]? ProjectileDetonationPositionValues { get; set; }
 
         [JsonPropertyName("first_weapon_def_index")]
         public int FirstWeaponDefIndex { get; set; }
