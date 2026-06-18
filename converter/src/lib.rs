@@ -27,7 +27,7 @@ pub mod prelude {
         build_nade_library, build_nade_library_with_progress, export_nade_clips_from_demo_path,
         export_nade_clips_from_parsed, read_nade_library_manifest, read_nade_manifest,
         read_nade_map_manifest, NadeClipExportRequest, NadeContextOptions, NadeDedupeOptions,
-        NadeLibraryExportRequest,
+        NadeLibraryDemoStatus, NadeLibraryExportRequest, NadeLibraryProgress,
     };
     pub use crate::model::{ProjectileKind, Side, SubtickMode};
 }

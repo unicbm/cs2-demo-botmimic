@@ -6,8 +6,7 @@ use crate::nade_export::{
 };
 use crate::nade_library::{
     build_nade_library_quiet, build_nade_library_with_progress as build_library_with_progress,
-    BuildNadeLibraryOptions, BuildNadeLibraryReport, NadeLibraryManifest, NadeLibraryProgress,
-    NadeMapManifest,
+    BuildNadeLibraryOptions, BuildNadeLibraryReport, NadeLibraryManifest, NadeMapManifest,
 };
 use crate::{io_error, Error, Result};
 use serde::de::DeserializeOwned;
@@ -15,6 +14,8 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+
+pub use crate::nade_library::{NadeLibraryDemoStatus, NadeLibraryProgress};
 
 #[derive(Clone, Copy, Debug)]
 pub struct NadeContextOptions {
