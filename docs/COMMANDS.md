@@ -26,7 +26,7 @@ it off.
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `dtr_weapon_align` | `1` | Align loadout, buy behavior, active weapon, and weapon slot locks. |
-| `dtr_projectile_align` | `1` | Align smoke projectile initial vectors from `.dtr` v4 data. |
+| `dtr_projectile_align` | `1` | Align grenade projectile initial vectors from `.dtr` v4 data. |
 | `dtr_handoff` | `death_or_contact slot` | Release only the contacted/dead replay slot after contact or death. |
 | `dtr_partial` | `1` | Allow replay with fewer bots than manifest players. |
 | `dtr_replay_identity` | `0` | Do not write BotHider name/SteamID unless explicitly enabled. |
@@ -130,6 +130,43 @@ remove a specific loaded replay from a slot.
 
 Unloads one slot and clears the plugin metadata for that slot.
 
+## Nade Clip Playback
+
+Nade clip manifests are produced by `convert-nades` or by a map manifest from
+`convert-nades-library`. These commands are for local inspection and playback of
+one real demo-derived throw at a time.
+
+### `dtr_list_nades <nade_manifest.json|nade_manifest.json.br> [kind]`
+
+Prints clip IDs from a nade manifest.
+
+`kind` is optional and can be `smoke`, `flash`, `he`, `molotov`, `incgrenade`,
+`decoy`, or a weapon def index such as `48`. The printed clip ID is the value
+used by `dtr_run_nade`.
+
+### `dtr_run_nade <nade_manifest.json|nade_manifest.json.br> <clip_id> <slot> [loop:0|1]`
+
+Loads one nade `.dtr` clip from the manifest onto a bot slot and starts it
+immediately.
+
+Implementation:
+
+- Resolves the clip path relative to the manifest path.
+- Uses the clip's manifest metadata for the thrower's side, phase, grenade kind,
+  start weapon, loadout, and projectile event.
+- Uses safe replay targets only: strict CS2 bots or BotHider-managed bot slots.
+- Applies normal replay cleanup on stop, finish, unload, or target failure.
+
+Use this for validating a specific throw from `convert-nades` output.
+
+### `dtr_cycle_smokes|dtr_cycle_flashes|dtr_cycle_he|dtr_cycle_fire|dtr_cycle_random_nades <nade_manifest.json|nade_manifest.json.br> <slot> [t|ct|all] [combat|retake|all] [gap_seconds]`
+
+Cycles through matching nade clips on one bot slot with a fixed gap between
+clips. This is mainly for local library inspection. `all` includes opening
+clips; the current cycle parser does not expose a separate `opening` filter. It
+does not move the bot between lineup starts; choose clips whose start positions
+are suitable for your current test setup.
+
 ## Fidelity And Handoff Controls
 
 ### `dtr_weapon_align <0|1>`
@@ -162,13 +199,17 @@ Enables or disables projectile initial-vector alignment.
 Implementation when enabled:
 
 - Requires `.dtr` v4 projectile events from the converter.
-- Currently matches smoke grenade projectile entities only.
+- Matches grenade projectile entities for smoke, flash, HE, molotov,
+  incendiary, and decoy when matching replay metadata is available.
 - The bot still performs the throw action naturally. The plugin waits for CS2 to
-  spawn the smoke projectile, resolves its thrower slot, matches the next demo
+  spawn the projectile, resolves its thrower slot, matches the next demo
   projectile event near the replay cursor, and writes:
   `InitialPosition`, `InitialVelocity`, `AbsOrigin`, and `AbsVelocity`.
 - Matching is retried for a few ticks because CS2 may not attach the thrower or
   final projectile fields immediately at spawn time.
+- Smoke detonation metadata is still the most complete diagnostic path because
+  smoke projectile lifetime and detonation events are exposed clearly enough for
+  tracing.
 
 Why it exists:
 

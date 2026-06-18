@@ -41,9 +41,14 @@ CS2 DemoTracer takes a `.dem` file, analyzes its rounds, and exports compressed 
 
 In a local CS2 server, the runtime and CounterStrikeSharp plugin can then make bots replay the demo player's movement, view angles, jumping, crouching, firing, and basic weapon switching.
 
+It can also export short grenade throw clips with minimal player context. This
+Demo2Nade path turns demo throws into `.dtr` clips plus a typed manifest, so
+other local tools can index, query, and replay real pro utility throws.
+
 This is still an MVP, but the full demo -> replay -> in-game bot playback loop is already working.
 
-Server command details are documented in [`docs/COMMANDS.md`](docs/COMMANDS.md).
+Detailed converter usage is in [`docs/USAGE.md`](docs/USAGE.md). Server command
+details are documented in [`docs/COMMANDS.md`](docs/COMMANDS.md).
 
 ## `.dtr` Format Contract
 
@@ -110,15 +115,16 @@ The sum of all `num_subtick` values must equal header `subtick_count`.
 
 ### ProjectileEventV4
 
-Projectile events store demo-derived projectile state for runtime alignment. The
-converter currently emits smoke grenade events; older v3 files have no
-projectile event section.
+Projectile events store demo-derived projectile state for runtime alignment and
+utility clip export. The converter emits grenade projectile events for smoke,
+flash, HE, molotov/incendiary, and decoy throws when the demo has valid
+projectile data. Older v3 files have no projectile event section.
 
 | Field | Type | Notes |
 | --- | --- | --- |
 | tick_index | `u32` | |
 | weapon_def_index | `i32` | |
-| kind | `u8` | `1=smoke`, `0=unknown` |
+| kind | `u8` | `0=unknown`, `1=smoke`, `2=flash`, `3=he`, `4=molotov/incendiary`, `5=decoy` |
 | pad | 3 bytes | |
 | initial_position | `f32[3]` | |
 | initial_velocity | `f32[3]` | |
@@ -179,6 +185,7 @@ This layout matches BotController ABI 11 (`92` bytes with `Pack=4`).
 
 - People who want to replay pro match movement inside a local CS2 server.
 - People who want a fast CLI pipeline for `.dem` -> `.dtr` conversion.
+- People building a local library of real grenade throws from CS2 demos.
 - Developers building CS2 route replay, bot playback, or demo analysis tooling.
 
 ## Requirements
@@ -247,6 +254,57 @@ This writes:
 ```
 
 `convert-pool` filters by map, converts each matching demo, and records economy metadata for round selection.
+
+## Export Grenade Clips With Demo2Nade
+
+Demo2Nade exports each real demo grenade throw as a short `.dtr` clip with
+player movement and view context around the release tick. Defaults are `1.0s`
+before release and `0.5s` after release.
+
+```powershell
+cs2-demotracer.exe convert-nades --demo "<demo.dem>" --output "<output-dir>\nades"
+cs2-demotracer.exe convert-nades --demo "<demo.dem>" --output "<output-dir>\nades" --side t --rounds 0,1,5-8 --pre-roll 1.0 --post-roll 0.5
+```
+
+This writes:
+
+```text
+<output-dir>/nades/<demo-id>/nade_manifest.json
+<output-dir>/nades/<demo-id>/nade_manifest.json.br
+<output-dir>/nades/<demo-id>/nades/<side>/<phase>/<kind>/<clip-id>.dtr
+```
+
+`phase` is `opening`, `combat`, or `retake`. The `opening` window defaults to
+20 seconds after freeze time ends and can be changed with `--opening-seconds`.
+
+To build a local map-indexed utility library from many demos:
+
+```powershell
+cs2-demotracer.exe convert-nades-library --demo-dir "<demo-root>" --output "<output-dir>\nade_library" --recursive --jobs 8
+```
+
+This writes per-demo clips under `demos/`, map manifests under `maps/<map>/`,
+and a top-level `nade_library.json(.br)`. The library command deduplicates near
+identical clips by default; pass `--no-dedupe` to keep every source throw.
+
+Rust callers can use the local API directly:
+
+```rust
+use cs2_demotracer::prelude::*;
+
+let mut request = NadeClipExportRequest::new("match.dem", "out/nades");
+request.context = NadeContextOptions {
+    pre_roll_seconds: 1.0,
+    post_roll_seconds: 0.5,
+    opening_seconds: 20.0,
+};
+
+let report = export_nade_clips_from_demo_path(&request)?;
+println!("clips={}", report.clips_written);
+```
+
+See [`docs/USAGE.md`](docs/USAGE.md#demo2nade-grenade-clips) for the full CLI
+and Rust API examples.
 
 ## Play In CS2
 
@@ -324,13 +382,15 @@ cargo test
 cargo run --release -- inspect --demo <demo.dem>
 cargo run --release -- convert --demo <demo.dem> --output <output-dir>
 cargo run --release -- convert-pool --demo-dir <demo-root> --output <output-dir> --map de_mirage --recursive
+cargo run --release -- convert-nades --demo <demo.dem> --output <output-dir>
+cargo run --release -- convert-nades-library --demo-dir <demo-root> --output <output-dir> --recursive
 cargo run --release -- validate --input <output-dir>
 cargo run --release -- wizard
 ```
 
 Repository layout:
 
-- `converter/`: Rust CLI and prompt-style wizard converter.
+- `converter/`: Rust CLI, local Rust API, prompt-style wizard converter, and Demo2Nade export code.
 - `runtime/BotController/`: CS2 Metamod runtime.
 - `css/`: CounterStrikeSharp control plugin.
 - `docs/`: extra docs.

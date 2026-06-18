@@ -24,7 +24,7 @@ dtr_run_manifest "<输出目录>\<demo-id>\manifest.json" 0
 | 设置 | 默认值 | 含义 |
 | --- | --- | --- |
 | `dtr_weapon_align` | `1` | 对齐 loadout、购买行为、当前武器和武器槽锁定。 |
-| `dtr_projectile_align` | `1` | 使用 `.dtr` v4 数据对齐烟雾弹初始矢量。 |
+| `dtr_projectile_align` | `1` | 使用 `.dtr` v4 数据对齐投掷物初始矢量。 |
 | `dtr_handoff` | `death_or_contact slot` | 接触或死亡后只释放触发的 replay slot。 |
 | `dtr_partial` | `1` | bot 数量不足时允许部分 replay。 |
 | `dtr_replay_identity` | `0` | 默认不写 BotHider 名字/SteamID。 |
@@ -120,6 +120,37 @@ buy plan 和 replay bot 状态。
 
 卸载一个 slot，并清理该 slot 的插件侧元数据。
 
+## 单点道具 clip 播放
+
+道具 manifest 由 `convert-nades` 生成，也可以来自 `convert-nades-library` 的地图级
+manifest。这些指令用于本地检查和播放 demo 中真实出现过的单个道具投掷。
+
+### `dtr_list_nades <nade_manifest.json|nade_manifest.json.br> [kind]`
+
+列出 nade manifest 里的 clip ID。
+
+`kind` 可选，可以是 `smoke`、`flash`、`he`、`molotov`、`incgrenade`、`decoy`，
+也可以是 `48` 这样的 weapon def index。输出的 clip ID 可直接传给 `dtr_run_nade`。
+
+### `dtr_run_nade <nade_manifest.json|nade_manifest.json.br> <clip_id> <slot> [loop:0|1]`
+
+从 manifest 加载一个道具 `.dtr` clip 到指定 bot slot，并立即播放。
+
+实现方式：
+
+- clip 路径会相对 manifest 路径解析。
+- 使用 manifest 里的阵营、phase、道具类型、初始武器、loadout 和 projectile event 元数据。
+- 只使用安全 replay 目标：严格 CS2 bot，或 BotHider 管理的 bot slot。
+- stop、finish、unload 或目标失效时会走正常 replay 清理流程。
+
+这个指令适合验证 `convert-nades` 导出的某个具体道具。
+
+### `dtr_cycle_smokes|dtr_cycle_flashes|dtr_cycle_he|dtr_cycle_fire|dtr_cycle_random_nades <nade_manifest.json|nade_manifest.json.br> <slot> [t|ct|all] [combat|retake|all] [gap_seconds]`
+
+在一个 bot slot 上按固定间隔轮询匹配的道具 clip。这个主要用于本地检查道具库。
+`all` 会包含 opening clip；当前 cycle parser 没有单独暴露 `opening` 过滤。它不会在
+lineup start 之间移动 bot；测试时请选择和当前位置适配的 clip。
+
 ## 还原度和 handoff 控制
 
 ### `dtr_weapon_align <0|1>`
@@ -148,12 +179,15 @@ buy plan 和 replay bot 状态。
 开启后的实现方式：
 
 - 需要 converter 写出的 `.dtr` v4 projectile events。
-- 当前只匹配烟雾弹 projectile entity。
-- bot 仍然正常执行投掷动作。插件等待 CS2 spawn smoke projectile 后，解析 thrower
+- 当 replay metadata 可用时，匹配 smoke、flash、HE、molotov、incendiary 和 decoy
+  projectile entity。
+- bot 仍然正常执行投掷动作。插件等待 CS2 spawn projectile 后，解析 thrower
   slot，在 replay cursor 附近匹配下一个 demo projectile event，然后写入：
   `InitialPosition`、`InitialVelocity`、`AbsOrigin`、`AbsVelocity`。
 - 匹配会延迟重试几个 tick，因为 CS2 在 projectile 刚 spawn 时可能还没有挂上
   thrower，或字段还没最终稳定。
+- 烟雾弹的爆开元数据仍是最完整的诊断路径，因为 smoke projectile lifetime 和
+  detonation event 更容易被稳定 trace。
 
 为什么需要它：
 
