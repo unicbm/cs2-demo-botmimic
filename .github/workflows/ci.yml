@@ -14,11 +14,17 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
 
       - name: Install .NET
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
+
+      - name: Check converter formatting
+        working-directory: converter
+        run: cargo fmt --check
 
       - name: Check converter workspace
         working-directory: converter
