@@ -40,6 +40,16 @@ jobs:
       - name: Check public-source hygiene
         shell: pwsh
         run: |
+          $forbiddenTracked = git ls-files |
+            Where-Object {
+              $_ -match '(^|/)(target|bin|obj|tmp|output)(/|$)' -or
+              $_ -match '\.(dem|dtr|cs2rec|log)$'
+            }
+          if ($forbiddenTracked) {
+            Write-Error "tracked generated/private artifacts are not allowed:`n$($forbiddenTracked -join "`n")"
+            exit 1
+          }
+
           $browserTargetDir = Join-Path "converter" ("wa" + "sm")
           if (Test-Path $browserTargetDir) {
             Write-Error "unexpected browser-target converter directory: $browserTargetDir"
