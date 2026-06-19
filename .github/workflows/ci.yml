@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Check converter workspace
+        working-directory: converter
+        run: cargo check --workspace --locked
+
+      - name: Test converter
+        working-directory: converter
+        run: cargo test --locked
+
+      - name: Build CSS plugin
+        run: dotnet build css\DemoTracer.csproj -c Release
+
+      - name: Check public-source hygiene
+        shell: pwsh
+        run: |
+          $hits = git grep -n -E 'C:\\Users\\|cs2-demotracer-wasm|converter/wasm|current writer format is `\.dtr` v4' -- . ':!converter/Cargo.lock'
+          if ($LASTEXITCODE -eq 1) {
+            exit 0
+          }
+          if ($LASTEXITCODE -ne 0) {
+            exit $LASTEXITCODE
+          }
+          $hits
+          exit 1
+
+      - name: Check diff whitespace
+        run: git diff --check
