@@ -13,7 +13,7 @@ or legacy CS:GO paths.
 - The public CLI is `cs2-demotracer`; the public server command prefix is
   `dtr_`.
 - The replay extension is `.dtr`. The binary magic is `CSDTRREC`; current
-  writer format is `.dtr` v4. Do not change magic, ABI, or format layout
+  writer format is `.dtr` v5. Do not change magic, ABI, or format layout
   without an explicit version decision and matching docs.
 - The maintained packaged converter target is Windows x64. Linux may work from
   source, but do not claim or publish Linux binaries unless they are built and
@@ -46,8 +46,9 @@ or legacy CS:GO paths.
   `output/<demo-id>/roundNN/t|ct/`, where `<demo-id>` is content-hashed.
 - Preserve replay state losslessly. Do not add interpolation, quantization, or
   precision-reducing compression unless the format is explicitly versioned.
-- `.dtr` v4 includes projectile metadata used for smoke alignment. Older v3
-  files remain readable but do not contain projectile events.
+- `.dtr` v5 is the current writer format. Projectile metadata was introduced in
+  v4 for smoke alignment; older v3 files remain readable but do not contain
+  projectile events.
 - The converter should write `.dtr`, `manifest.json`, pool manifests, and
   user-facing logs. Do not add CSV/Parquet/raw dumps unless explicitly asked.
 

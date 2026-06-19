@@ -5378,6 +5378,7 @@ public sealed class DemoTracerPlugin : BasePlugin
         try
         {
             manifest = ReadManifest(manifestPath);
+            ValidateConversionManifest(manifest);
             return true;
         }
         catch (FileNotFoundException)
@@ -5394,6 +5395,22 @@ public sealed class DemoTracerPlugin : BasePlugin
         {
             error = ex.Message;
             return false;
+        }
+    }
+
+    private static void ValidateConversionManifest(ConversionManifest manifest)
+    {
+        manifest.Files ??= new List<ManifestFile>();
+        var formatVersion = manifest.EffectiveDtrFormatVersion;
+        if (formatVersion == 0)
+            return;
+
+        var minVersion = (int)BotControllerNative.MinRecFormatVersion;
+        var maxVersion = (int)BotControllerNative.RecFormatVersion;
+        if (formatVersion < minVersion || formatVersion > maxVersion)
+        {
+            throw new InvalidDataException(
+                $"manifest format_version {formatVersion} unsupported; expected {minVersion}..{maxVersion}");
         }
     }
 
@@ -6189,8 +6206,22 @@ public sealed class DemoTracerPlugin : BasePlugin
 
     private sealed class ConversionManifest
     {
+        [JsonPropertyName("format_version")]
+        public int FormatVersion { get; set; }
+
+        [JsonPropertyName("dtr_format_version")]
+        public int DtrFormatVersion { get; set; }
+
+        [JsonPropertyName("abi")]
+        public int Abi { get; set; }
+
+        [JsonPropertyName("map")]
+        public string Map { get; set; } = string.Empty;
+
         [JsonPropertyName("files")]
         public List<ManifestFile> Files { get; set; } = new();
+
+        public int EffectiveDtrFormatVersion => DtrFormatVersion != 0 ? DtrFormatVersion : FormatVersion;
     }
 
     private sealed class NadeManifest
