@@ -151,6 +151,10 @@ The source per-demo clips remain on disk. Tuning options:
 Use `--aggregate-only` after changing dedupe parameters or after copying
 existing per-demo exports into `demos/`.
 
+For Python and Node.js users, see [`examples/`](../examples/). Those scripts
+invoke the CLI and inspect `manifest.json`; they are integration examples, not
+stable language bindings.
+
 ## 5. Rust API
 
 The converter crate exposes a local Rust API for tools that do not want to shell

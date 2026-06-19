@@ -234,6 +234,11 @@ output/<demo-id>/round01/...
 
 `manifest.json` is the easiest file to use for playback.
 
+For users who do not write Rust, [`examples/`](examples/) contains small Python
+and Node.js scripts that call the CLI, locate the generated `manifest.json`, and
+print a CS2 console command. These are integration examples, not stable language
+bindings.
+
 An interactive prompt is also available:
 
 ```powershell
@@ -412,6 +417,7 @@ Repository layout:
 - `runtime/BotController/`: CS2 Metamod runtime.
 - `css/`: CounterStrikeSharp control plugin.
 - `docs/`: extra docs.
+- `examples/`: Python and Node.js CLI integration examples.
 - `third_party/`: vendored third-party source and upstream license files.
 
 ## Acknowledgements

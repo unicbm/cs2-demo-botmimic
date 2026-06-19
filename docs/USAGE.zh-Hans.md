@@ -144,6 +144,9 @@ clip 仍然保留在 `demos/` 里。调参选项：
 修改 dedupe 参数或手动复制已有 per-demo 导出后，可以用 `--aggregate-only` 重新生成
 `maps/<map>/` 和顶层 `nade_library.json(.br)`。
 
+如果你使用 Python 或 Node.js，可以看 [`examples/`](../examples/)。这些脚本会
+调用 CLI 并读取 `manifest.json`；它们是集成示例，不是稳定的语言绑定。
+
 ## 5. Rust API
 
 转换器 crate 提供本地 Rust API，适合不想通过子进程调用 CLI 的工具。

@@ -32,6 +32,10 @@
 /.idea/
 .vscode/
 
+# Script caches
+__pycache__/
+*.pyc
+
 # Avoid accidentally committing full upstream checkouts or test assets.
 /third_party/demoparser/src/parser/test_demo.dem
 /third_party/demoparser/src/csgoproto/GameTracking-CS2/.git/

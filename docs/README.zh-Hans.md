@@ -95,6 +95,10 @@ output/<demo-id>/round01/...
 
 `manifest.json` 是播放时最方便使用的入口文件。
 
+如果你不会写 Rust，可以看 [`examples/`](../examples/) 里的 Python 和 Node.js
+小脚本。它们只是调用 CLI、定位生成的 `manifest.json`，再打印一条 CS2 console
+指令；这些是集成示例，不是稳定的 Python/Node SDK。
+
 也可以使用交互式向导：
 
 ```powershell
@@ -273,6 +277,7 @@ cargo run --release -- wizard
 - `runtime/BotController/`：CS2 Metamod runtime。
 - `css/`：CounterStrikeSharp 控制插件。
 - `docs/`：格式和使用补充说明。
+- `examples/`：Python 和 Node.js 的 CLI 集成示例。
 - `third_party/`：保留的第三方源码和上游许可文件。
 
 ## 致谢
