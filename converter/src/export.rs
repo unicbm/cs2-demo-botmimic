@@ -114,6 +114,7 @@ pub fn export_demo_to_memory(
     let mut log = Vec::new();
     let mut artifacts = Vec::new();
     let mut subtick_stats = SynthesisStats::default();
+    let rows_by_round = rows_by_round(&parsed.rows);
     log.push(format!(
         "demo={} id={} sha256={} map={} tick_rate={:.3}",
         parsed.path, output_stem, parsed.demo_sha256, parsed.map, parsed.tick_rate
@@ -149,47 +150,33 @@ pub fn export_demo_to_memory(
             ));
             continue;
         }
+        let round_rows: &[&ParsedPlayerTick] = rows_by_round
+            .get(&round.round)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
         let recording_start_tick = recording_start_tick_for_round(
-            parsed,
-            round.round,
+            round_rows,
+            parsed.tick_rate,
             round.start_tick,
             options.freeze_preroll_seconds,
         );
         let freeze_preroll_ticks = round.start_tick.saturating_sub(recording_start_tick);
         let pistol_round = is_pistol_round(round.round);
-        let t_economy = team_economy(
-            parsed,
-            round.round,
-            round.start_tick,
-            end_tick,
-            2,
-            pistol_round,
-        );
-        let ct_economy = team_economy(
-            parsed,
-            round.round,
-            round.start_tick,
-            end_tick,
-            3,
-            pistol_round,
-        );
+        let t_economy = team_economy(round_rows, round.start_tick, end_tick, 2, pistol_round);
+        let ct_economy = team_economy(round_rows, round.start_tick, end_tick, 3, pistol_round);
         let first_file_index = manifest.files.len();
 
-        let round_rows: Vec<_> = parsed
-            .rows
-            .iter()
-            .filter(|row| {
-                row.round == round.round
-                    && row.tick >= recording_start_tick
-                    && row.tick <= end_tick
-                    && (row.tick >= round.start_tick || row.is_freeze_period)
-                    && row.is_alive
-                    && row.steam_id != 0
-                    && options.side.matches_team(row.team_num)
-            })
-            .collect();
         let mut players: BTreeMap<u64, Vec<ParsedPlayerTick>> = BTreeMap::new();
-        for row in round_rows {
+        for &row in round_rows {
+            if row.tick < recording_start_tick
+                || row.tick > end_tick
+                || (row.tick < round.start_tick && !row.is_freeze_period)
+                || !row.is_alive
+                || row.steam_id == 0
+                || !options.side.matches_team(row.team_num)
+            {
+                continue;
+            }
             players.entry(row.steam_id).or_default().push(row.clone());
         }
 
@@ -366,23 +353,30 @@ fn validate_freeze_preroll_seconds(seconds: f32) -> Result<()> {
     ))
 }
 
+fn rows_by_round(rows: &[ParsedPlayerTick]) -> BTreeMap<u32, Vec<&ParsedPlayerTick>> {
+    let mut by_round: BTreeMap<u32, Vec<&ParsedPlayerTick>> = BTreeMap::new();
+    for row in rows {
+        by_round.entry(row.round).or_default().push(row);
+    }
+    by_round
+}
+
 fn recording_start_tick_for_round(
-    parsed: &ParsedDemo,
-    round: u32,
+    round_rows: &[&ParsedPlayerTick],
+    tick_rate: f32,
     live_start_tick: i32,
     freeze_preroll_seconds: f32,
 ) -> i32 {
-    let cap_ticks = seconds_to_ticks(freeze_preroll_seconds, parsed.tick_rate);
+    let cap_ticks = seconds_to_ticks(freeze_preroll_seconds, tick_rate);
     if cap_ticks <= 0 {
         return live_start_tick;
     }
     let floor_tick = live_start_tick.saturating_sub(cap_ticks);
-    parsed
-        .rows
+    round_rows
         .iter()
+        .copied()
         .filter(|row| {
-            row.round == round
-                && row.tick >= floor_tick
+            row.tick >= floor_tick
                 && row.tick < live_start_tick
                 && row.is_freeze_period
                 && row.is_alive
@@ -413,17 +407,15 @@ fn play_start_tick_index(rows: &[ParsedPlayerTick], live_start_tick: i32) -> u32
 }
 
 fn team_economy(
-    parsed: &ParsedDemo,
-    round: u32,
+    round_rows: &[&ParsedPlayerTick],
     start_tick: i32,
     end_tick: i32,
     team_num: u8,
     pistol_round: bool,
 ) -> TeamEconomy {
     let mut first_rows: BTreeMap<u64, &ParsedPlayerTick> = BTreeMap::new();
-    for row in &parsed.rows {
-        if row.round != round
-            || row.tick < start_tick
+    for &row in round_rows {
+        if row.tick < start_tick
             || row.tick > end_tick
             || row.team_num != team_num
             || !row.is_alive
