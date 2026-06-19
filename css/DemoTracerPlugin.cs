@@ -29,11 +29,6 @@ public sealed class DemoTracerPlugin : BasePlugin
         _apiFacade = new DemoTracerApiFacade(this);
     }
 
-    private static readonly byte[] RecMagic =
-    [
-        (byte)'C', (byte)'S', (byte)'D', (byte)'T',
-        (byte)'R', (byte)'R', (byte)'E', (byte)'C'
-    ];
     private static readonly PluginCapability<IDemoTracerApi> ApiCapability = new("demotracer:api");
     private static readonly JsonSerializerOptions ManifestJsonOptions = new()
     {
@@ -766,11 +761,11 @@ public sealed class DemoTracerPlugin : BasePlugin
         }
 
         var path = command.GetArg(slotArg + 1);
-        var ok = BotControllerNative.LoadReplayFromFile(slot, path);
+        var ok = BotControllerNative.LoadReplayFromFile(slot, path, out var replayMetadata);
         if (ok)
         {
             RememberLoadedSlot(slot);
-            TrackLoadedReplay(slot, path, $"slot{slot}");
+            TrackLoadedReplay(slot, path, $"slot{slot}", replayMetadata: replayMetadata);
         }
 
         command.ReplyToCommand(ok
@@ -2634,7 +2629,7 @@ public sealed class DemoTracerPlugin : BasePlugin
                     _quietReplaySlots.Add(slot);
             }
 
-            if (!BotControllerNative.LoadReplayFromFile(slot, recPath))
+            if (!BotControllerNative.LoadReplayFromFile(slot, recPath, out var replayMetadata))
             {
                 _quietReplaySlots.Remove(slot);
                 return LoadRoundResult.Fail(
@@ -2651,7 +2646,8 @@ public sealed class DemoTracerPlugin : BasePlugin
                 new[] { utilityWeaponDefIndex },
                 null,
                 utilityOnly: true,
-                utilityWeaponDefIndex: utilityWeaponDefIndex);
+                utilityWeaponDefIndex: utilityWeaponDefIndex,
+                replayMetadata: replayMetadata);
             TraceNadeStage("nade_loaded", slot, clip, "clip loaded and metadata tracked");
             if (!PrepareNadeClipWeapon(slot, utilityWeaponDefIndex, out var weaponError))
             {
@@ -3054,7 +3050,7 @@ public sealed class DemoTracerPlugin : BasePlugin
                 ? file.Path
                 : Path.GetFullPath(Path.Combine(manifestDir, file.Path.Replace('/', Path.DirectorySeparatorChar)));
 
-            if (!BotControllerNative.LoadReplayFromFile(slot, recPath))
+            if (!BotControllerNative.LoadReplayFromFile(slot, recPath, out var replayMetadata))
             {
                 error = $"{file.Side}:slot{slot}:{file.PlayerName} {recPath} ({BotControllerNative.LastLoadError})";
                 return false;
@@ -3068,7 +3064,8 @@ public sealed class DemoTracerPlugin : BasePlugin
                 file.SteamId,
                 file.FirstWeaponDefIndex ?? -1,
                 file.PreloadWeaponDefIndices,
-                file.Loadout);
+                file.Loadout,
+                replayMetadata: replayMetadata);
             BotControllerNative.SetBuySkip(slot);
             TryApplyReplayIdentity(slot, file);
             loaded.Add($"{file.Side}:slot{slot}:{file.PlayerName}");
@@ -3803,10 +3800,11 @@ public sealed class DemoTracerPlugin : BasePlugin
         IReadOnlyList<int>? manifestPreloadWeaponDefIndices = null,
         ReplayLoadoutSnapshot? loadout = null,
         bool utilityOnly = false,
-        int utilityWeaponDefIndex = -1)
+        int utilityWeaponDefIndex = -1,
+        ReplayFileMetadata? replayMetadata = null)
     {
-        TryReadWeaponPlan(path, out var scannedFirstDef, out var scannedPreloadDefs);
-        _ = BotControllerNative.TryReadReplayMetadata(path, out var replayMetadata);
+        var metadata = replayMetadata ?? ReadReplayMetadataOrEmpty(path);
+        TryBuildWeaponPlan(metadata.WeaponDefIndices ?? [], out var scannedFirstDef, out var scannedPreloadDefs);
         var firstDef = NormalizeWeaponDefIndex(manifestFirstWeaponDefIndex);
         if (!IsKnownWeaponDefIndex(firstDef))
             firstDef = scannedFirstDef;
@@ -3824,11 +3822,11 @@ public sealed class DemoTracerPlugin : BasePlugin
             preloadDefs,
             hasLoadout,
             NormalizeReplayLoadout(loadout ?? new ReplayLoadoutSnapshot()),
-            replayMetadata.Projectiles,
+            metadata.Projectiles ?? [],
             utilityOnly,
             NormalizeWeaponDefIndex(utilityWeaponDefIndex),
-            replayMetadata.TickRate,
-            replayMetadata.PlayStartTickIndex);
+            metadata.TickRate,
+            metadata.PlayStartTickIndex);
         _lastEnsuredWeaponDef.Remove(slot);
         _lastReplayWeaponDef.Remove(slot);
         _lastLockedWeaponTarget.Remove(slot);
@@ -3836,6 +3834,11 @@ public sealed class DemoTracerPlugin : BasePlugin
         _rebuiltInventorySlots.Remove(slot);
         _loadoutSyncedSlots.Remove(slot);
     }
+
+    private static ReplayFileMetadata ReadReplayMetadataOrEmpty(string path)
+        => BotControllerNative.TryReadReplayMetadata(path, out var metadata)
+            ? metadata
+            : ReplayFileMetadata.Empty;
 
     private static ReplayLoadoutSnapshot NormalizeReplayLoadout(ReplayLoadoutSnapshot loadout)
     {
@@ -4769,126 +4772,28 @@ public sealed class DemoTracerPlugin : BasePlugin
         };
     }
 
-    private static bool TryReadWeaponPlan(
-        string path,
+    private static bool TryBuildWeaponPlan(
+        IReadOnlyList<int> weaponDefIndices,
         out int firstWeaponDefIndex,
         out int[] preloadWeaponDefIndices)
     {
         firstWeaponDefIndex = -1;
         preloadWeaponDefIndices = [];
-        try
-        {
-            using var stream = File.OpenRead(path);
-            using var reader = new BinaryReader(stream);
 
-            var magic = reader.ReadBytes(RecMagic.Length);
-            if (!magic.SequenceEqual(RecMagic))
-                return false;
-
-            var version = reader.ReadUInt32();
-            if (version is < BotControllerNative.MinRecFormatVersion or > BotControllerNative.RecFormatVersion)
-                return false;
-
-            _ = reader.ReadSingle(); // tickrate
-            _ = reader.ReadUInt32(); // round
-            _ = reader.ReadByte();   // side
-            _ = reader.ReadUInt32(); // flags
-            _ = reader.ReadUInt64(); // steamid
-            var tickCount = CheckedRecCount(reader.ReadUInt32());
-            var subtickCount = CheckedRecCount(reader.ReadUInt32());
-            var projectileCount = version >= 4
-                ? CheckedRecCount(reader.ReadUInt32())
-                : 0;
-            var playStartTickIndex = version >= 5
-                ? CheckedRecCount(reader.ReadUInt32())
-                : 0;
-            if ((tickCount == 0 && playStartTickIndex != 0) ||
-                (tickCount > 0 && playStartTickIndex >= tickCount))
-            {
-                return false;
-            }
-            if (tickCount == 0)
-                return false;
-
-            SkipRecString(reader);
-            SkipRecString(reader);
-
-            var codec = reader.ReadByte();
-            if (codec != 1)
-                return false;
-            var bodyUncompressedLength = CheckedRecLength(reader.ReadUInt64());
-            var bodyCompressedLength = CheckedRecLength(reader.ReadUInt64());
-            var expectedBodyLength = ExpectedRecBodyLength(tickCount, subtickCount, projectileCount);
-            if (bodyUncompressedLength != expectedBodyLength)
-                return false;
-
-            var compressed = reader.ReadBytes(bodyCompressedLength);
-            if (compressed.Length != bodyCompressedLength)
-                return false;
-            var body = DecompressRecBody(compressed, bodyUncompressedLength);
-            using var bodyStream = new MemoryStream(body, writable: false);
-            using var bodyReader = new BinaryReader(bodyStream);
-            bodyStream.Seek((long)(tickCount + 1) * BotControllerNative.MovementSnapshotByteSize, SeekOrigin.Begin);
-
-            var preload = new List<int>();
-            for (var i = 0; i < tickCount; i++)
-            {
-                var def = NormalizeWeaponDefIndex(bodyReader.ReadInt32());
-                if (IsKnownWeaponDefIndex(def) && firstWeaponDefIndex < 0)
-                    firstWeaponDefIndex = def;
-                if (IsPreloadWeaponDefIndex(def))
-                    preload.Add(def);
-                _ = bodyReader.ReadUInt32(); // num_subtick
-            }
-            preloadWeaponDefIndices = NormalizePreloadWeaponDefs(preload);
-            return true;
-        }
-        catch
-        {
+        if (weaponDefIndices.Count == 0)
             return false;
+
+        var preload = new List<int>();
+        foreach (var value in weaponDefIndices)
+        {
+            var def = NormalizeWeaponDefIndex(value);
+            if (IsKnownWeaponDefIndex(def) && firstWeaponDefIndex < 0)
+                firstWeaponDefIndex = def;
+            if (IsPreloadWeaponDefIndex(def))
+                preload.Add(def);
         }
-    }
-
-    private static void SkipRecString(BinaryReader reader)
-    {
-        var len = reader.ReadUInt16();
-        if (len > 0)
-            reader.BaseStream.Seek(len, SeekOrigin.Current);
-    }
-
-    private static int CheckedRecCount(uint value)
-    {
-        if (value > int.MaxValue)
-            throw new InvalidDataException($"count too large: {value}");
-        return (int)value;
-    }
-
-    private static int CheckedRecLength(ulong value)
-    {
-        if (value > int.MaxValue)
-            throw new InvalidDataException($"body length too large: {value}");
-        return (int)value;
-    }
-
-    private static int ExpectedRecBodyLength(int tickCount, int subtickCount, int projectileCount)
-    {
-        var snapshotCount = tickCount == 0 ? 0 : checked(tickCount + 1);
-        return checked(
-            snapshotCount * BotControllerNative.MovementSnapshotByteSize +
-            tickCount * 8 +
-            projectileCount * 48 +
-            subtickCount * 28);
-    }
-
-    private static byte[] DecompressRecBody(byte[] compressed, int expectedLength)
-    {
-        using var input = new MemoryStream(compressed, writable: false);
-        using var brotli = new BrotliStream(input, CompressionMode.Decompress);
-        using var output = new MemoryStream(expectedLength);
-        brotli.CopyTo(output);
-        if (output.Length != expectedLength)
-            throw new InvalidDataException($"decompressed body length {output.Length} != expected {expectedLength}");
-        return output.ToArray();
+        preloadWeaponDefIndices = NormalizePreloadWeaponDefs(preload);
+        return true;
     }
 
     private static TickPlayerSnapshot BuildTickPlayerSnapshot()

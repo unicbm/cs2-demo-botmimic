@@ -146,11 +146,16 @@ internal static class BotControllerNative
     }
 
     public static bool LoadReplayFromFile(int slot, string path)
+        => LoadReplayFromFile(slot, path, out _);
+
+    public static bool LoadReplayFromFile(int slot, string path, out ReplayFileMetadata metadata)
     {
+        metadata = ReplayFileMetadata.Empty;
         try
         {
             EnsureNativeLayout();
             var replay = ReadReplayFile(path);
+            metadata = BuildReplayMetadata(replay);
             if (replay.Ticks.Length == 0)
             {
                 LastLoadError = "replay has no ticks";
@@ -181,12 +186,12 @@ internal static class BotControllerNative
         try
         {
             var replay = ReadReplayFile(path);
-            metadata = new ReplayFileMetadata(replay.TickRate, replay.PlayStartTickIndex, replay.Projectiles);
+            metadata = BuildReplayMetadata(replay);
             return true;
         }
         catch
         {
-            metadata = new ReplayFileMetadata(0.0f, 0, []);
+            metadata = ReplayFileMetadata.Empty;
             return false;
         }
     }
@@ -447,6 +452,18 @@ internal static class BotControllerNative
         return new ReplayFile(ticks, projectiles, subticks, tickRate, (uint)playStartTickIndex);
     }
 
+    private static ReplayFileMetadata BuildReplayMetadata(ReplayFile replay)
+    {
+        var weaponDefIndices = new int[replay.Ticks.Length];
+        for (var i = 0; i < replay.Ticks.Length; i++)
+            weaponDefIndices[i] = replay.Ticks[i].WeaponDefIndex;
+        return new ReplayFileMetadata(
+            replay.TickRate,
+            replay.PlayStartTickIndex,
+            replay.Projectiles,
+            weaponDefIndices);
+    }
+
     private static void ValidatePlayStartTickIndex(int tickCount, int playStartTickIndex)
     {
         if (tickCount == 0)
@@ -589,7 +606,11 @@ internal static class BotControllerNative
 internal readonly record struct ReplayFileMetadata(
     float TickRate,
     uint PlayStartTickIndex,
-    ReplayProjectileEvent[] Projectiles);
+    ReplayProjectileEvent[] Projectiles,
+    int[] WeaponDefIndices)
+{
+    public static ReplayFileMetadata Empty { get; } = new(0.0f, 0, [], []);
+}
 
 internal readonly record struct ReplayState(
     int Cursor,
