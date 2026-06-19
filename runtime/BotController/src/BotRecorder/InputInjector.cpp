@@ -71,6 +71,13 @@ namespace BotController
             return g_replaySubtickViewDeltas.load(std::memory_order_relaxed);
         }
 
+        void *LiveMovementServices(int slot)
+        {
+            return slot >= 0 && slot < kMaxSlots
+                       ? g_slotServices[slot].load(std::memory_order_acquire)
+                       : nullptr;
+        }
+
         // services -> player slot via pawn ptr at services+56, then m_hController.
         static int ServicesToSlot(void *services)
         {

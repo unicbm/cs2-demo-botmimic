@@ -86,8 +86,124 @@ namespace BotController
         static constexpr float kSoftSnapDistance = 64.0f;
         static constexpr float kSoftSnapVerticalDistance = 48.0f;
         static constexpr float kFinishMoveResyncNudgeZ = 1.0f;
+        static constexpr uint8_t kMoveTypeWalk = 2;
+        static constexpr uint8_t kMoveTypeLadder = 9;
+        static constexpr float kLadderNormalResidueSq = 0.0001f;
 
         static bool ValidSlot(int s) { return s >= 0 && s < kMaxSlots; }
+        static bool CanWriteMemory(void *ptr, size_t len);
+
+        static bool HasLadderNormalResidue(float x, float y, float z)
+        {
+            return x * x + y * y + z * z > kLadderNormalResidueSq;
+        }
+
+        static bool HasLadderResidue(const MovementSnapshot &s)
+        {
+            return s.moveType == kMoveTypeLadder ||
+                   s.actualMoveType == kMoveTypeLadder ||
+                   HasLadderNormalResidue(s.ladderNormalX, s.ladderNormalY,
+                                          s.ladderNormalZ);
+        }
+
+        static bool HasLadderResidue(const ReplayTick &t)
+        {
+            return HasLadderResidue(t.pre) || HasLadderResidue(t.post);
+        }
+
+        static bool ReplayStopPointHasLadderResidue(ReplayState &p)
+        {
+            const int total = static_cast<int>(p.ticks.size());
+            if (total <= 0)
+                return false;
+
+            const int cur = p.cursor.load(std::memory_order_relaxed);
+            if (cur >= 0 && cur < total &&
+                HasLadderResidue(p.ticks[static_cast<size_t>(cur)]))
+                return true;
+
+            const int prev = cur - 1;
+            return prev >= 0 && prev < total &&
+                   HasLadderResidue(p.ticks[static_cast<size_t>(prev)]);
+        }
+
+        static bool LiveMovementHasLadderResidue(void *services)
+        {
+            if (!services)
+                return false;
+            auto *sv = reinterpret_cast<char *>(services);
+            if (!CanWriteMemory(sv + tg::kServices_Pawn, sizeof(void *)))
+                return false;
+            void *pawn = *reinterpret_cast<void **>(sv + tg::kServices_Pawn);
+            if (!pawn)
+                return false;
+
+            auto *p = reinterpret_cast<char *>(pawn);
+            if (!CanWriteMemory(p + tg::kEnt_MoveType, sizeof(uint8_t)) ||
+                !CanWriteMemory(p + tg::kEnt_ActualMoveType, sizeof(uint8_t)) ||
+                !CanWriteMemory(sv + tg::kServices_LadderNormal, sizeof(float) * 3))
+                return false;
+
+            const uint8_t moveType =
+                *reinterpret_cast<uint8_t *>(p + tg::kEnt_MoveType);
+            const uint8_t actualMoveType =
+                *reinterpret_cast<uint8_t *>(p + tg::kEnt_ActualMoveType);
+            return moveType == kMoveTypeLadder ||
+                   actualMoveType == kMoveTypeLadder ||
+                   HasLadderNormalResidue(
+                       *reinterpret_cast<float *>(sv + tg::kServices_LadderNormal + 0),
+                       *reinterpret_cast<float *>(sv + tg::kServices_LadderNormal + 4),
+                       *reinterpret_cast<float *>(sv + tg::kServices_LadderNormal + 8));
+        }
+
+        static void ClearReplayStopMovementResidue(int slot, ReplayState &p)
+        {
+            void *services = InputInjector::LiveMovementServices(slot);
+            if (!services ||
+                (!ReplayStopPointHasLadderResidue(p) &&
+                 !LiveMovementHasLadderResidue(services)))
+                return;
+
+            auto *sv = reinterpret_cast<char *>(services);
+            if (!CanWriteMemory(sv + tg::kServices_Pawn, sizeof(void *)))
+                return;
+            void *pawn = *reinterpret_cast<void **>(sv + tg::kServices_Pawn);
+            if (!pawn)
+                return;
+
+            auto *pp = reinterpret_cast<char *>(pawn);
+            if (!CanWriteMemory(pp + tg::kEnt_MoveType, sizeof(uint8_t)) ||
+                !CanWriteMemory(pp + tg::kEnt_ActualMoveType, sizeof(uint8_t)) ||
+                !CanWriteMemory(pp + tg::kEnt_AbsVelocity, sizeof(float) * 3) ||
+                !CanWriteMemory(pp + tg::kEnt_Flags, sizeof(uint32_t)) ||
+                !CanWriteMemory(sv + tg::kServices_Buttons, sizeof(uint64_t) * 3) ||
+                !CanWriteMemory(sv + tg::kServices_LadderNormal, sizeof(float) * 3) ||
+                !CanWriteMemory(sv + tg::kServices_Ducked, sizeof(uint8_t)) ||
+                !CanWriteMemory(sv + tg::kServices_DesiresDuck, sizeof(uint8_t) * 2) ||
+                !CanWriteMemory(sv + tg::kServices_DuckAmount, sizeof(float) * 2))
+                return;
+
+            *reinterpret_cast<uint8_t *>(pp + tg::kEnt_MoveType) = kMoveTypeWalk;
+            *reinterpret_cast<uint8_t *>(pp + tg::kEnt_ActualMoveType) = kMoveTypeWalk;
+            *reinterpret_cast<float *>(pp + tg::kEnt_AbsVelocity + 0) = 0.0f;
+            *reinterpret_cast<float *>(pp + tg::kEnt_AbsVelocity + 4) = 0.0f;
+            *reinterpret_cast<float *>(pp + tg::kEnt_AbsVelocity + 8) = 0.0f;
+            uint32_t flags = *reinterpret_cast<uint32_t *>(pp + tg::kEnt_Flags);
+            flags &= ~tg::kFL_Ducking;
+            *reinterpret_cast<uint32_t *>(pp + tg::kEnt_Flags) = flags;
+
+            *reinterpret_cast<uint64_t *>(sv + tg::kServices_Buttons) = 0;
+            *reinterpret_cast<uint64_t *>(sv + tg::kServices_Buttons1) = 0;
+            *reinterpret_cast<uint64_t *>(sv + tg::kServices_Buttons2) = 0;
+            *reinterpret_cast<float *>(sv + tg::kServices_LadderNormal + 0) = 0.0f;
+            *reinterpret_cast<float *>(sv + tg::kServices_LadderNormal + 4) = 0.0f;
+            *reinterpret_cast<float *>(sv + tg::kServices_LadderNormal + 8) = 0.0f;
+            *reinterpret_cast<uint8_t *>(sv + tg::kServices_Ducked) = 0;
+            *reinterpret_cast<uint8_t *>(sv + tg::kServices_Ducking) = 0;
+            *reinterpret_cast<uint8_t *>(sv + tg::kServices_DesiresDuck) = 0;
+            *reinterpret_cast<float *>(sv + tg::kServices_DuckAmount) = 0.0f;
+            *reinterpret_cast<float *>(sv + tg::kServices_DuckSpeed) = 0.0f;
+        }
 
         static void MarkNetworkStateChanged(void *entity, uint32_t offset,
                                             int arrayIndex = -1)
@@ -699,7 +815,9 @@ namespace BotController
         {
             if (!ValidSlot(slot))
                 return false;
-            g_rep[slot].playing.store(false, std::memory_order_release);
+            ReplayState &p = g_rep[slot];
+            ClearReplayStopMovementResidue(slot, p);
+            p.playing.store(false, std::memory_order_release);
             g_lastFinalViewCursor[slot] = -1;
             g_serverViewChangeIndex[slot] = 0;
             return true;

@@ -34,6 +34,9 @@ namespace BotController
         void SetReplaySubtickViewDeltas(bool enabled);
         bool ReplaySubtickViewDeltas();
 
+        // Last CCSPlayer_MovementServices* seen for this player slot.
+        void *LiveMovementServices(int slot);
+
         // Resolved address of the hooked function.
         void *ProcessUsercmdAddress();
 

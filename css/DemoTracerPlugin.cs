@@ -9,6 +9,7 @@ using DemoTracerApi;
 using System.Globalization;
 using System.IO.Compression;
 using System.IO.MemoryMappedFiles;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -42,6 +43,13 @@ public sealed class DemoTracerPlugin : BasePlugin
     private const float HandoffGraceSeconds = 0.25f;
     private const float BulletHandoffMatchSeconds = 0.25f;
     private const int BulletHandoffMinDamage = 10;
+    private const float HandoffThreat360DefaultRange = 420.0f;
+    private const float HandoffThreat360MinRange = 150.0f;
+    private const float HandoffThreat360MaxRange = 800.0f;
+    private const float HandoffThreat360ImmediateRange = 240.0f;
+    private const float HandoffThreat360HoldSeconds = 0.08f;
+    private const float HandoffThreat360MaxVerticalDelta = 128.0f;
+    private const float HandoffThreat360ChestZScale = 0.62f;
     private const int ProjectileAlignMatchAttempts = 8;
     private const int ProjectileAlignPostMatchWrites = 1;
     private const float NadeClipStartSettleSeconds = 0.12f;
@@ -141,8 +149,10 @@ public sealed class DemoTracerPlugin : BasePlugin
     private readonly Dictionary<int, float> _replayStartedAt = new();
     private readonly Dictionary<int, PendingBulletHit> _pendingBulletHits = new();
     private readonly Dictionary<int, PendingBulletDamage> _pendingBulletDamages = new();
+    private readonly Dictionary<int, PendingThreat360> _pendingThreat360 = new();
     private readonly Dictionary<uint, UtilityProjectileTrace> _utilityTraceProjectiles = new();
     private readonly BotHiderMemoryProbe _botHiderProbe = new();
+    private readonly RayTraceLosProbe _rayTraceLosProbe = new();
     private readonly DemoTracerApiFacade _apiFacade;
     private StreamWriter? _utilityTraceWriter;
     private string _utilityTracePath = string.Empty;
@@ -169,6 +179,9 @@ public sealed class DemoTracerPlugin : BasePlugin
     private bool _weaponAlignFrameQueued;
     private HandoffMode _handoffMode = HandoffMode.DeathOrContact;
     private bool _handoffAllSlots;
+    private bool _handoffThreat360Enabled = true;
+    private float _handoffThreat360Range = HandoffThreat360DefaultRange;
+    private bool _handoffThreat360LosEnabled = true;
     private bool _partialReplayEnabled = true;
     private bool _replayIdentityEnabled;
     private int _nextNadeStartToken;
@@ -386,6 +399,67 @@ public sealed class DemoTracerPlugin : BasePlugin
 
         command.ReplyToCommand(
             $"dtr: handoff={FormatHandoffMode(_handoffMode)} scope={(_handoffAllSlots ? "all" : "slot")}");
+    }
+
+    [ConsoleCommand("dtr_handoff_360", "dtr_handoff_360 [0|1] [range] [los|nolos]")]
+    public void Handoff360Command(CCSPlayerController? player, CommandInfo command)
+    {
+        if (command.ArgCount >= 2)
+        {
+            var enabled = command.GetArg(1);
+            if (enabled is "0" or "off" or "false")
+            {
+                _handoffThreat360Enabled = false;
+                _pendingThreat360.Clear();
+            }
+            else if (enabled is "1" or "on" or "true")
+            {
+                _handoffThreat360Enabled = true;
+            }
+            else
+            {
+                command.ReplyToCommand("usage: dtr_handoff_360 [0|1] [range] [los|nolos]");
+                return;
+            }
+        }
+
+        if (command.ArgCount >= 3)
+        {
+            if (!float.TryParse(command.GetArg(2), NumberStyles.Float, CultureInfo.InvariantCulture, out var range))
+            {
+                command.ReplyToCommand("usage: dtr_handoff_360 [0|1] [range] [los|nolos]");
+                return;
+            }
+            _handoffThreat360Range = Math.Clamp(range, HandoffThreat360MinRange, HandoffThreat360MaxRange);
+            _pendingThreat360.Clear();
+        }
+
+        if (command.ArgCount >= 4)
+        {
+            var los = command.GetArg(3);
+            if (los.Equals("los", StringComparison.OrdinalIgnoreCase) ||
+                los.Equals("ray", StringComparison.OrdinalIgnoreCase) ||
+                los.Equals("raytrace", StringComparison.OrdinalIgnoreCase) ||
+                los is "1" or "on" or "true")
+            {
+                _handoffThreat360LosEnabled = true;
+            }
+            else if (los.Equals("nolos", StringComparison.OrdinalIgnoreCase) ||
+                     los.Equals("off", StringComparison.OrdinalIgnoreCase) ||
+                     los is "0" or "false")
+            {
+                _handoffThreat360LosEnabled = false;
+            }
+            else
+            {
+                command.ReplyToCommand("usage: dtr_handoff_360 [0|1] [range] [los|nolos]");
+                return;
+            }
+            _pendingThreat360.Clear();
+        }
+
+        command.ReplyToCommand(
+            $"dtr: handoff_360={_handoffThreat360Enabled} range={_handoffThreat360Range.ToString("F0", CultureInfo.InvariantCulture)} los={_handoffThreat360LosEnabled} raytrace={_rayTraceLosProbe.ProbeStatus}");
     }
 
     private static string EscapeConsoleString(string value)
@@ -674,6 +748,7 @@ public sealed class DemoTracerPlugin : BasePlugin
         _replayStartedAt.Clear();
         _pendingBulletHits.Clear();
         _pendingBulletDamages.Clear();
+        _pendingThreat360.Clear();
         SetReplayPovMask(0);
         command.ReplyToCommand($"dtr: stopped {_loadedSlots.Count} loaded slots");
     }
@@ -738,7 +813,7 @@ public sealed class DemoTracerPlugin : BasePlugin
             ? $" pool_next={_poolRoundIndex}"
             : string.Empty;
         command.ReplyToCommand(
-            $"dtr: abi={BotControllerNative.AbiVersion} slot={slot} playing={state.Playing} cursor={state.Cursor} total={state.Total} handoff={FormatHandoffMode(_handoffMode)} scope={(_handoffAllSlots ? "all" : "slot")} partial={_partialReplayEnabled} identity={ReplayIdentityModeName()} projectile_align={_projectileAlignEnabled}{sequence}{pool}");
+            $"dtr: abi={BotControllerNative.AbiVersion} slot={slot} playing={state.Playing} cursor={state.Cursor} total={state.Total} handoff={FormatHandoffMode(_handoffMode)} scope={(_handoffAllSlots ? "all" : "slot")} handoff_360={_handoffThreat360Enabled}:{_handoffThreat360Range.ToString("F0", CultureInfo.InvariantCulture)} los={_handoffThreat360LosEnabled}:{_rayTraceLosProbe.ProbeStatus} partial={_partialReplayEnabled} identity={ReplayIdentityModeName()} projectile_align={_projectileAlignEnabled}{sequence}{pool}");
     }
 
     [ConsoleCommand("dtr_util_trace", "dtr_util_trace <0|1> [path]")]
@@ -944,7 +1019,7 @@ public sealed class DemoTracerPlugin : BasePlugin
                 MarkReplayStarted(slot);
 
             if (HandoffIncludesContact(_handoffMode) && ReplayHasPassedHandoffGrace(slot) &&
-                ReplayBotSeesEnemy(slot, teamPlayers, out var contactReason))
+                ReplayBotHasContact(slot, teamPlayers, out var contactReason, out _))
             {
                 HandoffActiveReplays($"enemy_contact_{contactReason}_slot{slot}", slot);
                 continue;
@@ -2768,6 +2843,7 @@ public sealed class DemoTracerPlugin : BasePlugin
         _replayStartedAt.Clear();
         _pendingBulletHits.Clear();
         _pendingBulletDamages.Clear();
+        _pendingThreat360.Clear();
         _armed = false;
         _sequencePrepared = false;
         _sequencePreparedRound = -1;
@@ -2797,6 +2873,7 @@ public sealed class DemoTracerPlugin : BasePlugin
         _loadoutSyncedSlots.Remove(slot);
         _pendingBulletHits.Remove(slot);
         _pendingBulletDamages.Remove(slot);
+        _pendingThreat360.Remove(slot);
         BotControllerNative.ClearBuyPlan(slot);
         BotControllerNative.UnlockReplayControl(slot);
         BotControllerNative.UnlockWeaponSlot(slot);
@@ -2817,7 +2894,7 @@ public sealed class DemoTracerPlugin : BasePlugin
         return false;
     }
 
-    private void HandoffActiveReplays(string reason, int triggerSlot = -1, int lookAtSlot = -1)
+    private void HandoffActiveReplays(string reason, int triggerSlot = -1)
     {
         if (triggerSlot < 0 && !_handoffAllSlots)
             return;
@@ -2832,8 +2909,6 @@ public sealed class DemoTracerPlugin : BasePlugin
                 continue;
 
             BotControllerNative.StopReplay(slot);
-            if (lookAtSlot >= 0 && slot == triggerSlot)
-                AimSlotAtSlot(slot, lookAtSlot);
             ReleaseReplaySlot(slot, reason);
             stopped++;
 
@@ -2888,8 +2963,7 @@ public sealed class DemoTracerPlugin : BasePlugin
 
         HandoffActiveReplays(
             $"bullet_damage_slot{victimSlot}_attacker{attackerSlot}_dmg{damage}",
-            victimSlot,
-            attackerSlot);
+            victimSlot);
         return true;
     }
 
@@ -2913,64 +2987,6 @@ public sealed class DemoTracerPlugin : BasePlugin
 
     private static bool IsFreshBulletHandoffEvent(float eventTime)
         => Server.CurrentTime - eventTime <= BulletHandoffMatchSeconds;
-
-    private static void AimSlotAtSlot(int slot, int targetSlot)
-    {
-        var player = Utilities.GetPlayerFromSlot(slot);
-        var target = Utilities.GetPlayerFromSlot(targetSlot);
-        if (player is not { IsValid: true } ||
-            target is not { IsValid: true } ||
-            player.PlayerPawn is not { IsValid: true, Value.IsValid: true } ||
-            target.PlayerPawn is not { IsValid: true, Value.IsValid: true })
-            return;
-
-        try
-        {
-            var from = EyePosition(player.PlayerPawn.Value);
-            var to = EyePosition(target.PlayerPawn.Value);
-            var dx = to.X - from.X;
-            var dy = to.Y - from.Y;
-            var dz = to.Z - from.Z;
-            var horizontal = MathF.Sqrt(dx * dx + dy * dy);
-            if (horizontal < 0.001f)
-                return;
-
-            var pitch = -RadiansToDegrees(MathF.Atan2(dz, horizontal));
-            var yaw = NormalizeYaw(RadiansToDegrees(MathF.Atan2(dy, dx)));
-            player.PlayerPawn.Value.Teleport(
-                (System.Numerics.Vector3?)null,
-                new System.Numerics.Vector3(pitch, yaw, 0.0f),
-                (System.Numerics.Vector3?)null);
-        }
-        catch
-        {
-        }
-    }
-
-    private static (float X, float Y, float Z) EyePosition(CCSPlayerPawn pawn)
-    {
-        var origin = pawn.AbsOrigin;
-        var viewOffset = pawn.ViewOffset;
-        if (origin == null || viewOffset == null)
-            return (0.0f, 0.0f, 0.0f);
-
-        return (
-            origin.X + viewOffset.X,
-            origin.Y + viewOffset.Y,
-            origin.Z + viewOffset.Z);
-    }
-
-    private static float RadiansToDegrees(float radians)
-        => radians * 180.0f / MathF.PI;
-
-    private static float NormalizeYaw(float yaw)
-    {
-        while (yaw > 180.0f)
-            yaw -= 360.0f;
-        while (yaw < -180.0f)
-            yaw += 360.0f;
-        return yaw;
-    }
 
     private static bool IsReplaySlotPlaying(int slot)
     {
@@ -4248,31 +4264,218 @@ public sealed class DemoTracerPlugin : BasePlugin
 
     private static bool ReplayBotSeesEnemy(int slot, out string contactReason)
     {
-        return ReplayBotSeesEnemy(slot, FindTeamPlayers(), out contactReason);
+        return ReplayBotSeesEnemy(slot, FindTeamPlayers(), out contactReason, out _);
     }
 
     private static bool ReplayBotSeesEnemy(
         int slot,
         IReadOnlyList<CCSPlayerController> teamPlayers,
-        out string contactReason)
+        out string contactReason,
+        out int contactSlot)
     {
         contactReason = string.Empty;
+        contactSlot = -1;
         var bot = Utilities.GetPlayerFromSlot(slot);
-        if (bot is not { IsValid: true } || !bot.PawnIsAlive)
+        if (bot == null || !HasLivePawn(bot))
             return false;
 
         foreach (var enemy in teamPlayers)
         {
             if (enemy.Slot == bot.Slot ||
                 enemy.Team == bot.Team ||
-                !enemy.PawnIsAlive)
+                !HasLivePawn(enemy))
                 continue;
 
             if (PlayerSeesTarget(bot, enemy, out contactReason))
+            {
+                contactSlot = enemy.Slot;
                 return true;
+            }
         }
 
         return false;
+    }
+
+    private bool ReplayBotHasContact(
+        int slot,
+        IReadOnlyList<CCSPlayerController> teamPlayers,
+        out string contactReason,
+        out int contactSlot)
+    {
+        if (ReplayBotSeesEnemy(slot, teamPlayers, out contactReason, out contactSlot))
+            return true;
+
+        if (_handoffThreat360Enabled &&
+            ReplayBotHasNearby360Threat(slot, teamPlayers, out contactReason, out contactSlot))
+            return true;
+
+        contactSlot = -1;
+        return false;
+    }
+
+    private bool ReplayBotHasNearby360Threat(
+        int slot,
+        IReadOnlyList<CCSPlayerController> teamPlayers,
+        out string contactReason,
+        out int contactSlot)
+    {
+        contactReason = string.Empty;
+        contactSlot = -1;
+        var bot = Utilities.GetPlayerFromSlot(slot);
+        if (bot == null ||
+            !HasLivePawn(bot) ||
+            !TryGetPawnOrigin(bot, out var botOrigin))
+        {
+            _pendingThreat360.Remove(slot);
+            return false;
+        }
+
+        var rangeSq = _handoffThreat360Range * _handoffThreat360Range;
+        var bestEnemySlot = -1;
+        var bestDistanceSq = float.MaxValue;
+
+        foreach (var enemy in teamPlayers)
+        {
+            if (enemy.Slot == bot.Slot ||
+                enemy.Team == bot.Team ||
+                !HasLivePawn(enemy) ||
+                !IsHandoff360ThreatActor(enemy) ||
+                !TryGetPawnOrigin(enemy, out var enemyOrigin))
+                continue;
+
+            var dz = MathF.Abs(enemyOrigin.Z - botOrigin.Z);
+            if (dz > HandoffThreat360MaxVerticalDelta)
+                continue;
+
+            var dx = enemyOrigin.X - botOrigin.X;
+            var dy = enemyOrigin.Y - botOrigin.Y;
+            var distanceSq = dx * dx + dy * dy;
+            if (distanceSq > rangeSq || distanceSq >= bestDistanceSq)
+                continue;
+            if (_handoffThreat360LosEnabled && !HasHandoff360LineOfSight(bot, enemy))
+                continue;
+
+            bestEnemySlot = enemy.Slot;
+            bestDistanceSq = distanceSq;
+        }
+
+        if (bestEnemySlot < 0)
+        {
+            _pendingThreat360.Remove(slot);
+            return false;
+        }
+
+        var distance = MathF.Sqrt(bestDistanceSq);
+        if (distance <= MathF.Min(HandoffThreat360ImmediateRange, _handoffThreat360Range))
+        {
+            _pendingThreat360.Remove(slot);
+            contactReason = FormatThreat360Reason(bestEnemySlot, distance, immediate: true);
+            contactSlot = bestEnemySlot;
+            return true;
+        }
+
+        var now = Server.CurrentTime;
+        if (!_pendingThreat360.TryGetValue(slot, out var pending) ||
+            pending.EnemySlot != bestEnemySlot)
+        {
+            _pendingThreat360[slot] = new PendingThreat360(bestEnemySlot, now);
+            return false;
+        }
+
+        if (now - pending.FirstSeenAt < HandoffThreat360HoldSeconds)
+            return false;
+
+        _pendingThreat360.Remove(slot);
+        contactReason = FormatThreat360Reason(bestEnemySlot, distance, immediate: false);
+        contactSlot = bestEnemySlot;
+        return true;
+    }
+
+    private bool IsHandoff360ThreatActor(CCSPlayerController enemy)
+    {
+        if (enemy is not { IsValid: true } || enemy.Slot < 0)
+            return false;
+        if (_loadedSlots.Contains(enemy.Slot) || IsReplaySlotPlaying(enemy.Slot))
+            return false;
+        if (_botHiderProbe.IsManagedBot(enemy.Slot))
+            return false;
+        var controllingBot = TryGetControllingBotState(enemy, out var controlsBot) && controlsBot;
+        return !enemy.IsBot || controllingBot;
+    }
+
+    private bool HasHandoff360LineOfSight(CCSPlayerController bot, CCSPlayerController enemy)
+    {
+        if (!TryGetPawnEyePosition(enemy, out var enemyEye) ||
+            !TryGetPawnEyePosition(bot, out var botEye) ||
+            !TryGetPawnPoint(bot, HandoffThreat360ChestZScale, out var botChest))
+            return false;
+
+        if (!_rayTraceLosProbe.TryIsWorldLineClear(enemyEye, botEye, out var eyeClear))
+            return true;
+        if (eyeClear)
+            return true;
+
+        return _rayTraceLosProbe.TryIsWorldLineClear(enemyEye, botChest, out var chestClear) && chestClear;
+    }
+
+    private static bool HasLivePawn(CCSPlayerController? player)
+    {
+        if (player is not { IsValid: true } ||
+            player.PlayerPawn is not { IsValid: true, Value.IsValid: true } pawn)
+            return false;
+
+        if (player.PawnIsAlive)
+            return true;
+
+        try
+        {
+            return pawn.Value.Health > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TryGetPawnOrigin(CCSPlayerController player, out Vector origin)
+    {
+        origin = new Vector(0.0f, 0.0f, 0.0f);
+        if (player.PlayerPawn is not { IsValid: true, Value.IsValid: true })
+            return false;
+        var value = player.PlayerPawn.Value.AbsOrigin;
+        if (value == null)
+            return false;
+        origin = value;
+        return true;
+    }
+
+    private static bool TryGetPawnEyePosition(CCSPlayerController player, out Vector eye)
+    {
+        return TryGetPawnPoint(player, 1.0f, out eye);
+    }
+
+    private static bool TryGetPawnPoint(CCSPlayerController player, float viewOffsetScale, out Vector point)
+    {
+        point = new Vector(0.0f, 0.0f, 0.0f);
+        if (player.PlayerPawn is not { IsValid: true, Value.IsValid: true } pawn)
+            return false;
+        var origin = pawn.Value.AbsOrigin;
+        var viewOffset = pawn.Value.ViewOffset;
+        if (origin == null || viewOffset == null)
+            return false;
+        point = new Vector(
+            origin.X + viewOffset.X,
+            origin.Y + viewOffset.Y,
+            origin.Z + viewOffset.Z * viewOffsetScale);
+        return true;
+    }
+
+    private static string FormatThreat360Reason(int enemySlot, float distance, bool immediate)
+    {
+        var kind = immediate ? "near360" : "near360_held";
+        return string.Create(
+            CultureInfo.InvariantCulture,
+            $"{kind}_enemy{enemySlot}_dist{distance:F0}");
     }
 
     private static bool PlayerSeesTarget(
@@ -4787,6 +4990,8 @@ public sealed class DemoTracerPlugin : BasePlugin
 
     private readonly record struct PendingBulletDamage(int AttackerSlot, int Damage, float Time);
 
+    private readonly record struct PendingThreat360(int EnemySlot, float FirstSeenAt);
+
     private readonly record struct TeamEconomySnapshot(uint EquipmentValue, string Class);
 
     private sealed class NadeCycleState(
@@ -4872,6 +5077,185 @@ public sealed class DemoTracerPlugin : BasePlugin
             _lastPosition = position;
             _lastTime = time;
             _hasLastPosition = position.X.HasValue && position.Y.HasValue && position.Z.HasValue;
+        }
+    }
+
+    private sealed class RayTraceLosProbe
+    {
+        private const string CapabilityName = "raytrace:craytraceinterface";
+        private const string ApiAssemblyName = "RayTraceApi";
+        private const string RayTraceInterfaceTypeName = "RayTraceAPI.CRayTraceInterface";
+        private const string TraceOptionsTypeName = "RayTraceAPI.TraceOptions";
+        private const string TraceResultTypeName = "RayTraceAPI.TraceResult";
+        private const string InteractionLayersTypeName = "RayTraceAPI.InteractionLayers";
+
+        private bool _initialized;
+        private object? _capability;
+        private object? _traceOptions;
+        private MethodInfo? _getMethod;
+        private MethodInfo? _traceEndShapeMethod;
+        private FieldInfo? _fractionField;
+        private string _status = "unresolved";
+        private DateTime _nextInitAttemptAt = DateTime.MinValue;
+
+        public string Status
+        {
+            get
+            {
+                EnsureInitialized();
+                return _status;
+            }
+        }
+
+        public string ProbeStatus
+        {
+            get
+            {
+                _ = TryGetRayTrace(out _);
+                return _status;
+            }
+        }
+
+        public bool TryIsWorldLineClear(Vector start, Vector end, out bool clear)
+        {
+            clear = false;
+            if (!TryGetRayTrace(out var rayTrace))
+                return false;
+
+            try
+            {
+                var args = new object?[] { start, end, null, _traceOptions, null };
+                var hit = _traceEndShapeMethod!.Invoke(rayTrace, args) is true;
+                if (!hit)
+                {
+                    clear = true;
+                    _status = "available";
+                    return true;
+                }
+
+                var result = args[4];
+                if (result == null)
+                {
+                    _status = "bad_result";
+                    return false;
+                }
+
+                var fraction = Convert.ToSingle(_fractionField!.GetValue(result), CultureInfo.InvariantCulture);
+                clear = fraction >= 0.999f;
+                _status = "available";
+                return true;
+            }
+            catch
+            {
+                _status = "invoke_error";
+                return false;
+            }
+        }
+
+        private bool TryGetRayTrace(out object rayTrace)
+        {
+            rayTrace = null!;
+            EnsureInitialized();
+            if (_capability == null || _getMethod == null)
+                return false;
+
+            try
+            {
+                var value = _getMethod.Invoke(_capability, null);
+                if (value == null)
+                {
+                    _status = "no_provider";
+                    return false;
+                }
+
+                rayTrace = value;
+                return true;
+            }
+            catch
+            {
+                _status = "get_error";
+                return false;
+            }
+        }
+
+        private void EnsureInitialized()
+        {
+            if (_initialized)
+                return;
+            if (DateTime.UtcNow < _nextInitAttemptAt)
+                return;
+            _initialized = true;
+
+            try
+            {
+                var interfaceType = ResolveRayTraceType(RayTraceInterfaceTypeName);
+                var optionsType = ResolveRayTraceType(TraceOptionsTypeName);
+                var resultType = ResolveRayTraceType(TraceResultTypeName);
+                var layersType = ResolveRayTraceType(InteractionLayersTypeName);
+                if (interfaceType == null || optionsType == null || resultType == null || layersType == null)
+                {
+                    _status = "api_missing";
+                    RetryInitializeLater();
+                    return;
+                }
+
+                var capabilityType = typeof(PluginCapability<>).MakeGenericType(interfaceType);
+                _capability = Activator.CreateInstance(capabilityType, CapabilityName);
+                _getMethod = capabilityType.GetMethod("Get", BindingFlags.Public | BindingFlags.Instance);
+                _traceEndShapeMethod = interfaceType
+                    .GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                    .FirstOrDefault(method => method.Name == "TraceEndShape" && method.GetParameters().Length == 5);
+                _fractionField = resultType.GetField("Fraction", BindingFlags.Public | BindingFlags.Instance);
+                _traceOptions = Activator.CreateInstance(optionsType);
+                var interactsWith = optionsType.GetField("InteractsWith", BindingFlags.Public | BindingFlags.Instance);
+                if (_traceOptions != null && interactsWith != null)
+                {
+                    var worldOnly = Enum.Parse(layersType, "MASK_WORLD_ONLY");
+                    interactsWith.SetValue(_traceOptions, Convert.ToUInt64(worldOnly, CultureInfo.InvariantCulture));
+                }
+
+                if (_capability == null ||
+                    _getMethod == null ||
+                    _traceEndShapeMethod == null ||
+                    _fractionField == null ||
+                    _traceOptions == null)
+                {
+                    _status = "api_incomplete";
+                    return;
+                }
+
+                _status = "ready";
+            }
+            catch
+            {
+                _status = "init_error";
+                RetryInitializeLater();
+            }
+        }
+
+        private void RetryInitializeLater()
+        {
+            _initialized = false;
+            _nextInitAttemptAt = DateTime.UtcNow.AddSeconds(1.0);
+        }
+
+        private static Type? ResolveRayTraceType(string fullName)
+        {
+            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                var existing = assembly.GetType(fullName, throwOnError: false);
+                if (existing != null)
+                    return existing;
+            }
+
+            try
+            {
+                return Assembly.Load(new AssemblyName(ApiAssemblyName)).GetType(fullName, throwOnError: false);
+            }
+            catch
+            {
+                return Type.GetType($"{fullName}, {ApiAssemblyName}", throwOnError: false);
+            }
         }
     }
 
