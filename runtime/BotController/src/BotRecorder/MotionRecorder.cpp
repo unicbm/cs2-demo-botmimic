@@ -43,12 +43,15 @@ namespace BotController
             std::vector<SubtickMove> subs;
             std::vector<uint32_t> subOffset; // prefix sum, size ticks.size()+1
             std::atomic<int> cursor{0};
+            std::atomic<int> startCursor{0};
             std::atomic<int> lastAppliedDef{-1};
             std::mutex mu; // guards ticks/subs/subOffset
         };
 
         static std::array<RecordState, kMaxSlots> g_rec;
         static std::array<ReplayState, kMaxSlots> g_rep;
+
+        constexpr uint64_t kPrimeAttackButtons = (1ull << 0) | (1ull << 11);
 
         static std::atomic<int> g_replaySnapMode{static_cast<int>(ReplaySnapMode::Hard)};
         static std::atomic<int> g_replayViewMode{static_cast<int>(ReplayViewMode::PostOnly)};
@@ -803,6 +806,51 @@ namespace BotController
             return tick.pre;
         }
 
+        static uint64_t ReplayPressEdgesForPreStartTick(const ReplayState &p, int index)
+        {
+            if (index < 0 || index >= static_cast<int>(p.ticks.size()))
+                return 0;
+
+            const MovementSnapshot &pre = p.ticks[static_cast<size_t>(index)].pre;
+            if (pre.buttons1 != 0 || pre.buttons2 != 0)
+                return pre.buttons1;
+
+            // Do not infer a press from the first stored context tick. If it is
+            // already held there, the hold may have begun before the bounded
+            // freeze-time window.
+            if (index == 0)
+                return 0;
+
+            const uint64_t heldPrev =
+                p.ticks[static_cast<size_t>(index - 1)].pre.buttons;
+            return pre.buttons & ~heldPrev;
+        }
+
+        static uint64_t ReplayPrimeAttackButtonsForStart(
+            const ReplayState &p,
+            int cur,
+            uint64_t heldButtons,
+            uint64_t pressButtons)
+        {
+            const int start = p.startCursor.load(std::memory_order_relaxed);
+            if (cur != start || start <= 0)
+                return 0;
+
+            const uint64_t candidates =
+                heldButtons & kPrimeAttackButtons & ~pressButtons;
+            if (candidates == 0)
+                return 0;
+
+            uint64_t found = 0;
+            for (int i = 0; i < start; ++i)
+            {
+                found |= ReplayPressEdgesForPreStartTick(p, i) & candidates;
+                if ((found & candidates) == candidates)
+                    break;
+            }
+            return found & candidates;
+        }
+
         static int ReplayWeaponSelectForDef(int slot, int recordedDef)
         {
             if (recordedDef < 0 || !WeaponLockerHooks::WeaponHooksReady())
@@ -835,6 +883,7 @@ namespace BotController
             p.subs.assign(subs, subs + (subCount > 0 ? subCount : 0));
             RebuildSubOffset(p);
             p.cursor.store(0, std::memory_order_relaxed);
+            p.startCursor.store(0, std::memory_order_relaxed);
             p.lastAppliedDef.store(-1, std::memory_order_relaxed);
             g_lastFinalViewCursor[slot] = -1;
             g_serverViewChangeIndex[slot] = 0;
@@ -843,15 +892,22 @@ namespace BotController
 
         bool StartReplay(int slot, bool loop)
         {
+            return StartReplayAt(slot, loop, 0);
+        }
+
+        bool StartReplayAt(int slot, bool loop, int startIndex)
+        {
             if (!ValidSlot(slot))
                 return false;
             ReplayState &p = g_rep[slot];
             {
                 std::lock_guard<std::mutex> lk(p.mu);
-                if (p.ticks.empty())
+                if (p.ticks.empty() || startIndex < 0 ||
+                    startIndex >= static_cast<int>(p.ticks.size()))
                     return false;
             }
-            p.cursor.store(0, std::memory_order_relaxed);
+            p.cursor.store(startIndex, std::memory_order_relaxed);
+            p.startCursor.store(startIndex, std::memory_order_relaxed);
             p.lastAppliedDef.store(-1, std::memory_order_relaxed);
             g_lastFinalViewCursor[slot] = -1;
             g_serverViewChangeIndex[slot] = 0;
@@ -972,6 +1028,7 @@ namespace BotController
                 b1 = b0 & ~heldPrev;
                 b2 = heldPrev & ~b0;
             }
+            b1 |= ReplayPrimeAttackButtonsForStart(p, cur, b0, b1);
 
             const SubtickMove *subticks = nullptr;
             int subtickCount = 0;
@@ -1115,6 +1172,7 @@ namespace BotController
                 b1 = b0 & ~heldPrev;
                 b2 = heldPrev & ~b0;
             }
+            b1 |= ReplayPrimeAttackButtonsForStart(p, cur, b0, b1);
             return true;
         }
 
@@ -1573,7 +1631,9 @@ namespace BotController
                 {
                     if (p.loop.load(std::memory_order_relaxed) && total > 0)
                     {
-                        p.cursor.store(0, std::memory_order_relaxed);
+                        p.cursor.store(
+                            p.startCursor.load(std::memory_order_relaxed),
+                            std::memory_order_relaxed);
                         p.lastAppliedDef.store(-1, std::memory_order_relaxed);
                         g_lastFinalViewCursor[slot] = -1;
                         g_serverViewChangeIndex[slot] = 0;
@@ -1636,6 +1696,7 @@ namespace BotController
                 g_rec[i].currentDef.store(-1, std::memory_order_relaxed);
                 g_rec[i].liveWs.store(nullptr, std::memory_order_relaxed);
                 g_rep[i].cursor.store(0, std::memory_order_relaxed);
+                g_rep[i].startCursor.store(0, std::memory_order_relaxed);
                 g_rep[i].lastAppliedDef.store(-1, std::memory_order_relaxed);
                 g_lastFinalViewCursor[i] = -1;
                 g_serverViewChangeIndex[i] = 0;

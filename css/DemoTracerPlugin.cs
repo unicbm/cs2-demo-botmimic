@@ -3,6 +3,7 @@ using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Core.Attributes.Registration;
 using CounterStrikeSharp.API.Core.Capabilities;
 using CounterStrikeSharp.API.Modules.Commands;
+using CounterStrikeSharp.API.Modules.Cvars;
 using CounterStrikeSharp.API.Modules.Memory;
 using CounterStrikeSharp.API.Modules.Utils;
 using DemoTracerApi;
@@ -58,6 +59,20 @@ public sealed class DemoTracerPlugin : BasePlugin
     private const float NadeCycleMaxGapSeconds = 30.0f;
     private const int MaxPlayerSlots = 64;
     private const int ReplayStartHealth = 100;
+    private const string FreezeTimeConVarName = "mp_freezetime";
+    private enum ReplayStartAnchor
+    {
+        Live,
+        RecordingStart,
+        FreezePreroll,
+    }
+    private enum ReplayIdentityMode
+    {
+        Off,
+        Name,
+        Full,
+    }
+
     private static readonly string[] UtilityTraceColumns =
     [
         "kind",
@@ -162,6 +177,11 @@ public sealed class DemoTracerPlugin : BasePlugin
     private bool _armed;
     private bool _armedLoop;
     private string _armedLabel = string.Empty;
+    private string _armedManifestPath = string.Empty;
+    private int _armedSourceRound = -1;
+    private bool _armedPrepared;
+    private int _freezePrerollToken;
+    private bool _freezePrerollStarted;
 
     private bool _sequenceActive;
     private string _sequenceManifestPath = string.Empty;
@@ -183,7 +203,7 @@ public sealed class DemoTracerPlugin : BasePlugin
     private float _handoffThreat360Range = HandoffThreat360DefaultRange;
     private bool _handoffThreat360LosEnabled = true;
     private bool _partialReplayEnabled = true;
-    private bool _replayIdentityEnabled;
+    private ReplayIdentityMode _replayIdentityMode = ReplayIdentityMode.Off;
     private int _nextNadeStartToken;
     private NadeCycleState? _nadeCycle;
     private int _nextNadeCycleToken;
@@ -222,18 +242,78 @@ public sealed class DemoTracerPlugin : BasePlugin
         }
     }
 
-    [ConsoleCommand("dtr_run_manifest", "dtr_run_manifest <manifest.json> [start-round]")]
+    [ConsoleCommand("dtr_go", "dtr_go <seq|round|pool> ...")]
+    public void GoCommand(CCSPlayerController? player, CommandInfo command)
+        => DispatchPlanCommand(command, "dtr_go", restart: true);
+
+    [ConsoleCommand("dtr_arm", "dtr_arm <seq|round|pool> ...")]
+    public void ArmCommand(CCSPlayerController? player, CommandInfo command)
+        => DispatchPlanCommand(command, "dtr_arm", restart: false);
+
+    [ConsoleCommand("dtr_seq_restart", "dtr_seq_restart <manifest.json> [from_source_round]")]
+    public void SequenceRestartCommand(CCSPlayerController? player, CommandInfo command)
+        => RunManifestSequence(command, "dtr_seq_restart", restart: true);
+
+    [ConsoleCommand("dtr_round_restart", "dtr_round_restart <manifest.json> <source_round>")]
+    public void RoundRestartCommand(CCSPlayerController? player, CommandInfo command)
+        => ArmSingleRound(command, "dtr_round_restart", restart: true);
+
+    [ConsoleCommand("dtr_pool_restart", "dtr_pool_restart <pool_manifest.json> [server_round]")]
+    public void PoolRestartCommand(CCSPlayerController? player, CommandInfo command)
+        => RunPoolPlan(command, "dtr_pool_restart", restart: true);
+
+    [ConsoleCommand("dtr_run_manifest", "dtr_run_manifest <manifest.json> [from_source_round]")]
     public void RunManifestCommand(CCSPlayerController? player, CommandInfo command)
+        => RunManifestSequence(command, "dtr_run_manifest", restart: false);
+
+    private void DispatchPlanCommand(CommandInfo command, string commandName, bool restart)
     {
         if (!CheckAbi(command))
             return;
         if (command.ArgCount < 2)
         {
-            command.ReplyToCommand("usage: dtr_run_manifest <manifest.json> [start-round]");
+            command.ReplyToCommand($"[DTR ERR] Missing mode. Usage: {commandName} <seq|round|pool> ...");
+            command.ReplyToCommand($"[DTR HINT] {commandName} seq <manifest_json> [from_source_round]");
+            command.ReplyToCommand($"[DTR HINT] {commandName} round <manifest_json> <source_round>");
+            command.ReplyToCommand($"[DTR HINT] {commandName} pool <pool_manifest_json> [server_round]");
             return;
         }
 
-        var manifestPath = command.GetArg(1);
+        switch (command.GetArg(1).ToLowerInvariant())
+        {
+            case "seq":
+            case "sequence":
+                RunManifestSequence(command, $"{commandName} seq", restart, argOffset: 2);
+                return;
+            case "round":
+                ArmSingleRound(command, $"{commandName} round", restart, argOffset: 2);
+                return;
+            case "pool":
+                RunPoolPlan(command, $"{commandName} pool", restart, argOffset: 2);
+                return;
+            default:
+                command.ReplyToCommand("[DTR ERR] Ambiguous command. Choose a mode: seq, round, or pool.");
+                command.ReplyToCommand($"[DTR HINT] Use \"{commandName} seq <manifest_json> 0\" for sequence playback.");
+                command.ReplyToCommand($"[DTR HINT] Use \"{commandName} round <manifest_json> 0\" for single-round playback.");
+                return;
+        }
+    }
+
+    private void RunManifestSequence(
+        CommandInfo command,
+        string commandName,
+        bool restart,
+        int argOffset = 1)
+    {
+        if (!CheckAbi(command))
+            return;
+        if (command.ArgCount <= argOffset)
+        {
+            command.ReplyToCommand($"usage: {commandName} <manifest.json> [from_source_round]");
+            return;
+        }
+
+        var manifestPath = command.GetArg(argOffset);
         if (!TryReadManifest(manifestPath, out var manifest, out var readError))
         {
             command.ReplyToCommand($"dtr: failed to read manifest: {readError}");
@@ -253,10 +333,11 @@ public sealed class DemoTracerPlugin : BasePlugin
         }
 
         var startRound = rounds[0];
-        if (command.ArgCount >= 3 &&
-            (!int.TryParse(command.GetArg(2), out startRound) || !rounds.Contains(startRound)))
+        if (command.ArgCount > argOffset + 1 &&
+            (!int.TryParse(command.GetArg(argOffset + 1), out startRound) || !rounds.Contains(startRound)))
         {
-            command.ReplyToCommand("dtr: start round is not present in manifest");
+            command.ReplyToCommand($"[DTR ERR] from_source_round={command.GetArg(argOffset + 1)} was not found in manifest.");
+            command.ReplyToCommand($"[DTR HINT] Available source rounds: {string.Join(", ", rounds)}.");
             return;
         }
 
@@ -267,11 +348,20 @@ public sealed class DemoTracerPlugin : BasePlugin
         _sequenceActive = _sequenceIndex >= 0;
         _sequencePrepared = false;
         _sequencePreparedRound = -1;
+        InvalidateFreezePreroll();
         _armed = false;
+        _armedPrepared = false;
+        _armedManifestPath = string.Empty;
+        _armedSourceRound = -1;
         _poolActive = false;
 
         command.ReplyToCommand(
-            $"dtr: sequence armed, {rounds.Length - _sequenceIndex} rounds from round {startRound}; next round_start prepares bots, round_freeze_end starts playback");
+            restart
+                ? $"[DTR OK] Planned SEQUENCE. manifest=\"{manifestPath}\"; from_source_round={startRound}; restart=now."
+                : $"[DTR OK] Armed SEQUENCE. manifest=\"{manifestPath}\"; from_source_round={startRound}; waiting for next round_start.");
+        command.ReplyToCommand(
+            $"[DTR OK] Sequence has {rounds.Length - _sequenceIndex} round(s) remaining from source_round={startRound}.");
+        IssueRestartIfRequested(command, restart);
     }
 
     [ConsoleCommand("dtr_stop_sequence", "dtr_stop_sequence")]
@@ -282,21 +372,29 @@ public sealed class DemoTracerPlugin : BasePlugin
         _sequenceIndex = 0;
         _sequencePrepared = false;
         _sequencePreparedRound = -1;
+        InvalidateFreezePreroll();
         command.ReplyToCommand("dtr: sequence stopped");
     }
 
-    [ConsoleCommand("dtr_run_pool", "dtr_run_pool <pool_manifest.json> [start-round]")]
+    [ConsoleCommand("dtr_run_pool", "dtr_run_pool <pool_manifest.json> [server_round]")]
     public void RunPoolCommand(CCSPlayerController? player, CommandInfo command)
+        => RunPoolPlan(command, "dtr_run_pool", restart: false);
+
+    private void RunPoolPlan(
+        CommandInfo command,
+        string commandName,
+        bool restart,
+        int argOffset = 1)
     {
         if (!CheckAbi(command))
             return;
-        if (command.ArgCount < 2)
+        if (command.ArgCount <= argOffset)
         {
-            command.ReplyToCommand("usage: dtr_run_pool <pool_manifest.json> [start-round]");
+            command.ReplyToCommand($"usage: {commandName} <pool_manifest.json> [server_round]");
             return;
         }
 
-        var poolPath = command.GetArg(1);
+        var poolPath = command.GetArg(argOffset);
         if (!TryReadPoolManifest(poolPath, out var pool, out var readError))
         {
             command.ReplyToCommand($"dtr: failed to read pool manifest: {readError}");
@@ -304,10 +402,10 @@ public sealed class DemoTracerPlugin : BasePlugin
         }
 
         var startRound = 0;
-        if (command.ArgCount >= 3 &&
-            (!int.TryParse(command.GetArg(2), out startRound) || startRound < 0))
+        if (command.ArgCount > argOffset + 1 &&
+            (!int.TryParse(command.GetArg(argOffset + 1), out startRound) || startRound < 0))
         {
-            command.ReplyToCommand("dtr: start round must be a non-negative integer");
+            command.ReplyToCommand("dtr: server_round must be a non-negative integer");
             return;
         }
 
@@ -315,6 +413,11 @@ public sealed class DemoTracerPlugin : BasePlugin
         _sequenceActive = false;
         _sequencePrepared = false;
         _sequencePreparedRound = -1;
+        _armed = false;
+        _armedPrepared = false;
+        _armedManifestPath = string.Empty;
+        _armedSourceRound = -1;
+        InvalidateFreezePreroll();
         _poolManifestPath = poolPath;
         _poolManifest = pool;
         _poolRoundIndex = startRound;
@@ -323,8 +426,15 @@ public sealed class DemoTracerPlugin : BasePlugin
 
         command.ReplyToCommand(
             _poolActive
-                ? $"dtr: pool armed, candidates={pool.Candidates.Count}, next round={_poolRoundIndex}; round_freeze_end selects by economy"
+                ? restart
+                    ? $"[DTR OK] Planned POOL. pool_manifest=\"{poolPath}\"; server_round={_poolRoundIndex}; restart=now."
+                    : $"[DTR OK] Armed POOL. pool_manifest=\"{poolPath}\"; server_round={_poolRoundIndex}; waiting for next round_start/freeze_end."
                 : "dtr: pool manifest has no candidates");
+        if (_poolActive)
+        {
+            command.ReplyToCommand("[DTR WARN] Pool currently selects candidates at round_freeze_end; bounded freeze pre-roll is skipped for pool rounds.");
+            IssueRestartIfRequested(command, restart);
+        }
     }
 
     [ConsoleCommand("dtr_stop_pool", "dtr_stop_pool")]
@@ -342,7 +452,7 @@ public sealed class DemoTracerPlugin : BasePlugin
     public void WeaponAlignCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (command.ArgCount >= 2)
-            _weaponAlignEnabled = command.GetArg(1) != "0";
+            _weaponAlignEnabled = ParseOnOff(command.GetArg(1), _weaponAlignEnabled);
         if (!_weaponAlignEnabled)
         {
             _pendingWeaponAlign.Clear();
@@ -360,7 +470,7 @@ public sealed class DemoTracerPlugin : BasePlugin
     public void ProjectileAlignCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (command.ArgCount >= 2)
-            _projectileAlignEnabled = command.GetArg(1) != "0";
+            _projectileAlignEnabled = ParseOnOff(command.GetArg(1), _projectileAlignEnabled);
         if (!_projectileAlignEnabled)
         {
             _projectileAlignNextBySlot.Clear();
@@ -372,10 +482,13 @@ public sealed class DemoTracerPlugin : BasePlugin
 
     [ConsoleCommand("dtr_handoff", "dtr_handoff <off|death|contact|death_or_contact> [all|slot]")]
     public void HandoffCommand(CCSPlayerController? player, CommandInfo command)
+        => SetHandoffMode(command, argOffset: 1);
+
+    private void SetHandoffMode(CommandInfo command, int argOffset)
     {
-        if (command.ArgCount >= 2)
+        if (command.ArgCount > argOffset)
         {
-            if (!TryParseHandoffMode(command.GetArg(1), out var mode))
+            if (!TryParseHandoffMode(command.GetArg(argOffset), out var mode))
             {
                 command.ReplyToCommand("usage: dtr_handoff <off|death|contact|death_or_contact> [all|slot]");
                 return;
@@ -383,9 +496,9 @@ public sealed class DemoTracerPlugin : BasePlugin
             _handoffMode = mode;
         }
 
-        if (command.ArgCount >= 3)
+        if (command.ArgCount > argOffset + 1)
         {
-            var scope = command.GetArg(2);
+            var scope = command.GetArg(argOffset + 1);
             if (scope.Equals("slot", StringComparison.OrdinalIgnoreCase))
                 _handoffAllSlots = false;
             else if (scope.Equals("all", StringComparison.OrdinalIgnoreCase))
@@ -398,7 +511,7 @@ public sealed class DemoTracerPlugin : BasePlugin
         }
 
         command.ReplyToCommand(
-            $"dtr: handoff={FormatHandoffMode(_handoffMode)} scope={(_handoffAllSlots ? "all" : "slot")}");
+            $"[DTR OK] handoff={FormatHandoffMode(_handoffMode)} scope={(_handoffAllSlots ? "all" : "slot")}");
     }
 
     [ConsoleCommand("dtr_handoff_360", "dtr_handoff_360 [0|1] [range] [los|nolos]")]
@@ -466,11 +579,108 @@ public sealed class DemoTracerPlugin : BasePlugin
         => value.Replace("\\", "\\\\", StringComparison.Ordinal)
             .Replace("\"", "\\\"", StringComparison.Ordinal);
 
+    private static bool ParseOnOff(string value, bool fallback)
+        => value.ToLowerInvariant() switch
+        {
+            "1" or "on" or "true" or "yes" or "full" or "name" => true,
+            "0" or "off" or "false" or "no" => false,
+            _ => fallback,
+        };
+
+    private static string FormatOnOff(bool value)
+        => value ? "on" : "off";
+
+    private void SetIdentityMode(CommandInfo command)
+    {
+        if (command.ArgCount < 3)
+        {
+            command.ReplyToCommand("usage: dtr_set identity <off|name|full>");
+            return;
+        }
+
+        switch (command.GetArg(2).ToLowerInvariant())
+        {
+            case "off":
+            case "0":
+            case "false":
+                _replayIdentityMode = ReplayIdentityMode.Off;
+                break;
+            case "name":
+                _replayIdentityMode = ReplayIdentityMode.Name;
+                break;
+            case "full":
+            case "1":
+            case "on":
+            case "true":
+                _replayIdentityMode = ReplayIdentityMode.Full;
+                break;
+            default:
+                command.ReplyToCommand("usage: dtr_set identity <off|name|full>");
+                return;
+        }
+
+        command.ReplyToCommand($"[DTR OK] identity={ReplayIdentityModeName()}");
+    }
+
+    private void SetAlignMode(CommandInfo command)
+    {
+        if (command.ArgCount < 4)
+        {
+            command.ReplyToCommand("usage: dtr_set align <weapons|loadout|active_weapon|slot_lock|projectiles> <off|on>");
+            return;
+        }
+
+        var enabled = ParseOnOff(command.GetArg(3), false);
+        switch (command.GetArg(2).ToLowerInvariant())
+        {
+            case "weapons":
+            case "weapon":
+            case "loadout":
+            case "active_weapon":
+            case "active-weapon":
+            case "slot_lock":
+            case "slot-lock":
+                _weaponAlignEnabled = enabled;
+                if (!_weaponAlignEnabled)
+                {
+                    _pendingWeaponAlign.Clear();
+                    _rebuiltInventorySlots.Clear();
+                    _lastReplayWeaponDef.Clear();
+                    _lastLockedWeaponTarget.Clear();
+                    foreach (var slot in _loadedSlots)
+                        BotControllerNative.UnlockWeaponSlot(slot);
+                }
+                command.ReplyToCommand($"[DTR OK] align weapons={FormatOnOff(_weaponAlignEnabled)}");
+                if (command.GetArg(2).Equals("loadout", StringComparison.OrdinalIgnoreCase) ||
+                    command.GetArg(2).Equals("active_weapon", StringComparison.OrdinalIgnoreCase) ||
+                    command.GetArg(2).Equals("slot_lock", StringComparison.OrdinalIgnoreCase) ||
+                    command.GetArg(2).Equals("active-weapon", StringComparison.OrdinalIgnoreCase) ||
+                    command.GetArg(2).Equals("slot-lock", StringComparison.OrdinalIgnoreCase))
+                {
+                    command.ReplyToCommand("[DTR WARN] loadout/active_weapon/slot_lock currently share the weapons align implementation.");
+                }
+                return;
+            case "projectiles":
+            case "projectile":
+                _projectileAlignEnabled = enabled;
+                if (!_projectileAlignEnabled)
+                {
+                    _projectileAlignNextBySlot.Clear();
+                    _pendingProjectileAlign.Clear();
+                }
+                command.ReplyToCommand($"[DTR OK] align projectiles={FormatOnOff(_projectileAlignEnabled)}");
+                return;
+            default:
+                command.ReplyToCommand("usage: dtr_set align <weapons|loadout|active_weapon|slot_lock|projectiles> <off|on>");
+                return;
+        }
+    }
+
     [ConsoleCommand("dtr_partial", "dtr_partial <0|1>")]
     public void PartialCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (command.ArgCount >= 2)
-            _partialReplayEnabled = command.GetArg(1) != "0";
+            _partialReplayEnabled = ParseOnOff(command.GetArg(1), _partialReplayEnabled);
 
         command.ReplyToCommand($"dtr: partial_replay={_partialReplayEnabled}");
     }
@@ -479,23 +689,83 @@ public sealed class DemoTracerPlugin : BasePlugin
     public void ReplayIdentityCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (command.ArgCount >= 2)
-            _replayIdentityEnabled = command.GetArg(1) != "0";
+            _replayIdentityMode = ParseOnOff(command.GetArg(1), false)
+                ? ReplayIdentityMode.Full
+                : ReplayIdentityMode.Off;
 
         command.ReplyToCommand($"dtr: replay_identity={ReplayIdentityModeName()}");
     }
 
-    [ConsoleCommand("dtr_load", "dtr_load <slot> <absolute-or-game-path.dtr>")]
+    [ConsoleCommand("dtr_set", "dtr_set <identity|align|handoff|allow_partial> ...")]
+    public void SetCommand(CCSPlayerController? player, CommandInfo command)
+    {
+        if (command.ArgCount < 2)
+        {
+            command.ReplyToCommand("usage: dtr_set identity <off|name|full>");
+            command.ReplyToCommand("usage: dtr_set align <weapons|loadout|active_weapon|slot_lock|projectiles> <off|on>");
+            command.ReplyToCommand("usage: dtr_set handoff <off|death|contact|death_or_contact> [slot|all]");
+            command.ReplyToCommand("usage: dtr_set allow_partial <off|on>");
+            return;
+        }
+
+        switch (command.GetArg(1).ToLowerInvariant())
+        {
+            case "identity":
+                SetIdentityMode(command);
+                return;
+            case "align":
+                SetAlignMode(command);
+                return;
+            case "handoff":
+                SetHandoffMode(command, argOffset: 2);
+                return;
+            case "allow_partial":
+            case "partial":
+                if (command.ArgCount < 3)
+                {
+                    command.ReplyToCommand("usage: dtr_set allow_partial <off|on>");
+                    return;
+                }
+                _partialReplayEnabled = ParseOnOff(command.GetArg(2), _partialReplayEnabled);
+                command.ReplyToCommand($"[DTR OK] allow_partial={FormatOnOff(_partialReplayEnabled)}");
+                return;
+            default:
+                command.ReplyToCommand("[DTR ERR] unknown setting namespace. Use identity, align, handoff, or allow_partial.");
+                return;
+        }
+    }
+
+    [ConsoleCommand("dtr_load", "dtr_load <round|slot> ...")]
     public void LoadCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (!CheckAbi(command))
             return;
-        if (!TryParseSlot(command, out var slot) || command.ArgCount < 3)
+        if (command.ArgCount < 2)
         {
-            command.ReplyToCommand("usage: dtr_load <slot> <path.dtr>");
+            command.ReplyToCommand("usage: dtr_load round <manifest.json> <source_round> | dtr_load slot <slot> <path.dtr>");
             return;
         }
 
-        var path = command.GetArg(2);
+        var mode = command.GetArg(1).ToLowerInvariant();
+        if (mode == "round")
+        {
+            if (!TryParseRoundArgs(command, "dtr_load round", out var manifestPath, out var round, argOffset: 2))
+                return;
+
+            var result = LoadRound(manifestPath, round);
+            command.ReplyToCommand(result.Message);
+            return;
+        }
+
+        var slotArg = mode == "slot" ? 2 : 1;
+        if (!TryParseSlotAt(command, slotArg, out var slot) || command.ArgCount <= slotArg + 1)
+        {
+            command.ReplyToCommand("usage: dtr_load slot <slot> <path.dtr>");
+            command.ReplyToCommand("legacy usage: dtr_load <slot> <path.dtr>");
+            return;
+        }
+
+        var path = command.GetArg(slotArg + 1);
         var ok = BotControllerNative.LoadReplayFromFile(slot, path);
         if (ok)
         {
@@ -508,12 +778,12 @@ public sealed class DemoTracerPlugin : BasePlugin
             : $"dtr: failed to load slot {slot}: {path} ({BotControllerNative.LastLoadError})");
     }
 
-    [ConsoleCommand("dtr_load_round", "dtr_load_round <manifest.json> <round>")]
+    [ConsoleCommand("dtr_load_round", "dtr_load_round <manifest.json> <source_round>")]
     public void LoadRoundCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (!CheckAbi(command))
             return;
-        if (!TryParseRoundArgs(command, out var manifestPath, out var round))
+        if (!TryParseRoundArgs(command, "dtr_load_round", out var manifestPath, out var round))
             return;
 
         var result = LoadRound(manifestPath, round);
@@ -640,31 +910,46 @@ public sealed class DemoTracerPlugin : BasePlugin
         command.ReplyToCommand(stopped ? "dtr: nade cycle stopped" : "dtr: no active nade cycle");
     }
 
-    [ConsoleCommand("dtr_arm_round", "dtr_arm_round <manifest.json> <round> [loop:0|1]")]
+    [ConsoleCommand("dtr_arm_round", "dtr_arm_round <manifest.json> <source_round> [loop:0|1]")]
     public void ArmRoundCommand(CCSPlayerController? player, CommandInfo command)
+        => ArmSingleRound(command, "dtr_arm_round", restart: false);
+
+    private void ArmSingleRound(
+        CommandInfo command,
+        string commandName,
+        bool restart,
+        int argOffset = 1)
     {
         if (!CheckAbi(command))
             return;
-        if (!TryParseRoundArgs(command, out var manifestPath, out var round))
+        if (!TryParseRoundArgs(command, commandName, out var manifestPath, out var round, argOffset))
             return;
 
-        var loop = command.ArgCount >= 4 && command.GetArg(3) != "0";
-        var result = LoadRound(manifestPath, round);
-        if (!result.Ok)
+        if (!ManifestContainsSourceRound(manifestPath, round, out var validateError))
         {
-            command.ReplyToCommand(result.Message);
+            command.ReplyToCommand(validateError);
             return;
         }
 
+        var loop = command.ArgCount > argOffset + 2 && command.GetArg(argOffset + 2) != "0";
+        StopAndUnloadLoaded();
         _sequenceActive = false;
         _sequencePrepared = false;
         _sequencePreparedRound = -1;
         _poolActive = false;
+        InvalidateFreezePreroll();
         _armed = true;
         _armedLoop = loop;
-        _armedLabel = $"round={round} manifest={manifestPath}";
-        PreloadLoadedReplays();
-        command.ReplyToCommand($"dtr: armed {_loadedSlots.Count} slots, will start on round_freeze_end, loop={loop}");
+        _armedPrepared = false;
+        _armedManifestPath = manifestPath;
+        _armedSourceRound = round;
+        _armedLabel = $"source_round={round} manifest={manifestPath}";
+        command.ReplyToCommand(
+            restart
+                ? $"[DTR OK] Planned SINGLE ROUND. manifest=\"{manifestPath}\"; source_round={round}; restart=now."
+                : $"[DTR OK] Armed SINGLE ROUND. manifest=\"{manifestPath}\"; source_round={round}; waiting for next round_start.");
+        command.ReplyToCommand("[DTR OK] This plan will not advance to later manifest rounds.");
+        IssueRestartIfRequested(command, restart);
     }
 
     [ConsoleCommand("dtr_play_loaded", "dtr_play_loaded [loop:0|1]")]
@@ -676,12 +961,31 @@ public sealed class DemoTracerPlugin : BasePlugin
         command.ReplyToCommand(PlayLoaded(loop));
     }
 
-    [ConsoleCommand("dtr_play", "dtr_play <slot> [loop:0|1]")]
+    [ConsoleCommand("dtr_play", "dtr_play <loaded|slot> ...")]
     public void PlayCommand(CCSPlayerController? player, CommandInfo command)
     {
-        if (!CheckAbi(command) || !TryParseSlot(command, out var slot))
+        if (!CheckAbi(command))
             return;
-        var loop = command.ArgCount >= 3 && command.GetArg(2) != "0";
+        if (command.ArgCount < 2)
+        {
+            command.ReplyToCommand("usage: dtr_play loaded [loop:0|1] | dtr_play slot <slot> [loop:0|1]");
+            command.ReplyToCommand("legacy usage: dtr_play <slot> [loop:0|1]");
+            return;
+        }
+
+        var mode = command.GetArg(1).ToLowerInvariant();
+        if (mode == "loaded")
+        {
+            var loopLoaded = command.ArgCount >= 3 && command.GetArg(2) != "0";
+            command.ReplyToCommand("[DTR WARN] dtr_play loaded is manual/debug playback; it bypasses round_start/round_freeze_end lifecycle alignment.");
+            command.ReplyToCommand(PlayLoaded(loopLoaded));
+            return;
+        }
+
+        var slotArg = mode == "slot" ? 2 : 1;
+        if (!TryParseSlotAt(command, slotArg, out var slot))
+            return;
+        var loop = command.ArgCount > slotArg + 1 && command.GetArg(slotArg + 1) != "0";
         if (_loadedReplays.TryGetValue(slot, out var replay))
             PreloadReplayWeaponsForSlot(slot, replay);
         _lastEnsuredWeaponDef.Remove(slot);
@@ -692,7 +996,7 @@ public sealed class DemoTracerPlugin : BasePlugin
             return;
         }
 
-        var ok = BotControllerNative.StartReplay(slot, loop);
+        var ok = StartReplayForSlot(slot, loop);
         if (ok)
         {
             MarkReplayStarted(slot);
@@ -703,54 +1007,56 @@ public sealed class DemoTracerPlugin : BasePlugin
             : $"dtr: failed to play slot {slot} (cursor={state.Cursor}, total={state.Total})");
     }
 
-    [ConsoleCommand("dtr_stop", "dtr_stop <slot>")]
+    [ConsoleCommand("dtr_stop", "dtr_stop <sequence|pool|replay|slot|all> ...")]
     public void StopCommand(CCSPlayerController? player, CommandInfo command)
     {
-        if (!CheckAbi(command) || !TryParseSlot(command, out var slot))
+        if (!CheckAbi(command))
             return;
-        var ok = BotControllerNative.StopReplay(slot);
-        ReleaseReplaySlot(slot, "manual_stop");
-        if (IsNadeCycleSlot(slot))
-            StopNadeCycle("manual_stop", stopCurrent: false);
-        command.ReplyToCommand(ok
-            ? $"dtr: stopped slot {slot}"
-            : $"dtr: failed to stop slot {slot}");
+        if (command.ArgCount < 2)
+        {
+            command.ReplyToCommand("usage: dtr_stop sequence|pool|replay|slot <slot>|all");
+            command.ReplyToCommand("legacy usage: dtr_stop <slot>");
+            return;
+        }
+
+        switch (command.GetArg(1).ToLowerInvariant())
+        {
+            case "sequence":
+            case "seq":
+                StopSequenceState();
+                command.ReplyToCommand("[DTR OK] sequence scheduling stopped");
+                return;
+            case "pool":
+                StopPoolState();
+                command.ReplyToCommand("[DTR OK] pool scheduling stopped");
+                return;
+            case "replay":
+            case "loaded":
+                StopLoadedReplaySlots("manual_stop_replay");
+                command.ReplyToCommand("[DTR OK] current loaded/running replay slots stopped");
+                return;
+            case "all":
+                StopAllState("manual_stop_all");
+                command.ReplyToCommand("[DTR OK] all DemoTracer replay state stopped");
+                return;
+            case "slot":
+                if (!TryParseSlotAt(command, 2, out var namedSlot))
+                    return;
+                StopOneSlot(command, namedSlot, "manual_stop");
+                return;
+            default:
+                if (!TryParseSlotAt(command, 1, out var legacySlot))
+                    return;
+                StopOneSlot(command, legacySlot, "manual_stop");
+                return;
+        }
     }
 
     [ConsoleCommand("dtr_stop_all", "dtr_stop_all")]
     public void StopAllCommand(CCSPlayerController? player, CommandInfo command)
     {
-        StopNadeCycle("manual_stop_all", stopCurrent: false);
-        foreach (var slot in _loadedSlots.ToArray())
-        {
-            BotControllerNative.StopReplay(slot);
-            ReleaseReplaySlot(slot, "manual_stop_all");
-        }
-
-        _armed = false;
-        _sequenceActive = false;
-        _poolActive = false;
-        _poolManifest = null;
-        _poolManifestPath = string.Empty;
-        _poolUsedCandidates.Clear();
-        _sequencePrepared = false;
-        _sequencePreparedRound = -1;
-        _lastEnsuredWeaponDef.Clear();
-        _lastReplayWeaponDef.Clear();
-        _lastLockedWeaponTarget.Clear();
-        _pendingWeaponAlign.Clear();
-        _projectileAlignNextBySlot.Clear();
-        _pendingProjectileAlign.Clear();
-        _queuedNadeStartTokens.Clear();
-        _rebuiltInventorySlots.Clear();
-        _lastPlayingSlots.Clear();
-        _quietReplaySlots.Clear();
-        _replayStartedAt.Clear();
-        _pendingBulletHits.Clear();
-        _pendingBulletDamages.Clear();
-        _pendingThreat360.Clear();
-        SetReplayPovMask(0);
-        command.ReplyToCommand($"dtr: stopped {_loadedSlots.Count} loaded slots");
+        StopAllState("manual_stop_all");
+        command.ReplyToCommand("[DTR OK] all DemoTracer replay state stopped");
     }
 
     [ConsoleCommand("dtr_unload", "dtr_unload <slot>")]
@@ -800,10 +1106,30 @@ public sealed class DemoTracerPlugin : BasePlugin
         }
     }
 
-    [ConsoleCommand("dtr_status", "dtr_status <slot>")]
+    [ConsoleCommand("dtr_status", "dtr_status [slot <slot>|<slot>]")]
     public void StatusCommand(CCSPlayerController? player, CommandInfo command)
     {
-        if (!CheckAbi(command) || !TryParseSlot(command, out var slot))
+        if (!CheckAbi(command))
+            return;
+        if (command.ArgCount < 2)
+        {
+            TryReadFreezeTimeConVar(out var freezeTime, out var freezeReason);
+            var plan = _sequenceActive
+                ? _sequenceIndex < _sequenceRounds.Length
+                    ? $"sequence from_source_round={_sequenceRounds[_sequenceIndex]} prepared={_sequencePrepared}:{_sequencePreparedRound}"
+                    : "sequence complete"
+                : _armed
+                    ? $"single source_round={_armedSourceRound} prepared={_armedPrepared}"
+                    : _poolActive
+                        ? $"pool server_round={_poolRoundIndex} candidates={_poolManifest?.Candidates.Count ?? 0}"
+                        : "none";
+            command.ReplyToCommand(
+                $"[DTR OK] status plan={plan} loaded_slots={_loadedSlots.Count} settings identity={ReplayIdentityModeName()} weapons={FormatOnOff(_weaponAlignEnabled)} projectiles={FormatOnOff(_projectileAlignEnabled)} handoff={FormatHandoffMode(_handoffMode)}:{(_handoffAllSlots ? "all" : "slot")} allow_partial={FormatOnOff(_partialReplayEnabled)} mp_freezetime={(float.IsFinite(freezeTime) ? freezeTime.ToString("F2", CultureInfo.InvariantCulture) : "unknown")} {(string.IsNullOrEmpty(freezeReason) ? "" : freezeReason)}");
+            return;
+        }
+
+        var slotArg = command.GetArg(1).Equals("slot", StringComparison.OrdinalIgnoreCase) ? 2 : 1;
+        if (!TryParseSlotAt(command, slotArg, out var slot))
             return;
         var state = BotControllerNative.GetReplayState(slot);
         var sequence = _sequenceActive && _sequenceIndex < _sequenceRounds.Length
@@ -814,6 +1140,13 @@ public sealed class DemoTracerPlugin : BasePlugin
             : string.Empty;
         command.ReplyToCommand(
             $"dtr: abi={BotControllerNative.AbiVersion} slot={slot} playing={state.Playing} cursor={state.Cursor} total={state.Total} handoff={FormatHandoffMode(_handoffMode)} scope={(_handoffAllSlots ? "all" : "slot")} handoff_360={_handoffThreat360Enabled}:{_handoffThreat360Range.ToString("F0", CultureInfo.InvariantCulture)} los={_handoffThreat360LosEnabled}:{_rayTraceLosProbe.ProbeStatus} partial={_partialReplayEnabled} identity={ReplayIdentityModeName()} projectile_align={_projectileAlignEnabled}{sequence}{pool}");
+    }
+
+    [ConsoleCommand("dtr_runtime", "dtr_runtime")]
+    public void RuntimeCommand(CCSPlayerController? player, CommandInfo command)
+    {
+        command.ReplyToCommand(
+            $"[DTR OK] DemoTracer expected_abi={BotControllerNative.ExpectedAbiVersion} runtime_abi={BotControllerNative.AbiVersion} compatible={BotControllerNative.IsCompatible}");
     }
 
     [ConsoleCommand("dtr_util_trace", "dtr_util_trace <0|1> [path]")]
@@ -852,7 +1185,15 @@ public sealed class DemoTracerPlugin : BasePlugin
     public HookResult OnRoundStart(EventRoundStart @event, GameEventInfo info)
     {
         if (_sequenceActive)
-            PrepareNextSequenceRound("round_start");
+        {
+            if (PrepareNextSequenceRound("round_start"))
+                ScheduleFreezePrerollStart($"sequence round {_sequencePreparedRound}");
+        }
+        else if (_armed)
+        {
+            if (PrepareArmedRound("round_start"))
+                ScheduleFreezePrerollStart(_armedLabel);
+        }
 
         return HookResult.Continue;
     }
@@ -860,24 +1201,37 @@ public sealed class DemoTracerPlugin : BasePlugin
     [GameEventHandler]
     public HookResult OnRoundFreezeEnd(EventRoundFreezeEnd @event, GameEventInfo info)
     {
+        InvalidateFreezePreroll();
+
         if (_sequenceActive)
         {
-            StartPreparedSequenceRound();
+            Server.NextFrame(StartPreparedSequenceRound);
             return HookResult.Continue;
         }
 
         if (_poolActive)
         {
-            StartNextPoolRound();
+            Server.NextFrame(StartNextPoolRound);
             return HookResult.Continue;
         }
 
         if (!_armed)
             return HookResult.Continue;
+        if (!_armedPrepared)
+        {
+            Server.PrintToConsole($"[DTR WARN] armed round is waiting for the next full round_start: {_armedLabel}");
+            return HookResult.Continue;
+        }
 
-        var message = StartLoaded(_armedLoop);
-        Server.PrintToConsole($"dtr: auto-start {_armedLabel}: {message}");
+        var loop = _armedLoop;
+        var label = _armedLabel;
         _armed = false;
+        _armedPrepared = false;
+        Server.NextFrame(() =>
+        {
+            var message = StartLoaded(loop);
+            Server.PrintToConsole($"dtr: auto-start {label}: {message}");
+        });
         return HookResult.Continue;
     }
 
@@ -1935,6 +2289,45 @@ public sealed class DemoTracerPlugin : BasePlugin
         return true;
     }
 
+    private bool PrepareArmedRound(string reason)
+    {
+        if (!_armed)
+            return false;
+        if (_armedPrepared)
+            return true;
+        if (string.IsNullOrWhiteSpace(_armedManifestPath) || _armedSourceRound < 0)
+        {
+            _armed = false;
+            Server.PrintToConsole("[DTR ERR] single-round plan is missing manifest/source_round");
+            return false;
+        }
+
+        var manifestPath = _armedManifestPath;
+        var sourceRound = _armedSourceRound;
+        var loop = _armedLoop;
+        var label = _armedLabel;
+        var load = LoadRound(manifestPath, sourceRound);
+        if (!load.Ok)
+        {
+            _armed = false;
+            _armedPrepared = false;
+            _armedManifestPath = string.Empty;
+            _armedSourceRound = -1;
+            Server.PrintToConsole($"[DTR ERR] single source_round={sourceRound} failed while preparing on {reason}: {load.Message}");
+            return false;
+        }
+
+        _armed = true;
+        _armedPrepared = true;
+        _armedManifestPath = manifestPath;
+        _armedSourceRound = sourceRound;
+        _armedLoop = loop;
+        _armedLabel = label;
+        PreloadLoadedReplays();
+        Server.PrintToConsole($"[DTR OK] round_start: loaded SINGLE source_round={sourceRound} on {reason}: {load.Message}");
+        return true;
+    }
+
     private void StartPreparedSequenceRound()
     {
         if (!_sequencePrepared && !PrepareNextSequenceRound("round_freeze_end fallback"))
@@ -2149,28 +2542,36 @@ public sealed class DemoTracerPlugin : BasePlugin
         return false;
     }
 
-    private static bool TryParseRoundArgs(CommandInfo command, out string manifestPath, out int round)
+    private static bool TryParseRoundArgs(
+        CommandInfo command,
+        string commandName,
+        out string manifestPath,
+        out int round,
+        int argOffset = 1)
     {
         manifestPath = string.Empty;
         round = 0;
-        if (command.ArgCount < 3)
+        if (command.ArgCount <= argOffset + 1)
         {
-            command.ReplyToCommand("usage: command <manifest.json> <round>");
+            command.ReplyToCommand($"usage: {commandName} <manifest.json> <source_round>");
             return false;
         }
 
-        manifestPath = command.GetArg(1);
-        if (int.TryParse(command.GetArg(2), out round) && round >= 0)
+        manifestPath = command.GetArg(argOffset);
+        if (int.TryParse(command.GetArg(argOffset + 1), out round) && round >= 0)
             return true;
 
-        command.ReplyToCommand("dtr: round must be a non-negative integer");
+        command.ReplyToCommand("dtr: source_round must be a non-negative integer");
         return false;
     }
 
     private static bool TryParseSlot(CommandInfo command, out int slot)
+        => TryParseSlotAt(command, 1, out slot);
+
+    private static bool TryParseSlotAt(CommandInfo command, int argIndex, out int slot)
     {
         slot = 0;
-        if (command.ArgCount >= 2 && int.TryParse(command.GetArg(1), out slot) && slot >= 0)
+        if (command.ArgCount > argIndex && int.TryParse(command.GetArg(argIndex), out slot) && slot >= 0)
             return true;
 
         command.ReplyToCommand("usage: command <slot> ...");
@@ -2365,7 +2766,7 @@ public sealed class DemoTracerPlugin : BasePlugin
             return;
         }
 
-        if (!BotControllerNative.StartReplay(slot, loop))
+        if (!StartReplayForSlot(slot, loop))
         {
             var state = BotControllerNative.GetReplayState(slot);
             FailQueuedNadeStart(
@@ -2678,10 +3079,10 @@ public sealed class DemoTracerPlugin : BasePlugin
 
     private void TryApplyReplayIdentity(int slot, ManifestFile file)
     {
-        if (!_replayIdentityEnabled)
+        if (_replayIdentityMode == ReplayIdentityMode.Off)
             return;
 
-        if (file.SteamId == 0)
+        if (_replayIdentityMode == ReplayIdentityMode.Full && file.SteamId == 0)
         {
             Server.PrintToConsole(
                 $"dtr: replay identity skipped slot={slot} player={file.PlayerName}: missing steam_id");
@@ -2704,9 +3105,12 @@ public sealed class DemoTracerPlugin : BasePlugin
 
         if (!string.IsNullOrWhiteSpace(file.PlayerName))
             Server.ExecuteCommand($"bh_setname {slot} \"{EscapeConsoleString(file.PlayerName)}\"");
-        Server.ExecuteCommand($"bh_setsid {slot} {file.SteamId}");
+        if (_replayIdentityMode == ReplayIdentityMode.Full)
+            Server.ExecuteCommand($"bh_setsid {slot} {file.SteamId}");
         Server.PrintToConsole(
-            $"dtr: replay identity queued slot={slot} player={file.PlayerName} sid={file.SteamId}");
+            _replayIdentityMode == ReplayIdentityMode.Full
+                ? $"dtr: replay identity queued slot={slot} player={file.PlayerName} sid={file.SteamId}"
+                : $"dtr: replay identity queued slot={slot} player={file.PlayerName}");
     }
 
     private string PlayLoaded(bool loop)
@@ -2742,6 +3146,9 @@ public sealed class DemoTracerPlugin : BasePlugin
     }
 
     private string StartLoaded(bool loop)
+        => StartLoaded(loop, ReplayStartAnchor.Live, null);
+
+    private string StartLoaded(bool loop, ReplayStartAnchor anchor, float? freezeTimeSeconds)
     {
         var respawned = RespawnDeadLoadedReplayBots();
         if (respawned > 0)
@@ -2749,15 +3156,15 @@ public sealed class DemoTracerPlugin : BasePlugin
             Server.NextFrame(() =>
             {
                 PreloadLoadedReplays();
-                Server.PrintToConsole($"dtr: queued start after respawn: {StartLoadedReady(loop)}");
+                Server.PrintToConsole($"dtr: queued start after respawn: {StartLoadedReady(loop, anchor, freezeTimeSeconds)}");
             });
             return $"dtr: respawned {respawned} replay bot(s), start queued";
         }
 
-        return StartLoadedReady(loop);
+        return StartLoadedReady(loop, anchor, freezeTimeSeconds);
     }
 
-    private string StartLoadedReady(bool loop)
+    private string StartLoadedReady(bool loop, ReplayStartAnchor anchor, float? freezeTimeSeconds)
     {
         var ok = 0;
         foreach (var slot in _loadedSlots)
@@ -2781,13 +3188,154 @@ public sealed class DemoTracerPlugin : BasePlugin
                 }
             }
 
-            if (BotControllerNative.StartReplay(slot, loop))
+            if (StartReplayForSlot(slot, loop, anchor, freezeTimeSeconds))
             {
                 MarkReplayStarted(slot);
                 ok++;
             }
         }
         return $"dtr: started {ok}/{_loadedSlots.Count} loaded slots, loop={loop}";
+    }
+
+    private bool StartReplayForSlot(int slot, bool loop)
+        => StartReplayForSlot(slot, loop, ReplayStartAnchor.Live, null);
+
+    private bool StartReplayForSlot(int slot, bool loop, ReplayStartAnchor anchor, float? freezeTimeSeconds)
+    {
+        var startIndex = 0u;
+        if (_loadedReplays.TryGetValue(slot, out var replay))
+        {
+            startIndex = anchor switch
+            {
+                ReplayStartAnchor.Live => replay.PlayStartTickIndex,
+                ReplayStartAnchor.FreezePreroll => FreezePrerollStartIndex(replay, freezeTimeSeconds ?? 0.0f),
+                _ => 0,
+            };
+        }
+        return BotControllerNative.StartReplayAt(slot, loop, startIndex);
+    }
+
+    private void ScheduleFreezePrerollStart(string label)
+    {
+        if (!TryGetFreezePrerollSchedule(out var freezeTimeSeconds, out var delaySeconds, out var reason))
+        {
+            Server.PrintToConsole($"dtr: freeze pre-roll skipped for {label}: {reason}");
+            return;
+        }
+
+        var token = ++_freezePrerollToken;
+        _freezePrerollStarted = false;
+        void Start()
+        {
+            if (token != _freezePrerollToken || _freezePrerollStarted)
+                return;
+            _freezePrerollStarted = true;
+            PreloadLoadedReplays();
+            var message = StartLoaded(loop: false, ReplayStartAnchor.FreezePreroll, freezeTimeSeconds);
+            Server.PrintToConsole(
+                $"dtr: freeze pre-roll start {label}: mp_freezetime={freezeTimeSeconds.ToString("F2", CultureInfo.InvariantCulture)}s delay={delaySeconds.ToString("F2", CultureInfo.InvariantCulture)}s; {message}");
+        }
+
+        if (delaySeconds <= 0.01f)
+        {
+            Server.NextFrame(Start);
+        }
+        else
+        {
+            AddTimer(delaySeconds, Start);
+            Server.PrintToConsole(
+                $"dtr: freeze pre-roll scheduled {label}: mp_freezetime={freezeTimeSeconds.ToString("F2", CultureInfo.InvariantCulture)}s delay={delaySeconds.ToString("F2", CultureInfo.InvariantCulture)}s");
+        }
+    }
+
+    private void InvalidateFreezePreroll()
+    {
+        _freezePrerollToken++;
+        _freezePrerollStarted = false;
+    }
+
+    private bool TryGetFreezePrerollSchedule(
+        out float freezeTimeSeconds,
+        out float delaySeconds,
+        out string reason)
+    {
+        freezeTimeSeconds = 0.0f;
+        delaySeconds = 0.0f;
+        if (!TryReadFreezeTimeConVar(out freezeTimeSeconds, out reason))
+            return false;
+        if (freezeTimeSeconds <= 0.0f)
+        {
+            reason = $"{FreezeTimeConVarName} is {freezeTimeSeconds.ToString("F2", CultureInfo.InvariantCulture)}";
+            return false;
+        }
+
+        var maxRecordedPrerollSeconds = 0.0f;
+        foreach (var replay in _loadedReplays.Values)
+        {
+            if (replay.UtilityOnly || replay.PlayStartTickIndex == 0 || replay.TickRate <= 0.0f)
+                continue;
+            maxRecordedPrerollSeconds = Math.Max(
+                maxRecordedPrerollSeconds,
+                replay.PlayStartTickIndex / replay.TickRate);
+        }
+
+        if (maxRecordedPrerollSeconds <= 0.0f)
+        {
+            reason = "loaded replays have no recorded freeze pre-roll";
+            return false;
+        }
+
+        delaySeconds = Math.Max(0.0f, freezeTimeSeconds - maxRecordedPrerollSeconds);
+        reason = string.Empty;
+        return true;
+    }
+
+    private static bool TryReadFreezeTimeConVar(out float seconds, out string reason)
+    {
+        seconds = 0.0f;
+        var conVar = ConVar.Find(FreezeTimeConVarName);
+        if (conVar == null)
+        {
+            reason = $"server ConVar {FreezeTimeConVarName} was not found";
+            return false;
+        }
+
+        try
+        {
+            seconds = conVar.GetPrimitiveValue<float>();
+        }
+        catch
+        {
+            try
+            {
+                seconds = conVar.GetPrimitiveValue<int>();
+            }
+            catch (Exception ex)
+            {
+                reason = $"failed to read {FreezeTimeConVarName}: {ex.Message}";
+                return false;
+            }
+        }
+
+        if (float.IsFinite(seconds) && seconds >= 0.0f)
+        {
+            reason = string.Empty;
+            return true;
+        }
+
+        reason = $"{FreezeTimeConVarName} has invalid value {seconds.ToString(CultureInfo.InvariantCulture)}";
+        return false;
+    }
+
+    private static uint FreezePrerollStartIndex(LoadedReplay replay, float freezeTimeSeconds)
+    {
+        if (replay.PlayStartTickIndex == 0 || replay.TickRate <= 0.0f || freezeTimeSeconds <= 0.0f)
+            return replay.PlayStartTickIndex;
+
+        var serverFreezeTicks = (uint)Math.Round(freezeTimeSeconds * replay.TickRate);
+        return serverFreezeTicks >= replay.PlayStartTickIndex
+            ? 0
+            : replay.PlayStartTickIndex - serverFreezeTicks;
     }
 
     private int RespawnDeadLoadedReplayBots()
@@ -2851,9 +3399,88 @@ public sealed class DemoTracerPlugin : BasePlugin
         _pendingBulletDamages.Clear();
         _pendingThreat360.Clear();
         _armed = false;
+        _armedPrepared = false;
+        _armedManifestPath = string.Empty;
+        _armedSourceRound = -1;
         _sequencePrepared = false;
         _sequencePreparedRound = -1;
         SetReplayPovMask(0);
+    }
+
+    private void StopSequenceState()
+    {
+        _sequenceActive = false;
+        _sequenceRounds = [];
+        _sequenceIndex = 0;
+        _sequencePrepared = false;
+        _sequencePreparedRound = -1;
+        InvalidateFreezePreroll();
+    }
+
+    private void StopPoolState()
+    {
+        _poolActive = false;
+        _poolManifest = null;
+        _poolManifestPath = string.Empty;
+        _poolRoundIndex = 0;
+        _poolUsedCandidates.Clear();
+        InvalidateFreezePreroll();
+    }
+
+    private void StopLoadedReplaySlots(string reason)
+    {
+        StopNadeCycle(reason, stopCurrent: false);
+        foreach (var slot in _loadedSlots.ToArray())
+        {
+            BotControllerNative.StopReplay(slot);
+            ReleaseReplaySlot(slot, reason);
+        }
+        _lastEnsuredWeaponDef.Clear();
+        _lastReplayWeaponDef.Clear();
+        _lastLockedWeaponTarget.Clear();
+        _pendingWeaponAlign.Clear();
+        _projectileAlignNextBySlot.Clear();
+        _pendingProjectileAlign.Clear();
+        _queuedNadeStartTokens.Clear();
+        _rebuiltInventorySlots.Clear();
+        _lastPlayingSlots.Clear();
+        _quietReplaySlots.Clear();
+        _replayStartedAt.Clear();
+        _pendingBulletHits.Clear();
+        _pendingBulletDamages.Clear();
+        _pendingThreat360.Clear();
+        SetReplayPovMask(0);
+    }
+
+    private void StopAllState(string reason)
+    {
+        StopLoadedReplaySlots(reason);
+        _armed = false;
+        _armedPrepared = false;
+        _armedManifestPath = string.Empty;
+        _armedSourceRound = -1;
+        StopSequenceState();
+        StopPoolState();
+    }
+
+    private void StopOneSlot(CommandInfo command, int slot, string reason)
+    {
+        var ok = BotControllerNative.StopReplay(slot);
+        ReleaseReplaySlot(slot, reason);
+        if (IsNadeCycleSlot(slot))
+            StopNadeCycle(reason, stopCurrent: false);
+        command.ReplyToCommand(ok
+            ? $"[DTR OK] stopped slot {slot}"
+            : $"[DTR ERR] failed to stop slot {slot}");
+    }
+
+    private static void IssueRestartIfRequested(CommandInfo command, bool restart)
+    {
+        if (!restart)
+            return;
+
+        Server.ExecuteCommand("mp_restartgame 1");
+        command.ReplyToCommand("[DTR OK] Issued \"mp_restartgame 1\". Waiting for next round_start.");
     }
 
     private void MarkReplayStarted(int slot)
@@ -3095,7 +3722,7 @@ public sealed class DemoTracerPlugin : BasePlugin
         int utilityWeaponDefIndex = -1)
     {
         TryReadWeaponPlan(path, out var scannedFirstDef, out var scannedPreloadDefs);
-        _ = BotControllerNative.TryReadReplayProjectiles(path, out var projectiles);
+        _ = BotControllerNative.TryReadReplayMetadata(path, out var replayMetadata);
         var firstDef = NormalizeWeaponDefIndex(manifestFirstWeaponDefIndex);
         if (!IsKnownWeaponDefIndex(firstDef))
             firstDef = scannedFirstDef;
@@ -3113,9 +3740,11 @@ public sealed class DemoTracerPlugin : BasePlugin
             preloadDefs,
             hasLoadout,
             NormalizeReplayLoadout(loadout ?? new ReplayLoadoutSnapshot()),
-            projectiles.ToArray(),
+            replayMetadata.Projectiles,
             utilityOnly,
-            NormalizeWeaponDefIndex(utilityWeaponDefIndex));
+            NormalizeWeaponDefIndex(utilityWeaponDefIndex),
+            replayMetadata.TickRate,
+            replayMetadata.PlayStartTickIndex);
         _lastEnsuredWeaponDef.Remove(slot);
         _lastReplayWeaponDef.Remove(slot);
         _lastLockedWeaponTarget.Remove(slot);
@@ -4086,6 +4715,14 @@ public sealed class DemoTracerPlugin : BasePlugin
             var projectileCount = version >= 4
                 ? CheckedRecCount(reader.ReadUInt32())
                 : 0;
+            var playStartTickIndex = version >= 5
+                ? CheckedRecCount(reader.ReadUInt32())
+                : 0;
+            if ((tickCount == 0 && playStartTickIndex != 0) ||
+                (tickCount > 0 && playStartTickIndex >= tickCount))
+            {
+                return false;
+            }
             if (tickCount == 0)
                 return false;
 
@@ -4734,7 +5371,12 @@ public sealed class DemoTracerPlugin : BasePlugin
         };
 
     private string ReplayIdentityModeName()
-        => _replayIdentityEnabled ? "bothider" : "off";
+        => _replayIdentityMode switch
+        {
+            ReplayIdentityMode.Name => "name",
+            ReplayIdentityMode.Full => "full",
+            _ => "off",
+        };
 
     private static bool TryReadManifest(
         string manifestPath,
@@ -4764,6 +5406,30 @@ public sealed class DemoTracerPlugin : BasePlugin
             error = ex.Message;
             return false;
         }
+    }
+
+    private static bool ManifestContainsSourceRound(
+        string manifestPath,
+        int sourceRound,
+        out string error)
+    {
+        error = string.Empty;
+        if (!TryReadManifest(manifestPath, out var manifest, out var readError))
+        {
+            error = $"[DTR ERR] failed to read manifest: {readError}";
+            return false;
+        }
+
+        var rounds = manifest.Files
+            .Select(file => file.Round)
+            .Distinct()
+            .Order()
+            .ToArray();
+        if (rounds.Contains(sourceRound))
+            return true;
+
+        error = $"[DTR ERR] source_round={sourceRound} was not found in manifest. [DTR HINT] Available source rounds: {string.Join(", ", rounds)}.";
+        return false;
     }
 
     private static bool TryReadNadeManifest(
@@ -5170,7 +5836,9 @@ public sealed class DemoTracerPlugin : BasePlugin
         ReplayLoadoutSnapshot Loadout,
         ReplayProjectileEvent[] Projectiles,
         bool UtilityOnly,
-        int UtilityWeaponDefIndex);
+        int UtilityWeaponDefIndex,
+        float TickRate,
+        uint PlayStartTickIndex);
 
     private readonly record struct ReplayAssignment(ManifestFile File, CCSPlayerController Bot);
 

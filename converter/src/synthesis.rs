@@ -10,6 +10,7 @@ pub const MAX_SUBTICKS_PER_TICK: usize = 36;
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SynthesisOptions {
     pub subtick_mode: SubtickMode,
+    pub play_start_tick_index: u32,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -65,6 +66,13 @@ pub fn synthesize_player_rec_with_options(
             "need at least two player rows to synthesize replay".to_string(),
         ));
     }
+    if options.play_start_tick_index as usize >= rows.len().saturating_sub(1) {
+        return Err(Error::InvalidDemo(format!(
+            "play start tick index {} is outside {} synthesized ticks",
+            options.play_start_tick_index,
+            rows.len().saturating_sub(1)
+        )));
+    }
     let first = &rows[0];
     let mut ticks = Vec::with_capacity(rows.len().saturating_sub(1));
     let mut subticks = Vec::new();
@@ -95,6 +103,7 @@ pub fn synthesize_player_rec_with_options(
                 steam_id: first.steam_id,
                 player_name: first.name.clone(),
                 flags: 0,
+                play_start_tick_index: options.play_start_tick_index,
             },
             ticks,
             projectiles: replay_projectiles,
@@ -327,6 +336,7 @@ mod tests {
             1,
             SynthesisOptions {
                 subtick_mode: SubtickMode::Off,
+                ..SynthesisOptions::default()
             },
         )
         .unwrap();

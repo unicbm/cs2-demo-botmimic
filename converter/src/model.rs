@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
 
-pub const DEMOTRACER_ABI: i32 = 11;
-pub const DTR_FORMAT_VERSION: u32 = 4;
+pub const DEMOTRACER_ABI: i32 = 12;
+pub const DTR_FORMAT_VERSION: u32 = 5;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -248,6 +248,7 @@ pub struct Cs2RecHeader {
     pub steam_id: u64,
     pub player_name: String,
     pub flags: u32,
+    pub play_start_tick_index: u32,
 }
 
 impl Default for Cs2RecHeader {
@@ -261,6 +262,7 @@ impl Default for Cs2RecHeader {
             steam_id: 0,
             player_name: String::new(),
             flags: 0,
+            play_start_tick_index: 0,
         }
     }
 }
@@ -502,9 +504,11 @@ pub struct ConversionManifest {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ConvertedRound {
     pub round: u32,
+    pub recording_start_tick: i32,
     pub start_tick: i32,
     pub end_tick: i32,
     pub original_end_tick: i32,
+    pub freeze_preroll_ticks: i32,
     pub duration_seconds: f32,
     pub pistol_round: bool,
     pub cut_reason: Option<String>,
@@ -544,6 +548,7 @@ pub struct ConvertedFile {
     pub player_name: String,
     pub ticks: usize,
     pub subticks: usize,
+    pub play_start_tick_index: u32,
     pub first_weapon_def_index: i32,
     pub preload_weapon_def_indices: Vec<i32>,
     #[serde(default)]

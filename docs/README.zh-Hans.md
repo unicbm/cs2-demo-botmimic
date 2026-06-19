@@ -78,9 +78,10 @@ cs2-demotracer.exe validate --input "<输出目录>"
 cs2-demotracer.exe convert --demo "<demo.dem>" --output "<输出目录>" --rounds 0,1,5-8
 cs2-demotracer.exe convert --demo "<demo.dem>" --output "<输出目录>" --side t
 cs2-demotracer.exe convert --demo "<demo.dem>" --output "<输出目录>" --full-round
+cs2-demotracer.exe convert --demo "<demo.dem>" --output "<输出目录>" --freeze-preroll-seconds 10
 ```
 
-`inspect` 会输出地图、tick rate、行数，以及推荐/可疑回合列表。`convert` 默认只导出推荐回合；只有明确需要可疑回合时再加 `--include-suspicious`。默认导出的 replay 会在 C4 开始安放前截断，先专注“开局路线”；需要整回合时加 `--full-round`。
+`inspect` 会输出地图、tick rate、行数，以及推荐/可疑回合列表。`convert` 默认只导出推荐回合；只有明确需要可疑回合时再加 `--include-suspicious`。默认导出的 replay 会在 C4 开始安放前截断，先专注“开局路线”；需要整回合时加 `--full-round`。回合 replay 默认最多保留同一回合内 10 秒 freeze-time 上下文，用来保留开局前按住的道具 attack 状态，可用 `--freeze-preroll-seconds` 调整。
 
 导出后会生成类似这样的目录：
 
@@ -183,15 +184,18 @@ println!("clips={}", report.clips_written);
 
 ```text
 css_plugins reload DemoTracer
-dtr_weapon_align 1
-dtr_projectile_align 1
-dtr_run_manifest "<输出目录>\<demo-id>\manifest.json" 0
+dtr_set align weapons on
+dtr_set align projectiles on
+dtr_set handoff death_or_contact slot
+dtr_set allow_partial on
+dtr_go seq "<输出目录>\<demo-id>\manifest.json" 0
 ```
 
 含义：
 
-- `dtr_run_manifest` 会按回合顺序播放。
-- 最后的 `0` 表示从 round 0 开始。
+- `seq` 会从指定的 manifest source round 开始按顺序播放。
+- 最后的 `0` 是 `from_source_round=0`，不是“只播放 round 0”。
+- 如果只想播放单个 source round，用 `dtr_go round "<manifest.json>" 0`。
 - 插件会在 `round_start` 准备 bot，在 `round_freeze_end` 开始播放。
 
 完整回合回放开始时，DemoTracer 会把选中的 replay bot 当作回合起点状态处理：
@@ -206,13 +210,13 @@ dtr_run_manifest "<输出目录>\<demo-id>\manifest.json" 0
 如果只想测试某一回合，可以把最后的数字改成对应 round：
 
 ```text
-dtr_run_manifest "<输出目录>\<demo-id>\manifest.json" 12
+dtr_go round "<输出目录>\<demo-id>\manifest.json" 12
 ```
 
 如果使用 Mirage 回合池：
 
 ```text
-dtr_run_pool "<输出目录>\mirage_pool\pool_manifest.json" 0
+dtr_go pool "<输出目录>\mirage_pool\pool_manifest.json" 0
 ```
 
 round 0 和 round 12 只会匹配 demo 的 round 0/12 手枪局；其他回合会按双方当前装备价值粗略匹配 eco / force / full。

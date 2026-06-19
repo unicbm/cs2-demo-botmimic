@@ -5,6 +5,8 @@
 # .NET / CounterStrikeSharp
 /css/bin/
 /css/obj/
+/css/**/bin/
+/css/**/obj/
 *.user
 *.suo
 

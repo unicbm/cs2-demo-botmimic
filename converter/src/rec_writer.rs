@@ -31,6 +31,7 @@ pub fn read_rec_file(path: &Path) -> Result<Cs2Rec> {
 
 pub fn write_rec<W: Write>(writer: &mut W, rec: &Cs2Rec) -> Result<()> {
     validate_subtick_count(rec)?;
+    validate_play_start_tick(rec.ticks.len(), rec.header.play_start_tick_index)?;
     validate_snapshot_chain(rec)?;
     let body = build_body(rec)?;
     let compressed = compress_body(&body)?;
@@ -47,6 +48,7 @@ pub fn write_rec<W: Write>(writer: &mut W, rec: &Cs2Rec) -> Result<()> {
     write_u32(writer, rec.ticks.len() as u32)?;
     write_u32(writer, rec.subticks.len() as u32)?;
     write_u32(writer, rec.projectiles.len() as u32)?;
+    write_u32(writer, rec.header.play_start_tick_index)?;
     write_string(writer, &rec.header.map)?;
     write_string(writer, &rec.header.player_name)?;
     write_u8(writer, CODEC_BROTLI)?;
@@ -85,6 +87,8 @@ pub fn read_rec<R: Read>(reader: &mut R) -> Result<Cs2Rec> {
     } else {
         0
     };
+    let play_start_tick_index = if version >= 5 { read_u32(reader)? } else { 0 };
+    validate_play_start_tick(tick_count, play_start_tick_index)?;
     let map = read_string(reader)?;
     let player_name = read_string(reader)?;
     let codec = read_u8(reader)?;
@@ -119,6 +123,7 @@ pub fn read_rec<R: Read>(reader: &mut R) -> Result<Cs2Rec> {
             steam_id,
             player_name,
             flags,
+            play_start_tick_index,
         },
         ticks,
         projectiles,
@@ -132,6 +137,23 @@ fn validate_subtick_count(rec: &Cs2Rec) -> Result<()> {
         return Err(Error::InvalidRec(format!(
             "tick subtick sum {expected_subticks} != header subtick count {}",
             rec.subticks.len()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_play_start_tick(tick_count: usize, play_start_tick_index: u32) -> Result<()> {
+    if tick_count == 0 {
+        if play_start_tick_index == 0 {
+            return Ok(());
+        }
+        return Err(Error::InvalidRec(format!(
+            "play_start_tick_index {play_start_tick_index} requires at least one tick"
+        )));
+    }
+    if play_start_tick_index as usize >= tick_count {
+        return Err(Error::InvalidRec(format!(
+            "play_start_tick_index {play_start_tick_index} out of range for {tick_count} ticks"
         )));
     }
     Ok(())
@@ -609,7 +631,8 @@ mod tests {
 
     #[test]
     fn rec_roundtrip_is_bit_stable() {
-        let rec = sample_rec();
+        let mut rec = sample_rec();
+        rec.header.play_start_tick_index = 1;
 
         let mut bytes = Vec::new();
         write_rec(&mut bytes, &rec).unwrap();
@@ -641,6 +664,60 @@ mod tests {
     }
 
     #[test]
+    fn rec_reader_defaults_v4_play_start_to_zero() {
+        let rec = sample_rec();
+        let body = build_body(&rec).unwrap();
+        let bytes = test_file_bytes_for_version(
+            &body,
+            4,
+            0,
+            rec.ticks.len(),
+            rec.subticks.len(),
+            rec.projectiles.len(),
+            CODEC_BROTLI,
+            None,
+        );
+
+        let parsed = read_rec(&mut &bytes[..]).unwrap();
+
+        assert_eq!(parsed.header.version, 4);
+        assert_eq!(parsed.header.play_start_tick_index, 0);
+        assert_eq!(parsed.projectiles.len(), rec.projectiles.len());
+    }
+
+    #[test]
+    fn rec_reader_rejects_out_of_range_play_start() {
+        let mut bytes = encoded_sample_rec();
+        let offset = play_start_offset();
+        bytes[offset..offset + 4].copy_from_slice(&99_u32.to_le_bytes());
+
+        let err = read_rec(&mut &bytes[..]).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("play_start_tick_index 99 out of range for 2 ticks"));
+    }
+
+    #[test]
+    fn rec_v5_header_does_not_change_body_length() {
+        let rec = sample_rec();
+        let body = build_body(&rec).unwrap();
+        let bytes = encoded_sample_rec();
+        let (_, body_len_offset, _) = rec_header_offsets(&bytes);
+        let body_uncompressed_len = u64::from_le_bytes(
+            bytes[body_len_offset..body_len_offset + 8]
+                .try_into()
+                .unwrap(),
+        );
+
+        assert_eq!(body_uncompressed_len, body.len() as u64);
+        assert_eq!(
+            body.len(),
+            expected_body_len(rec.ticks.len(), rec.subticks.len(), rec.projectiles.len()).unwrap()
+        );
+    }
+
+    #[test]
     fn rec_writer_rejects_discontinuous_snapshot_chain() {
         let mut rec = sample_rec();
         rec.ticks[1].pre.origin[0] += 1.0;
@@ -668,7 +745,7 @@ mod tests {
     #[test]
     fn rec_reader_rejects_unknown_codec() {
         let mut bytes = encoded_sample_rec();
-        let (codec_offset, _, _) = v4_offsets(&bytes);
+        let (codec_offset, _, _) = rec_header_offsets(&bytes);
         bytes[codec_offset] = 9;
         let err = read_rec(&mut &bytes[..]).unwrap_err();
         assert!(err.to_string().contains("unsupported codec 9"));
@@ -677,7 +754,7 @@ mod tests {
     #[test]
     fn rec_reader_rejects_body_length_mismatch() {
         let mut bytes = encoded_sample_rec();
-        let (_, body_len_offset, _) = v4_offsets(&bytes);
+        let (_, body_len_offset, _) = rec_header_offsets(&bytes);
         bytes[body_len_offset..body_len_offset + 8].copy_from_slice(&999_u64.to_le_bytes());
         let err = read_rec(&mut &bytes[..]).unwrap_err();
         assert!(err.to_string().contains("body length 999 != expected"));
@@ -732,6 +809,7 @@ mod tests {
                 steam_id: 76561198000000000,
                 player_name: "player".to_string(),
                 flags: 0,
+                play_start_tick_index: 0,
             },
             ticks: vec![
                 ReplayTick {
@@ -781,10 +859,32 @@ mod tests {
         codec: u8,
         body_len: Option<u64>,
     ) -> Vec<u8> {
+        test_file_bytes_for_version(
+            body,
+            DTR_FORMAT_VERSION,
+            0,
+            tick_count,
+            subtick_count,
+            projectile_count,
+            codec,
+            body_len,
+        )
+    }
+
+    fn test_file_bytes_for_version(
+        body: &[u8],
+        version: u32,
+        play_start_tick_index: u32,
+        tick_count: usize,
+        subtick_count: usize,
+        projectile_count: usize,
+        codec: u8,
+        body_len: Option<u64>,
+    ) -> Vec<u8> {
         let compressed = compress_body(body).unwrap();
         let mut bytes = Vec::new();
         bytes.write_all(MAGIC).unwrap();
-        write_u32(&mut bytes, DTR_FORMAT_VERSION).unwrap();
+        write_u32(&mut bytes, version).unwrap();
         write_f32(&mut bytes, 64.0).unwrap();
         write_u32(&mut bytes, 7).unwrap();
         write_u8(&mut bytes, 2).unwrap();
@@ -792,7 +892,12 @@ mod tests {
         write_u64(&mut bytes, 76561198000000000).unwrap();
         write_u32(&mut bytes, tick_count as u32).unwrap();
         write_u32(&mut bytes, subtick_count as u32).unwrap();
-        write_u32(&mut bytes, projectile_count as u32).unwrap();
+        if version >= 4 {
+            write_u32(&mut bytes, projectile_count as u32).unwrap();
+        }
+        if version >= 5 {
+            write_u32(&mut bytes, play_start_tick_index).unwrap();
+        }
         write_string(&mut bytes, "de_mirage").unwrap();
         write_string(&mut bytes, "player").unwrap();
         write_u8(&mut bytes, codec).unwrap();
@@ -802,8 +907,19 @@ mod tests {
         bytes
     }
 
-    fn v4_offsets(bytes: &[u8]) -> (usize, usize, usize) {
-        let mut offset = 8 + 4 + 4 + 4 + 1 + 4 + 8 + 4 + 4 + 4;
+    fn play_start_offset() -> usize {
+        8 + 4 + 4 + 4 + 1 + 4 + 8 + 4 + 4 + 4
+    }
+
+    fn rec_header_offsets(bytes: &[u8]) -> (usize, usize, usize) {
+        let version = u32::from_le_bytes(bytes[8..12].try_into().unwrap());
+        let mut offset = 8 + 4 + 4 + 4 + 1 + 4 + 8 + 4 + 4;
+        if version >= 4 {
+            offset += 4;
+        }
+        if version >= 5 {
+            offset += 4;
+        }
         let map_len = u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap()) as usize;
         offset += 2 + map_len;
         let player_len = u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap()) as usize;

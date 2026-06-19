@@ -4,7 +4,9 @@ use cs2_demotracer::api::{
     NadeContextOptions, NadeDedupeOptions, NadeLibraryExportRequest,
 };
 use cs2_demotracer::demo_reader::read_demo;
-use cs2_demotracer::export::{export_demo, parse_round_list, ConvertOptions};
+use cs2_demotracer::export::{
+    export_demo, parse_round_list, ConvertOptions, DEFAULT_FREEZE_PREROLL_SECONDS,
+};
 use cs2_demotracer::model::{Side, SubtickMode};
 use cs2_demotracer::nade_export::{
     DEFAULT_OPENING_SECONDS, DEFAULT_POST_ROLL_SECONDS, DEFAULT_PRE_ROLL_SECONDS,
@@ -53,6 +55,8 @@ enum Command {
         full_round: bool,
         #[arg(long, default_value_t = SubtickMode::Auto)]
         subticks: SubtickMode,
+        #[arg(long, default_value_t = DEFAULT_FREEZE_PREROLL_SECONDS)]
+        freeze_preroll_seconds: f32,
     },
     /// Inspect per-player row coverage for one round.
     InspectRound {
@@ -81,6 +85,8 @@ enum Command {
         full_round: bool,
         #[arg(long, default_value_t = SubtickMode::Auto)]
         subticks: SubtickMode,
+        #[arg(long, default_value_t = DEFAULT_FREEZE_PREROLL_SECONDS)]
+        freeze_preroll_seconds: f32,
     },
     /// Convert grenade throws into short .dtr clips and a nade manifest.
     ConvertNades {
@@ -239,6 +245,7 @@ fn run() -> cs2_demotracer::Result<()> {
             max_round_seconds,
             full_round,
             subticks,
+            freeze_preroll_seconds,
         } => {
             let parsed = read_demo(&demo)?;
             let selected_rounds = rounds.as_deref().map(parse_round_list).transpose()?;
@@ -252,6 +259,7 @@ fn run() -> cs2_demotracer::Result<()> {
                     include_suspicious,
                     cut_before_bomb_plant: !full_round,
                     subtick_mode: subticks,
+                    freeze_preroll_seconds,
                     analysis: AnalysisOptions {
                         max_round_seconds,
                         ..AnalysisOptions::default()
@@ -363,6 +371,7 @@ fn run() -> cs2_demotracer::Result<()> {
             max_round_seconds,
             full_round,
             subticks,
+            freeze_preroll_seconds,
         } => {
             let report = build_round_pool(&BuildPoolOptions {
                 demo_dir,
@@ -372,6 +381,7 @@ fn run() -> cs2_demotracer::Result<()> {
                 include_suspicious,
                 cut_before_bomb_plant: !full_round,
                 subtick_mode: subticks,
+                freeze_preroll_seconds,
                 analysis: AnalysisOptions {
                     max_round_seconds,
                     ..AnalysisOptions::default()
@@ -486,6 +496,7 @@ fn run_wizard() -> cs2_demotracer::Result<()> {
             include_suspicious,
             cut_before_bomb_plant: !full_round,
             subtick_mode,
+            freeze_preroll_seconds: DEFAULT_FREEZE_PREROLL_SECONDS,
             analysis: AnalysisOptions::default(),
         },
     )?;

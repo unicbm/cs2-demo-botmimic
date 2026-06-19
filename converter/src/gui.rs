@@ -1,5 +1,7 @@
 use crate::demo_reader::read_demo;
-use crate::export::{export_demo, ConversionReport, ConvertOptions};
+use crate::export::{
+    export_demo, ConversionReport, ConvertOptions, DEFAULT_FREEZE_PREROLL_SECONDS,
+};
 use crate::model::{DemoAnalysis, ParsedDemo, RoundStatus, Side, SubtickMode};
 use crate::quality::{analyze_demo, AnalysisOptions};
 use crate::{Error, Result};
@@ -278,6 +280,7 @@ impl ConverterApp {
             } else {
                 SubtickMode::Off
             },
+            freeze_preroll_seconds: DEFAULT_FREEZE_PREROLL_SECONDS,
             analysis: AnalysisOptions {
                 max_round_seconds: self.max_round_seconds,
                 ..AnalysisOptions::default()

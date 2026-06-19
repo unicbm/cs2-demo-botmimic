@@ -232,6 +232,7 @@ mod tests {
     use super::*;
     use crate::model::{
         ParsedPlayerTick, ParsedProjectile, ProjectileEffectSource, ProjectileKind, ReplayLoadout,
+        DEMOTRACER_ABI, DTR_FORMAT_VERSION,
     };
     use crate::nade_export::NadePhase;
     use crate::nade_library::{
@@ -307,8 +308,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let map_manifest = NadeMapManifest {
             format_version: 1,
-            abi: 11,
-            dtr_format_version: 4,
+            abi: DEMOTRACER_ABI,
+            dtr_format_version: DTR_FORMAT_VERSION,
             map: "de_mirage".to_string(),
             coordinate_mode: "map_absolute".to_string(),
             demo_count: 1,
@@ -326,8 +327,8 @@ mod tests {
         write_brotli_json(&map_path, &map_manifest);
         let library_manifest = NadeLibraryManifest {
             format_version: LIBRARY_MANIFEST_FORMAT_VERSION,
-            abi: 11,
-            dtr_format_version: 4,
+            abi: DEMOTRACER_ABI,
+            dtr_format_version: DTR_FORMAT_VERSION,
             coordinate_mode: "map_absolute".to_string(),
             demo_count: 1,
             source_clip_count: 1,

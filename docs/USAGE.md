@@ -25,6 +25,9 @@ cs2-demotracer.exe validate --input <output-dir>
 
 By default, round replay export cuts before the C4 plant starts. Use
 `--full-round` when you intentionally want full-round output.
+Round replay exports keep at most 10 seconds of same-round freeze-time context
+by default so pre-freeze grenade holds can release correctly after
+`round_freeze_end`. Tune this with `--freeze-preroll-seconds`.
 
 Useful options:
 
@@ -32,6 +35,7 @@ Useful options:
 cs2-demotracer.exe convert --demo <demo.dem> --output <output-dir> --rounds 0,1,2,5-8
 cs2-demotracer.exe convert --demo <demo.dem> --output <output-dir> --side t
 cs2-demotracer.exe convert --demo <demo.dem> --output <output-dir> --include-suspicious
+cs2-demotracer.exe convert --demo <demo.dem> --output <output-dir> --freeze-preroll-seconds 10
 ```
 
 The most important files are:

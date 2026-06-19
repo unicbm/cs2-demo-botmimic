@@ -12,6 +12,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub const DEFAULT_FREEZE_PREROLL_SECONDS: f32 = 10.0;
+
 #[derive(Clone, Debug)]
 pub struct ConvertOptions {
     pub output_dir: PathBuf,
@@ -21,6 +23,7 @@ pub struct ConvertOptions {
     pub include_suspicious: bool,
     pub cut_before_bomb_plant: bool,
     pub subtick_mode: SubtickMode,
+    pub freeze_preroll_seconds: f32,
     pub analysis: AnalysisOptions,
 }
 
@@ -32,6 +35,7 @@ pub struct ConvertMemoryOptions {
     pub include_suspicious: bool,
     pub cut_before_bomb_plant: bool,
     pub subtick_mode: SubtickMode,
+    pub freeze_preroll_seconds: f32,
     pub analysis: AnalysisOptions,
 }
 
@@ -44,6 +48,7 @@ impl From<&ConvertOptions> for ConvertMemoryOptions {
             include_suspicious: options.include_suspicious,
             cut_before_bomb_plant: options.cut_before_bomb_plant,
             subtick_mode: options.subtick_mode,
+            freeze_preroll_seconds: options.freeze_preroll_seconds,
             analysis: options.analysis,
         }
     }
@@ -87,6 +92,7 @@ pub fn export_demo_to_memory(
     parsed: &ParsedDemo,
     options: &ConvertMemoryOptions,
 ) -> Result<MemoryConversionReport> {
+    validate_freeze_preroll_seconds(options.freeze_preroll_seconds)?;
     let analysis = analyze_demo(parsed, options.analysis);
     let output_stem = options
         .output_stem
@@ -142,6 +148,13 @@ pub fn export_demo_to_memory(
             ));
             continue;
         }
+        let recording_start_tick = recording_start_tick_for_round(
+            parsed,
+            round.round,
+            round.start_tick,
+            options.freeze_preroll_seconds,
+        );
+        let freeze_preroll_ticks = round.start_tick.saturating_sub(recording_start_tick);
         let pistol_round = is_pistol_round(round.round);
         let t_economy = team_economy(
             parsed,
@@ -166,8 +179,9 @@ pub fn export_demo_to_memory(
             .iter()
             .filter(|row| {
                 row.round == round.round
-                    && row.tick >= round.start_tick
+                    && row.tick >= recording_start_tick
                     && row.tick <= end_tick
+                    && (row.tick >= round.start_tick || row.is_freeze_period)
                     && row.is_alive
                     && row.steam_id != 0
                     && options.side.matches_team(row.team_num)
@@ -190,6 +204,7 @@ pub fn export_demo_to_memory(
                 ));
                 continue;
             }
+            let play_start_tick_index = play_start_tick_index(&player_rows, round.start_tick);
             let (rec, stats) = synthesize_player_rec_with_options(
                 &player_rows,
                 &parsed.projectiles,
@@ -198,6 +213,7 @@ pub fn export_demo_to_memory(
                 round.round,
                 SynthesisOptions {
                     subtick_mode: options.subtick_mode,
+                    play_start_tick_index,
                 },
             )?;
             subtick_stats.add_assign(&stats);
@@ -221,6 +237,7 @@ pub fn export_demo_to_memory(
                 player_name,
                 ticks: rec.ticks.len(),
                 subticks: rec.subticks.len(),
+                play_start_tick_index: rec.header.play_start_tick_index,
                 first_weapon_def_index: first_weapon_def_index(&rec),
                 preload_weapon_def_indices: preload_weapon_def_indices(&player_rows, &rec),
                 loadout: replay_loadout(&player_rows[0]),
@@ -243,9 +260,11 @@ pub fn export_demo_to_memory(
             };
             manifest.rounds.push(ConvertedRound {
                 round: round.round,
+                recording_start_tick,
                 start_tick: round.start_tick,
                 end_tick,
                 original_end_tick: round.end_tick,
+                freeze_preroll_ticks,
                 duration_seconds,
                 pistol_round,
                 cut_reason,
@@ -335,6 +354,61 @@ fn cut_before_bomb_plant(
         ),
         None => (end_tick, None),
     }
+}
+
+fn validate_freeze_preroll_seconds(seconds: f32) -> Result<()> {
+    if seconds.is_finite() && seconds >= 0.0 {
+        return Ok(());
+    }
+    Err(Error::InvalidDemo(
+        "freeze pre-roll must be a finite non-negative number".to_string(),
+    ))
+}
+
+fn recording_start_tick_for_round(
+    parsed: &ParsedDemo,
+    round: u32,
+    live_start_tick: i32,
+    freeze_preroll_seconds: f32,
+) -> i32 {
+    let cap_ticks = seconds_to_ticks(freeze_preroll_seconds, parsed.tick_rate);
+    if cap_ticks <= 0 {
+        return live_start_tick;
+    }
+    let floor_tick = live_start_tick.saturating_sub(cap_ticks);
+    parsed
+        .rows
+        .iter()
+        .filter(|row| {
+            row.round == round
+                && row.tick >= floor_tick
+                && row.tick < live_start_tick
+                && row.is_freeze_period
+                && row.is_alive
+                && row.steam_id != 0
+                && matches!(row.team_num, 2 | 3)
+        })
+        .map(|row| row.tick)
+        .min()
+        .unwrap_or(live_start_tick)
+}
+
+fn seconds_to_ticks(seconds: f32, tick_rate: f32) -> i32 {
+    if !seconds.is_finite() || !tick_rate.is_finite() || seconds <= 0.0 || tick_rate <= 0.0 {
+        return 0;
+    }
+    (seconds * tick_rate).round() as i32
+}
+
+fn play_start_tick_index(rows: &[ParsedPlayerTick], live_start_tick: i32) -> u32 {
+    let tick_count = rows.len().saturating_sub(1);
+    if tick_count == 0 {
+        return 0;
+    }
+    rows.iter()
+        .take(tick_count)
+        .position(|row| row.tick >= live_start_tick)
+        .unwrap_or_else(|| tick_count.saturating_sub(1)) as u32
 }
 
 fn team_economy(
@@ -690,6 +764,7 @@ mod tests {
             include_suspicious: true,
             cut_before_bomb_plant: true,
             subtick_mode: SubtickMode::Auto,
+            freeze_preroll_seconds: DEFAULT_FREEZE_PREROLL_SECONDS,
             analysis: AnalysisOptions::default(),
         };
 
@@ -728,6 +803,7 @@ mod tests {
                 include_suspicious: true,
                 cut_before_bomb_plant: true,
                 subtick_mode: SubtickMode::Auto,
+                freeze_preroll_seconds: DEFAULT_FREEZE_PREROLL_SECONDS,
                 analysis: AnalysisOptions::default(),
             },
         )
@@ -741,6 +817,103 @@ mod tests {
         assert_eq!(disk_dtr, dtr.bytes);
         assert!(filesystem.manifest_path.exists());
         assert!(filesystem.root.join("conversion.log").exists());
+    }
+
+    #[test]
+    fn export_includes_bounded_freeze_preroll_and_live_play_start() {
+        let mut parsed = sample_demo();
+        parsed.rows = vec![
+            freeze_row(20),
+            freeze_row(80),
+            sample_row(100),
+            sample_row(164),
+            sample_row(228),
+        ];
+        parsed.projectiles = vec![crate::model::ParsedProjectile {
+            tick: 164,
+            steam_id: 76561198000000001,
+            name: "alpha".to_string(),
+            grenade_type: "smokegrenade_projectile".to_string(),
+            kind: crate::model::ProjectileKind::Smoke,
+            weapon_def_index: 45,
+            initial_position: [1.0, 2.0, 3.0],
+            initial_velocity: [4.0, 5.0, 6.0],
+            detonation_position: [7.0, 8.0, 9.0],
+            effect_position: [0.0; 3],
+            effect_tick: None,
+            effect_source: crate::model::ProjectileEffectSource::Unknown,
+            effect_confidence: 0.0,
+        }];
+
+        let memory = export_demo_to_memory(
+            &parsed,
+            &ConvertMemoryOptions {
+                output_stem: Some("freeze-demo".to_string()),
+                side: Side::Both,
+                selected_rounds: Some(BTreeSet::from([1])),
+                include_suspicious: true,
+                cut_before_bomb_plant: true,
+                subtick_mode: SubtickMode::Auto,
+                freeze_preroll_seconds: DEFAULT_FREEZE_PREROLL_SECONDS,
+                analysis: AnalysisOptions::default(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(memory.manifest.rounds[0].recording_start_tick, 20);
+        assert_eq!(memory.manifest.rounds[0].start_tick, 100);
+        assert_eq!(memory.manifest.rounds[0].freeze_preroll_ticks, 80);
+        assert_eq!(memory.manifest.files[0].play_start_tick_index, 2);
+
+        let dtr = memory
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.kind == ConversionArtifactKind::Dtr)
+            .unwrap();
+        let rec = read_rec(&mut &dtr.bytes[..]).unwrap();
+        assert_eq!(rec.header.play_start_tick_index, 2);
+        assert_eq!(rec.ticks.len(), 4);
+        assert_eq!(rec.ticks[0].pre.origin[0], 20.0);
+        assert_eq!(rec.ticks[2].pre.origin[0], 100.0);
+        assert_eq!(rec.projectiles[0].tick_index, 3);
+    }
+
+    #[test]
+    fn export_caps_freeze_preroll_before_pause_tail() {
+        let mut parsed = sample_demo();
+        parsed.rows = vec![
+            freeze_row(-1_000),
+            freeze_row(60),
+            sample_row(100),
+            sample_row(164),
+        ];
+
+        let memory = export_demo_to_memory(
+            &parsed,
+            &ConvertMemoryOptions {
+                output_stem: Some("cap-demo".to_string()),
+                side: Side::Both,
+                selected_rounds: Some(BTreeSet::from([1])),
+                include_suspicious: true,
+                cut_before_bomb_plant: true,
+                subtick_mode: SubtickMode::Auto,
+                freeze_preroll_seconds: 1.0,
+                analysis: AnalysisOptions::default(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(memory.manifest.rounds[0].recording_start_tick, 60);
+        assert_eq!(memory.manifest.rounds[0].freeze_preroll_ticks, 40);
+        assert_eq!(memory.manifest.files[0].play_start_tick_index, 1);
+
+        let dtr = memory
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.kind == ConversionArtifactKind::Dtr)
+            .unwrap();
+        let rec = read_rec(&mut &dtr.bytes[..]).unwrap();
+        assert_eq!(rec.ticks[0].pre.origin[0], 60.0);
     }
 
     fn sample_demo() -> ParsedDemo {
@@ -799,6 +972,14 @@ mod tests {
             team_rounds_total: None,
             team_name: None,
             team_clan_name: None,
+        }
+    }
+
+    fn freeze_row(tick: i32) -> ParsedPlayerTick {
+        ParsedPlayerTick {
+            round_in_progress: false,
+            is_freeze_period: true,
+            ..sample_row(tick)
         }
     }
 }

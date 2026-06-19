@@ -24,6 +24,9 @@ cs2-demotracer.exe validate --input <输出目录>
 ```
 
 默认会在 C4 开始安放前截断，只导出开局路线。需要整回合时加 `--full-round`。
+回合 replay 默认最多保留同一回合内 10 秒 freeze-time 上下文，用来让
+`round_freeze_end` 后的道具松开动作能接上开局前的按住状态；可用
+`--freeze-preroll-seconds` 调整。
 
 常用选项：
 
@@ -31,6 +34,7 @@ cs2-demotracer.exe validate --input <输出目录>
 cs2-demotracer.exe convert --demo <demo.dem> --output <输出目录> --rounds 0,1,2,5-8
 cs2-demotracer.exe convert --demo <demo.dem> --output <输出目录> --side t
 cs2-demotracer.exe convert --demo <demo.dem> --output <输出目录> --include-suspicious
+cs2-demotracer.exe convert --demo <demo.dem> --output <输出目录> --freeze-preroll-seconds 10
 ```
 
 输出目录里最重要的是：

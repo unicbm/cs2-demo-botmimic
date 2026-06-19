@@ -56,9 +56,9 @@ details are documented in [`docs/COMMANDS.md`](docs/COMMANDS.md).
 loader and BotController runtime. This section is the public binary contract;
 format changes should update this section in the same commit.
 
-All values are little-endian. v4 is the current writer format. The runtime
-reader also accepts v3 files for backward compatibility, but v3 does not contain
-projectile metadata.
+All values are little-endian. v5 is the current writer format. The runtime
+reader also accepts v3 and v4 files for backward compatibility. v3 does not
+contain projectile metadata; v3/v4 files have `play_start_tick_index = 0`.
 
 The format is lossless: movement snapshots, projectile events, and subtick
 records are written with their original `f32` and integer bit patterns. The body
@@ -69,7 +69,7 @@ removes duplicated adjacent tick snapshots and is then compressed with Brotli.
 | Field | Type | Notes |
 | --- | --- | --- |
 | magic | 8 bytes | `CSDTRREC` |
-| version | `u32` | `4` |
+| version | `u32` | `5` |
 | tick_rate | `f32` | Demo tickrate estimate |
 | round | `u32` | `total_rounds_played` window |
 | side | `u8` | `2=T`, `3=CT`, `0=unknown` |
@@ -78,6 +78,7 @@ removes duplicated adjacent tick snapshots and is then compressed with Brotli.
 | tick_count | `u32` | Number of replay ticks |
 | subtick_count | `u32` | Number of subtick moves |
 | projectile_count | `u32` | Number of replay projectile events |
+| play_start_tick_index | `u32` | First tick to simulate when playback starts; v5+ only |
 | map | `u16 len + utf8` | Map name |
 | player_name | `u16 len + utf8` | Demo player name |
 | codec | `u8` | `1 = Brotli` |
@@ -85,6 +86,11 @@ removes duplicated adjacent tick snapshots and is then compressed with Brotli.
 | body_compressed_len | `u64` | Compressed body byte length |
 
 The next `body_compressed_len` bytes are a Brotli stream.
+
+Round replay v5 files may store up to 10 seconds of same-round freeze-time
+context before `play_start_tick_index`. Playback still begins at
+`round_freeze_end`; the pre-start context is used to preserve held grenade
+button state without replaying arbitrarily long paused freeze time.
 
 ### Decoded Body
 
@@ -132,7 +138,7 @@ projectile data. Older v3 files have no projectile event section.
 
 ### MovementSnapshotV3
 
-This layout matches BotController ABI 11 (`92` bytes with `Pack=4`).
+This layout is `92` bytes with `Pack=4`.
 
 | Field | Type |
 | --- | --- |
@@ -168,11 +174,11 @@ This layout matches BotController ABI 11 (`92` bytes with `Pack=4`).
 ### Parser Checklist
 
 1. Read and validate magic `CSDTRREC`.
-2. Require `version == 4` for current writer output, or accept `version == 3`
-   only if projectile metadata is optional.
-3. Read `tick_count`, `subtick_count`, `projectile_count`, `map`, and
-   `player_name`. For v3, treat `projectile_count` as `0` because the field is
-   absent.
+2. Require `version == 5` for current writer output, or accept `version == 3`
+   and `version == 4` for backward compatibility.
+3. Read `tick_count`, `subtick_count`, `projectile_count`,
+   `play_start_tick_index`, `map`, and `player_name`. For v3, treat
+   `projectile_count` as `0`; for v3/v4, treat `play_start_tick_index` as `0`.
 4. Require `codec == 1`.
 5. Check `body_uncompressed_len == snapshot_count * 92 + tick_count * 8 +
    projectile_count * 48 + subtick_count * 28`, where `snapshot_count` is `0`
@@ -180,6 +186,7 @@ This layout matches BotController ABI 11 (`92` bytes with `Pack=4`).
 6. Read and Brotli-decompress exactly `body_compressed_len` bytes.
 7. Rebuild ticks from the snapshot chain and metadata.
 8. Sum all tick `num_subtick` values and verify it equals `subtick_count`.
+9. For non-empty replays, require `play_start_tick_index < tick_count`.
 
 ## Who This Is For
 
@@ -217,9 +224,10 @@ Common conversion options:
 cs2-demotracer.exe convert --demo "<demo.dem>" --output "<output-dir>" --rounds 0,1,5-8
 cs2-demotracer.exe convert --demo "<demo.dem>" --output "<output-dir>" --side t
 cs2-demotracer.exe convert --demo "<demo.dem>" --output "<output-dir>" --full-round
+cs2-demotracer.exe convert --demo "<demo.dem>" --output "<output-dir>" --freeze-preroll-seconds 10
 ```
 
-`inspect` prints the map, tick rate, row count, and recommended/suspicious round table. `convert` exports recommended rounds by default. Use `--include-suspicious` only when you intentionally want suspicious rounds. By default, exported replays stop before the C4 plant begins; use `--full-round` for full-round export.
+`inspect` prints the map, tick rate, row count, and recommended/suspicious round table. `convert` exports recommended rounds by default. Use `--include-suspicious` only when you intentionally want suspicious rounds. By default, exported replays stop before the C4 plant begins; use `--full-round` for full-round export. Round replay exports keep at most 10 seconds of same-round freeze-time context by default, controlled by `--freeze-preroll-seconds`.
 
 The output looks like this:
 
@@ -325,12 +333,16 @@ In the server console:
 
 ```text
 css_plugins reload DemoTracer
-dtr_weapon_align 1
-dtr_projectile_align 1
-dtr_run_manifest "<output-dir>\<demo-id>\manifest.json" 0
+dtr_set align weapons on
+dtr_set align projectiles on
+dtr_set handoff death_or_contact slot
+dtr_set allow_partial on
+dtr_go seq "<output-dir>\<demo-id>\manifest.json" 0
 ```
 
-The last number is the starting round. Use `0` to start from round 0.
+`seq` means "play a sequence starting from a manifest source round"; the final
+`0` is `from_source_round=0`, not "play only round 0". Use
+`dtr_go round "<manifest.json>" 0` for single-round playback.
 
 When full-round playback starts, DemoTracer treats the selected replay bots as
 being reset to the replay round start: alive replay bots are restored to 100 HP,
@@ -343,16 +355,22 @@ alignment is stable. Fire grenades keep CS2's native projectile and inferno
 behavior, because mutating molotov/incendiary projectiles after spawn can break
 valid burns.
 
-To start from a specific round:
+To start a sequence from a later source round:
 
 ```text
-dtr_run_manifest "<output-dir>\<demo-id>\manifest.json" 12
+dtr_go seq "<output-dir>\<demo-id>\manifest.json" 12
+```
+
+To play only one source round:
+
+```text
+dtr_go round "<output-dir>\<demo-id>\manifest.json" 12
 ```
 
 For a Mirage pool:
 
 ```text
-dtr_run_pool "<output-dir>\mirage_pool\pool_manifest.json" 0
+dtr_go pool "<output-dir>\mirage_pool\pool_manifest.json" 0
 ```
 
 Round 0 and round 12 only match pistol-round candidates from demo round 0 or 12. Other rounds are matched by each side's current equipment value.
@@ -364,6 +382,8 @@ bc_status
 bc_replay_pov spectated
 bc_perf 1
 dtr_status 0
+dtr_status
+dtr_runtime
 dtr_bots
 ```
 

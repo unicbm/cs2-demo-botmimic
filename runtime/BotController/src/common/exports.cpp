@@ -35,7 +35,7 @@ extern "C" __declspec(dllexport) int BotController_IsLocked(int slot, int kind)
 
 extern "C" __declspec(dllexport) int BotController_GetVersion()
 {
-    return 13;
+    return 14;
 }
 
 extern "C" __declspec(dllexport) int BotController_SetControllerControllingBotOffset(int offset)
@@ -186,6 +186,11 @@ extern "C" __declspec(dllexport) int BotController_TransferRecordingToReplay(int
 extern "C" __declspec(dllexport) int BotController_StartReplay(int slot, int loop)
 {
     return BotController::MotionRecorder::StartReplay(slot, loop != 0) ? 0 : -1;
+}
+
+extern "C" __declspec(dllexport) int BotController_StartReplayAt(int slot, int loop, int startIndex)
+{
+    return BotController::MotionRecorder::StartReplayAt(slot, loop != 0, startIndex) ? 0 : -1;
 }
 
 extern "C" __declspec(dllexport) int BotController_StopReplay(int slot)

@@ -5,8 +5,8 @@ namespace DemoTracer;
 
 internal static class BotControllerNative
 {
-    public const int ExpectedAbiVersion = 13;
-    public const uint RecFormatVersion = 4;
+    public const int ExpectedAbiVersion = 14;
+    public const uint RecFormatVersion = 5;
     public const uint MinRecFormatVersion = 3;
     public const int MovementSnapshotByteSize = 92;
     public const int ReplayTickByteSize = 192;
@@ -51,6 +51,9 @@ internal static class BotControllerNative
 
     [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
     private static extern int BotController_StartReplay(int slot, int loop);
+
+    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int BotController_StartReplayAt(int slot, int loop, int startIndex);
 
     [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
     private static extern int BotController_StopReplay(int slot);
@@ -166,16 +169,17 @@ internal static class BotControllerNative
         }
     }
 
-    public static bool TryReadReplayProjectiles(string path, out IReadOnlyList<ReplayProjectileEvent> projectiles)
+    public static bool TryReadReplayMetadata(string path, out ReplayFileMetadata metadata)
     {
         try
         {
-            projectiles = ReadReplayFile(path).Projectiles;
+            var replay = ReadReplayFile(path);
+            metadata = new ReplayFileMetadata(replay.TickRate, replay.PlayStartTickIndex, replay.Projectiles);
             return true;
         }
         catch
         {
-            projectiles = Array.Empty<ReplayProjectileEvent>();
+            metadata = new ReplayFileMetadata(0.0f, 0, []);
             return false;
         }
     }
@@ -188,11 +192,16 @@ internal static class BotControllerNative
     }
 
     public static bool StartReplay(int slot, bool loop)
+        => StartReplayAt(slot, loop, 0);
+
+    public static bool StartReplayAt(int slot, bool loop, uint startIndex)
     {
         if (BotController_Lock(slot, LockKindAll, 0) != 0)
             return false;
 
-        var ok = BotController_StartReplay(slot, loop ? 1 : 0) == 0;
+        var ok = startIndex == 0
+            ? BotController_StartReplay(slot, loop ? 1 : 0) == 0
+            : BotController_StartReplayAt(slot, loop ? 1 : 0, checked((int)startIndex)) == 0;
         if (!ok)
             BotController_Unlock(slot, LockKindAll);
         return ok;
@@ -328,7 +337,7 @@ internal static class BotControllerNative
             throw new InvalidDataException(
                 $"unsupported .dtr version {version}; expected {MinRecFormatVersion}..{RecFormatVersion}");
 
-        _ = reader.ReadSingle(); // tick_rate
+        var tickRate = reader.ReadSingle();
         _ = reader.ReadUInt32(); // round
         _ = reader.ReadByte();   // side
         _ = reader.ReadUInt32(); // flags
@@ -338,6 +347,10 @@ internal static class BotControllerNative
         var projectileCount = version >= 4
             ? CheckedCount(reader.ReadUInt32(), "projectile_count")
             : 0;
+        var playStartTickIndex = version >= 5
+            ? CheckedCount(reader.ReadUInt32(), "play_start_tick_index")
+            : 0;
+        ValidatePlayStartTickIndex(tickCount, playStartTickIndex);
         _ = ReadRecString(reader); // map
         _ = ReadRecString(reader); // player name
 
@@ -403,7 +416,21 @@ internal static class BotControllerNative
         if (bodyStream.Position != bodyStream.Length)
             throw new InvalidDataException("trailing bytes in .dtr body");
 
-        return new ReplayFile(ticks, projectiles, subticks);
+        return new ReplayFile(ticks, projectiles, subticks, tickRate, (uint)playStartTickIndex);
+    }
+
+    private static void ValidatePlayStartTickIndex(int tickCount, int playStartTickIndex)
+    {
+        if (tickCount == 0)
+        {
+            if (playStartTickIndex == 0)
+                return;
+            throw new InvalidDataException(
+                $"play_start_tick_index {playStartTickIndex} requires at least one tick");
+        }
+        if (playStartTickIndex >= tickCount)
+            throw new InvalidDataException(
+                $"play_start_tick_index {playStartTickIndex} out of range for {tickCount} ticks");
     }
 
     private static int CheckedCount(uint value, string fieldName)
@@ -526,8 +553,15 @@ internal static class BotControllerNative
     private readonly record struct ReplayFile(
         NativeReplayTick[] Ticks,
         ReplayProjectileEvent[] Projectiles,
-        NativeSubtickMove[] Subticks);
+        NativeSubtickMove[] Subticks,
+        float TickRate,
+        uint PlayStartTickIndex);
 }
+
+internal readonly record struct ReplayFileMetadata(
+    float TickRate,
+    uint PlayStartTickIndex,
+    ReplayProjectileEvent[] Projectiles);
 
 internal readonly record struct ReplayState(
     int Cursor,

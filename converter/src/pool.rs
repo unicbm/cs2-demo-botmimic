@@ -18,6 +18,7 @@ pub struct BuildPoolOptions {
     pub include_suspicious: bool,
     pub cut_before_bomb_plant: bool,
     pub subtick_mode: SubtickMode,
+    pub freeze_preroll_seconds: f32,
     pub analysis: AnalysisOptions,
 }
 
@@ -71,6 +72,7 @@ pub fn build_round_pool(options: &BuildPoolOptions) -> Result<BuildPoolReport> {
                         include_suspicious: options.include_suspicious,
                         cut_before_bomb_plant: options.cut_before_bomb_plant,
                         subtick_mode: options.subtick_mode,
+                        freeze_preroll_seconds: options.freeze_preroll_seconds,
                         analysis: options.analysis,
                     },
                 )?;

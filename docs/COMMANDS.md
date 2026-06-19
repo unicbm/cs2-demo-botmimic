@@ -9,35 +9,59 @@ console line.
 
 ```text
 css_plugins reload DemoTracer
-dtr_replay_identity 1
-dtr_weapon_align 1
-dtr_projectile_align 1
-dtr_handoff death_or_contact slot
-dtr_partial 1
-dtr_run_manifest "<output-dir>\<demo-id>\manifest.json" 0
+dtr_set identity full
+dtr_set align weapons on
+dtr_set align projectiles on
+dtr_set handoff death_or_contact slot
+dtr_set allow_partial on
+dtr_go seq "<output-dir>\<demo-id>\manifest.json" 0
 ```
 
-`dtr_replay_identity 1` is useful when BotHider is present because the replay
+`dtr_set identity full` is useful when BotHider is present because the replay
 slots inherit demo names and SteamID64 values. If BotHider is unavailable, leave
 it off.
+
+Use `seq` for "sequence from source round", `round` for one source round only,
+and `pool` for economy-matched pool playback. `dtr_go` validates the plan,
+arms it, then issues `mp_restartgame 1` so playback catches a fresh
+`round_start`.
 
 ## Defaults
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
 | `dtr_weapon_align` | `1` | Align loadout, buy behavior, active weapon, and weapon slot locks. |
-| `dtr_projectile_align` | `1` | Align grenade projectile initial vectors from `.dtr` v4 data. |
+| `dtr_projectile_align` | `1` | Align grenade projectile initial vectors from `.dtr` v4+ data. |
 | `dtr_handoff` | `death_or_contact slot` | Release only the contacted/dead replay slot after contact or death. |
 | `dtr_partial` | `1` | Allow replay with fewer bots than manifest players. |
 | `dtr_replay_identity` | `0` | Do not write BotHider name/SteamID unless explicitly enabled. |
 | `dtr_util_trace` | `0` | Utility CSV trace disabled. |
 | `bc_replay_pov` | `spectated` | Publish expensive native first-person POV updates only for replay bots watched in-eye. |
 
+## High-Level Playback
+
+### `dtr_go seq <manifest.json> [from_source_round]`
+
+Validates and arms a manifest sequence, then issues `mp_restartgame 1`.
+`from_source_round` defaults to `0` and means "start the sequence at this demo
+source round", not "play only this round".
+
+### `dtr_go round <manifest.json> <source_round>`
+
+Validates and arms exactly one demo source round, then issues
+`mp_restartgame 1`. This does not advance to later manifest rounds.
+
+### `dtr_go pool <pool_manifest.json> [server_round]`
+
+Validates and arms a pool plan, then issues `mp_restartgame 1`. `server_round`
+is a local server round hint for economy/pistol matching, not a manifest source
+round.
+
 ## Sequence Playback
 
-### `dtr_run_manifest <manifest.json> [start-round]`
+### `dtr_arm seq <manifest.json> [from_source_round]`
 
-Arms sequential playback for a converted demo manifest.
+Arms sequential playback without restarting the server round.
 
 Implementation:
 
@@ -48,7 +72,7 @@ Implementation:
 - On `round_freeze_end`, starts all loaded replays.
 - After each started round, advances to the next round in the manifest.
 
-Use this for normal demo playback.
+Legacy alias: `dtr_run_manifest <manifest.json> [from_source_round]`.
 
 ### `dtr_stop_sequence`
 
@@ -56,9 +80,9 @@ Stops an armed or running manifest sequence. It does not delete files and does
 not change plugin settings. It only stops future sequence scheduling; use
 `dtr_stop_all` if you also need to stop already playing slots.
 
-### `dtr_run_pool <pool_manifest.json> [start-round]`
+### `dtr_arm pool <pool_manifest.json> [server_round]`
 
-Arms economy-matched playback from a converted map pool.
+Arms economy-matched playback from a converted map pool without restarting.
 
 Implementation:
 
@@ -78,7 +102,7 @@ stop slots that are already playing; use `dtr_stop_all` for that.
 
 ## Manual Loading And Playback
 
-### `dtr_load_round <manifest.json> <round>`
+### `dtr_load round <manifest.json> <source_round>`
 
 Loads one round from a manifest onto available replay bot slots, but does not
 start playback.
@@ -92,31 +116,39 @@ Implementation:
 - Records per-slot manifest metadata such as player name, SteamID64, loadout,
   preload weapon defs, and projectile events.
 
-### `dtr_arm_round <manifest.json> <round> [loop:0|1]`
+Legacy alias: `dtr_load_round <manifest.json> <source_round>`.
 
-Loads one round and arms it to start on the next `round_freeze_end`.
+### `dtr_arm round <manifest.json> <source_round> [loop:0|1]`
+
+Arms one source round to load on the next `round_start` and start live playback
+on `round_freeze_end`.
 
 This is useful for testing a specific round with normal freeze-time timing.
 
-### `dtr_play_loaded [loop:0|1]`
+Legacy alias: `dtr_arm_round <manifest.json> <source_round> [loop:0|1]`.
+
+### `dtr_play loaded [loop:0|1]`
 
 Starts every currently loaded slot immediately.
 
 Before starting, the plugin preloads replay loadouts and start weapons when
 `dtr_weapon_align` is enabled.
 
-### `dtr_load <slot> <absolute-or-game-path.dtr>`
+This is a manual/debug command. It bypasses lifecycle-safe `round_start` and
+`round_freeze_end` alignment.
+
+### `dtr_load slot <slot> <absolute-or-game-path.dtr>`
 
 Loads a single `.dtr` file into one bot slot. This is a low-level manual command
 for experiments. It does not get manifest-only metadata such as `player_name`,
 `steam_id`, or full loadout unless those can be scanned from the `.dtr` itself.
 
-### `dtr_play <slot> [loop:0|1]`
+### `dtr_play slot <slot> [loop:0|1]`
 
 Starts replay for one loaded slot, after checking that the target is still a
 safe bot target.
 
-### `dtr_stop <slot>`
+### `dtr_stop slot <slot>`
 
 Stops replay on one slot and releases runtime locks, pending alignments, buy
 plans, and replay brain state for that slot.
@@ -199,7 +231,7 @@ Enables or disables projectile initial-vector alignment.
 
 Implementation when enabled:
 
-- Requires `.dtr` v4 projectile events from the converter.
+- Requires `.dtr` v4+ projectile events from the converter.
 - Matches grenade projectile entities for smoke, flash, HE, molotov,
   incendiary, and decoy when matching replay metadata is available.
 - The bot still performs the throw action naturally. The plugin waits for CS2 to
@@ -216,7 +248,7 @@ Why it exists:
 
 Replaying player origin, velocity, view angles, buttons, and subtick input does
 not always reproduce the same grenade initial velocity. Small velocity or height
-differences can make precision smokes hit a different collision edge. The v4
+differences can make precision smokes hit a different collision edge. The
 projectile data records the demo result directly and corrects that bias.
 
 ### `dtr_replay_identity <0|1>`

@@ -191,6 +191,7 @@ namespace BotController
         bool LoadReplay(int slot, const ReplayTick *ticks, int tickCount,
                         const SubtickMove *subs, int subCount);
         bool StartReplay(int slot, bool loop); // play from tick 0
+        bool StartReplayAt(int slot, bool loop, int startIndex);
         bool StopReplay(int slot);             // stop + clear injection
         bool IsReplaying(int slot);
         int ReplayCursor(int slot); // current tick index, <0 if idle

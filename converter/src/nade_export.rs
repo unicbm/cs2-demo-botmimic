@@ -342,6 +342,7 @@ fn build_clip(
         release_row.round,
         SynthesisOptions {
             subtick_mode: options.subtick_mode,
+            ..SynthesisOptions::default()
         },
     )?;
     let release_tick_index = release_tick_index(&player_rows, projectile.tick);
