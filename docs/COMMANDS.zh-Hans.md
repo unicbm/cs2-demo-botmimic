@@ -81,8 +81,8 @@ dtr_run_manifest "<输出目录>\<demo-id>\manifest.json" 0
 - T 文件分配给 T bot slot，CT 文件分配给 CT bot slot。
 - 只使用安全目标：严格 CS2 bot，或 BotHider 管理的 bot slot。
 - 对已加载 slot 设置 native buy skip，避免 vanilla bot 购买和 replay loadout 打架。
-- 记录每个 slot 的 manifest 元数据，例如玩家名、SteamID64、loadout、预加载武器 def
-  和 projectile events。
+- 记录每个 slot 的 manifest 元数据，例如玩家名、SteamID64、loadout、预加载武器 def、
+  projectile events。
 
 ### `dtr_arm_round <manifest.json> <round> [loop:0|1]`
 
@@ -94,7 +94,8 @@ dtr_run_manifest "<输出目录>\<demo-id>\manifest.json" 0
 
 立即启动当前所有已加载 slot。
 
-如果 `dtr_weapon_align` 开启，启动前会预加载 replay loadout 和初始武器。
+如果 `dtr_weapon_align` 开启，启动前会预加载 replay loadout 和初始武器。如果
+`dtr_weapon_align` 关闭，则不会主动同步 manifest loadout。
 
 ### `dtr_load <slot> <absolute-or-game-path.dtr>`
 

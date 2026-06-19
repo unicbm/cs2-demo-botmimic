@@ -29,7 +29,10 @@ pub mod prelude {
         read_nade_map_manifest, NadeClipExportRequest, NadeContextOptions, NadeDedupeOptions,
         NadeLibraryDemoStatus, NadeLibraryExportRequest, NadeLibraryProgress,
     };
-    pub use crate::model::{ProjectileKind, Side, SubtickMode};
+    pub use crate::model::{ProjectileEffectSource, ProjectileKind, Side, SubtickMode};
+    pub use crate::nade_export::{
+        NadeClip, NadeExportReport, NadeManifest, NadePhase, NadeTimeBucket, NadeTiming,
+    };
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

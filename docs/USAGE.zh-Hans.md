@@ -222,3 +222,5 @@ write_rec_file("copy.dtr", &rec)?;
 
 普通回合 manifest 使用 `dtr_run_manifest` 或 `dtr_run_pool`。道具 manifest 使用
 `dtr_list_nades` 和 `dtr_run_nade`。
+
+DemoTracer 有意不提取或应用皮肤、刀、手套、贴纸、挂件/charms 或探员等饰品库存元数据。

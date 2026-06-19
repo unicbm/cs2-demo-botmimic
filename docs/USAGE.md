@@ -231,3 +231,6 @@ plugin, then use the server commands in [`COMMANDS.md`](COMMANDS.md).
 
 Round manifests use `dtr_run_manifest` or `dtr_run_pool`. Nade manifests use
 `dtr_list_nades` and `dtr_run_nade`.
+
+DemoTracer intentionally does not extract or apply cosmetic inventory metadata
+such as skins, knives, gloves, stickers, charms, or agents.

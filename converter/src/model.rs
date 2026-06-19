@@ -202,6 +202,21 @@ impl ProjectileKind {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectileEffectSource {
+    #[default]
+    Unknown,
+    SmokeDetonationProp,
+    SmokeDetonationEvent,
+    FlashDetonationEvent,
+    HeDetonationEvent,
+    MolotovDetonationEvent,
+    InfernoStartBurnEvent,
+    DecoyStartedEvent,
+    DecoyDetonationEvent,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct ReplayProjectile {
     pub tick_index: u32,
@@ -283,6 +298,10 @@ pub struct ParsedProjectile {
     pub initial_position: [f32; 3],
     pub initial_velocity: [f32; 3],
     pub detonation_position: [f32; 3],
+    pub effect_position: [f32; 3],
+    pub effect_tick: Option<i32>,
+    pub effect_source: ProjectileEffectSource,
+    pub effect_confidence: f32,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -430,7 +449,7 @@ mod tests {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RoundStatus {
     Recommended,

@@ -111,6 +111,8 @@ enum Command {
         jobs: usize,
         #[arg(long)]
         max_demos: Option<usize>,
+        #[arg(long)]
+        map: Option<String>,
         #[arg(long = "reuse-root")]
         reuse_roots: Vec<PathBuf>,
         #[arg(long)]
@@ -300,6 +302,7 @@ fn run() -> cs2_demotracer::Result<()> {
             recursive,
             jobs,
             max_demos,
+            map,
             reuse_roots,
             aggregate_only,
             side,
@@ -318,6 +321,7 @@ fn run() -> cs2_demotracer::Result<()> {
                     recursive,
                     jobs,
                     max_demos,
+                    map_filter: map,
                     reuse_roots,
                     aggregate_only,
                     side,
@@ -337,11 +341,12 @@ fn run() -> cs2_demotracer::Result<()> {
                 |event| print_nade_library_progress(&event),
             )?;
             println!(
-                "nade library demos={} converted={} reused={} existing={} failures={} maps={} source_clips={} clips={} root={}",
+                "nade library demos={} converted={} reused={} existing={} filtered_map={} failures={} maps={} source_clips={} clips={} root={}",
                 report.demos_done,
                 report.demos_converted,
                 report.demos_reused,
                 report.demos_skipped_existing,
+                report.demos_filtered_map,
                 report.failures,
                 report.maps_written,
                 report.source_clips,

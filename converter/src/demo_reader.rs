@@ -6,12 +6,15 @@ use std::path::Path;
 mod demoparser_impl {
     use super::*;
     use crate::io_error;
-    use crate::model::{ParsedPlayerTick, ParsedProjectile, ProjectileKind, SubtickMove};
+    use crate::model::{
+        ParsedPlayerTick, ParsedProjectile, ProjectileEffectSource, ProjectileKind, SubtickMove,
+    };
     use ahash::AHashMap;
     use parser::first_pass::parser_settings::{rm_user_friendly_names, ParserInputs};
     use parser::parse_demo::{Parser, ParsingMode};
+    use parser::second_pass::game_events::GameEvent;
     use parser::second_pass::parser_settings::create_huffman_lookup_table;
-    use parser::second_pass::variants::{PropColumn, VarVec};
+    use parser::second_pass::variants::{PropColumn, VarVec, Variant};
     use std::fs;
 
     pub fn read_demo(path: &Path) -> Result<ParsedDemo> {
@@ -97,6 +100,13 @@ mod demoparser_impl {
                 "round_freeze_end".to_string(),
                 "bomb_beginplant".to_string(),
                 "bomb_planted".to_string(),
+                "smokegrenade_detonate".to_string(),
+                "flashbang_detonate".to_string(),
+                "hegrenade_detonate".to_string(),
+                "molotov_detonate".to_string(),
+                "inferno_startburn".to_string(),
+                "decoy_started".to_string(),
+                "decoy_detonate".to_string(),
             ],
             parse_ents: true,
             parse_projectiles: false,
@@ -229,7 +239,7 @@ mod demoparser_impl {
         bomb_beginplant_ticks.dedup();
         bomb_planted_ticks.sort_unstable();
         bomb_planted_ticks.dedup();
-        let projectiles = parse_projectiles(bytes)?;
+        let projectiles = parse_projectiles(bytes, tick_rate, &output.game_events)?;
 
         Ok(ParsedDemo {
             path: display_path.to_string(),
@@ -245,7 +255,39 @@ mod demoparser_impl {
         })
     }
 
-    fn parse_projectiles(bytes: &[u8]) -> Result<Vec<ParsedProjectile>> {
+    pub fn read_demo_header_map_bytes(bytes: &[u8]) -> Result<Option<String>> {
+        let huf = create_huffman_lookup_table();
+        let settings = ParserInputs {
+            real_name_to_og_name: AHashMap::default(),
+            wanted_players: Vec::new(),
+            wanted_player_props: Vec::new(),
+            wanted_other_props: Vec::new(),
+            wanted_prop_states: AHashMap::default(),
+            wanted_ticks: Vec::new(),
+            wanted_events: Vec::new(),
+            parse_ents: false,
+            parse_projectiles: false,
+            parse_grenades: false,
+            only_header: true,
+            only_convars: false,
+            huffman_lookup_table: &huf,
+            order_by_steamid: false,
+            list_props: false,
+            fallback_bytes: None,
+        };
+        let mut parser = Parser::new(settings, ParsingMode::ForceSingleThreaded);
+        let output = parser
+            .parse_demo(bytes)
+            .map_err(|e| Error::Parser(format!("{e:?}")))?;
+        let header = output.header.unwrap_or_default();
+        Ok(header.get("map_name").cloned())
+    }
+
+    fn parse_projectiles(
+        bytes: &[u8],
+        tick_rate: f32,
+        game_events: &[GameEvent],
+    ) -> Result<Vec<ParsedProjectile>> {
         let wanted_props = vec![
             "Grenade.m_vInitialPosition",
             "Grenade.m_vInitialVelocity",
@@ -294,7 +336,7 @@ mod demoparser_impl {
 
         let columns = output_columns(&output);
         let len = columns.values().map(|c| c.len()).max().unwrap_or_default();
-        let mut grouped: AHashMap<ProjectileKey, ParsedProjectile> = AHashMap::default();
+        let mut grouped: AHashMap<ProjectileKey, ProjectileCandidate> = AHashMap::default();
         for idx in 0..len {
             let steam_id = get_u64(&columns, "steamid", idx).unwrap_or_default();
             if steam_id == 0 {
@@ -312,30 +354,268 @@ mod demoparser_impl {
             };
             let detonation_position =
                 get_vec3(&columns, "Grenade.m_vSmokeDetonationPos", idx).unwrap_or_default();
+            let entity_id = get_i32(&columns, "grenade_entity_id", idx).unwrap_or_default();
             let key =
                 ProjectileKey::new(steam_id, &grenade_type, initial_position, initial_velocity);
-            let entry = grouped.entry(key).or_insert_with(|| ParsedProjectile {
-                tick,
-                steam_id,
-                name: get_string(&columns, "name", idx).unwrap_or_default(),
-                kind: ProjectileKind::from_grenade_type(&grenade_type),
-                weapon_def_index: ProjectileKind::weapon_def_index_from_grenade_type(&grenade_type),
-                grenade_type,
-                initial_position,
-                initial_velocity,
-                detonation_position: [0.0, 0.0, 0.0],
+            let entry = grouped.entry(key).or_insert_with(|| ProjectileCandidate {
+                entity_id,
+                projectile: ParsedProjectile {
+                    tick,
+                    steam_id,
+                    name: get_string(&columns, "name", idx).unwrap_or_default(),
+                    kind: ProjectileKind::from_grenade_type(&grenade_type),
+                    weapon_def_index: ProjectileKind::weapon_def_index_from_grenade_type(
+                        &grenade_type,
+                    ),
+                    grenade_type,
+                    initial_position,
+                    initial_velocity,
+                    detonation_position: [0.0, 0.0, 0.0],
+                    effect_position: [0.0, 0.0, 0.0],
+                    effect_tick: None,
+                    effect_source: ProjectileEffectSource::Unknown,
+                    effect_confidence: 0.0,
+                },
             });
-            if tick < entry.tick {
-                entry.tick = tick;
+            if tick < entry.projectile.tick {
+                entry.projectile.tick = tick;
+                entry.entity_id = entity_id;
             }
             if vec3_is_meaningful(detonation_position) {
-                entry.detonation_position = detonation_position;
+                entry.projectile.detonation_position = detonation_position;
             }
         }
 
-        let mut projectiles = grouped.into_values().collect::<Vec<_>>();
+        let mut candidates = grouped.into_values().collect::<Vec<_>>();
+        candidates
+            .sort_by_key(|candidate| (candidate.projectile.tick, candidate.projectile.steam_id));
+        attach_projectile_effects(&mut candidates, game_events, tick_rate);
+        let mut projectiles = candidates
+            .into_iter()
+            .map(|candidate| candidate.projectile)
+            .collect::<Vec<_>>();
         projectiles.sort_by_key(|projectile| (projectile.tick, projectile.steam_id));
         Ok(projectiles)
+    }
+
+    #[derive(Clone, Debug)]
+    struct ProjectileCandidate {
+        projectile: ParsedProjectile,
+        entity_id: i32,
+    }
+
+    #[derive(Clone, Debug)]
+    struct ProjectileEffectEvent {
+        tick: i32,
+        entity_id: Option<i32>,
+        steam_id: Option<u64>,
+        kind: ProjectileKind,
+        position: [f32; 3],
+        source: ProjectileEffectSource,
+    }
+
+    fn attach_projectile_effects(
+        candidates: &mut [ProjectileCandidate],
+        game_events: &[GameEvent],
+        tick_rate: f32,
+    ) {
+        let max_delta_ticks = seconds_to_ticks(20.0, tick_rate).max(1);
+        let events = game_events
+            .iter()
+            .filter_map(effect_event_from_game_event)
+            .collect::<Vec<_>>();
+        let mut used = vec![false; events.len()];
+
+        for candidate in candidates {
+            if vec3_is_meaningful(candidate.projectile.detonation_position) {
+                candidate.projectile.effect_position = candidate.projectile.detonation_position;
+                candidate.projectile.effect_source = ProjectileEffectSource::SmokeDetonationProp;
+                candidate.projectile.effect_confidence = 0.90;
+            }
+
+            let best = events
+                .iter()
+                .enumerate()
+                .filter(|(idx, event)| {
+                    !used[*idx] && effect_can_match(candidate, event, max_delta_ticks)
+                })
+                .min_by_key(|(_, event)| effect_match_score(candidate, event));
+
+            if let Some((idx, event)) = best {
+                used[idx] = true;
+                candidate.projectile.effect_position = event.position;
+                candidate.projectile.effect_tick = Some(event.tick);
+                candidate.projectile.effect_source = event.source;
+                candidate.projectile.effect_confidence = effect_confidence(candidate, event);
+                candidate.projectile.detonation_position = event.position;
+            }
+        }
+    }
+
+    fn effect_event_from_game_event(event: &GameEvent) -> Option<ProjectileEffectEvent> {
+        let (kind, source) = match event.name.as_str() {
+            "smokegrenade_detonate" => (
+                ProjectileKind::Smoke,
+                ProjectileEffectSource::SmokeDetonationEvent,
+            ),
+            "flashbang_detonate" => (
+                ProjectileKind::Flash,
+                ProjectileEffectSource::FlashDetonationEvent,
+            ),
+            "hegrenade_detonate" => (
+                ProjectileKind::He,
+                ProjectileEffectSource::HeDetonationEvent,
+            ),
+            "molotov_detonate" => (
+                ProjectileKind::Molotov,
+                ProjectileEffectSource::MolotovDetonationEvent,
+            ),
+            "inferno_startburn" => (
+                ProjectileKind::Molotov,
+                ProjectileEffectSource::InfernoStartBurnEvent,
+            ),
+            "decoy_started" => (
+                ProjectileKind::Decoy,
+                ProjectileEffectSource::DecoyStartedEvent,
+            ),
+            "decoy_detonate" => (
+                ProjectileKind::Decoy,
+                ProjectileEffectSource::DecoyDetonationEvent,
+            ),
+            _ => return None,
+        };
+        let position = event_vec3(event)?;
+        if !vec3_is_meaningful(position) {
+            return None;
+        }
+        Some(ProjectileEffectEvent {
+            tick: event.tick,
+            entity_id: event_field_i32(event, "entityid"),
+            steam_id: event_steam_id(event),
+            kind,
+            position,
+            source,
+        })
+    }
+
+    fn effect_can_match(
+        candidate: &ProjectileCandidate,
+        event: &ProjectileEffectEvent,
+        max_delta_ticks: i32,
+    ) -> bool {
+        if candidate.projectile.kind != event.kind {
+            return false;
+        }
+        if let Some(steam_id) = event.steam_id {
+            if steam_id != candidate.projectile.steam_id {
+                return false;
+            }
+        }
+        let delta = event.tick - candidate.projectile.tick;
+        delta >= -2 && delta <= max_delta_ticks
+    }
+
+    fn effect_match_score(
+        candidate: &ProjectileCandidate,
+        event: &ProjectileEffectEvent,
+    ) -> (u8, u8, i32) {
+        let entity_rank = if event_source_uses_projectile_entity(event.source)
+            && candidate.entity_id > 0
+            && event.entity_id == Some(candidate.entity_id)
+        {
+            0
+        } else {
+            1
+        };
+        let steam_rank = if event.steam_id == Some(candidate.projectile.steam_id) {
+            0
+        } else {
+            1
+        };
+        (
+            entity_rank,
+            steam_rank,
+            event.tick - candidate.projectile.tick,
+        )
+    }
+
+    fn effect_confidence(candidate: &ProjectileCandidate, event: &ProjectileEffectEvent) -> f32 {
+        if event_source_uses_projectile_entity(event.source)
+            && candidate.entity_id > 0
+            && event.entity_id == Some(candidate.entity_id)
+        {
+            1.0
+        } else if event.steam_id == Some(candidate.projectile.steam_id) {
+            0.85
+        } else {
+            0.65
+        }
+    }
+
+    fn event_source_uses_projectile_entity(source: ProjectileEffectSource) -> bool {
+        !matches!(source, ProjectileEffectSource::InfernoStartBurnEvent)
+    }
+
+    fn event_vec3(event: &GameEvent) -> Option<[f32; 3]> {
+        let x = event_field_f32(event, "x")
+            .or_else(|| event_field_f32(event, "pos_x"))
+            .or_else(|| event_field_f32(event, "origin_x"))?;
+        let y = event_field_f32(event, "y")
+            .or_else(|| event_field_f32(event, "pos_y"))
+            .or_else(|| event_field_f32(event, "origin_y"))?;
+        let z = event_field_f32(event, "z")
+            .or_else(|| event_field_f32(event, "pos_z"))
+            .or_else(|| event_field_f32(event, "origin_z"))?;
+        Some([x, y, z])
+    }
+
+    fn event_steam_id(event: &GameEvent) -> Option<u64> {
+        [
+            "user_steamid",
+            "steamid",
+            "thrower_steamid",
+            "attacker_steamid",
+        ]
+        .iter()
+        .find_map(|name| event_field_u64(event, name))
+    }
+
+    fn event_field_f32(event: &GameEvent, name: &str) -> Option<f32> {
+        match event_field(event, name)? {
+            Variant::F32(value) => Some(*value),
+            Variant::I32(value) => Some(*value as f32),
+            Variant::U32(value) => Some(*value as f32),
+            Variant::String(value) => value.parse::<f32>().ok(),
+            _ => None,
+        }
+    }
+
+    fn event_field_i32(event: &GameEvent, name: &str) -> Option<i32> {
+        match event_field(event, name)? {
+            Variant::I32(value) => Some(*value),
+            Variant::U32(value) => i32::try_from(*value).ok(),
+            Variant::U64(value) => i32::try_from(*value).ok(),
+            Variant::String(value) => value.parse::<i32>().ok(),
+            _ => None,
+        }
+    }
+
+    fn event_field_u64(event: &GameEvent, name: &str) -> Option<u64> {
+        match event_field(event, name)? {
+            Variant::U64(value) => Some(*value),
+            Variant::U32(value) => Some(u64::from(*value)),
+            Variant::I32(value) => u64::try_from(*value).ok(),
+            Variant::String(value) => value.parse::<u64>().ok(),
+            _ => None,
+        }
+    }
+
+    fn event_field<'a>(event: &'a GameEvent, name: &str) -> Option<&'a Variant> {
+        event
+            .fields
+            .iter()
+            .find(|field| field.name == name)
+            .and_then(|field| field.data.as_ref())
     }
 
     fn output_columns<'a>(
@@ -377,6 +657,13 @@ mod demoparser_impl {
     fn vec3_is_meaningful(value: [f32; 3]) -> bool {
         value.iter().all(|component| component.is_finite())
             && value.iter().any(|component| component.abs() > f32::EPSILON)
+    }
+
+    fn seconds_to_ticks(seconds: f32, tick_rate: f32) -> i32 {
+        if !seconds.is_finite() || !tick_rate.is_finite() || seconds <= 0.0 || tick_rate <= 0.0 {
+            return 0;
+        }
+        (seconds * tick_rate).round() as i32
     }
 
     fn event_ticks(events: &[parser::second_pass::game_events::GameEvent], name: &str) -> Vec<i32> {
@@ -530,6 +817,8 @@ mod demoparser_impl {
 pub use demoparser_impl::read_demo;
 #[cfg(feature = "demoparser")]
 pub use demoparser_impl::read_demo_bytes;
+#[cfg(feature = "demoparser")]
+pub use demoparser_impl::read_demo_header_map_bytes;
 
 #[cfg(not(feature = "demoparser"))]
 pub fn read_demo(_path: &Path) -> Result<ParsedDemo> {
@@ -538,5 +827,10 @@ pub fn read_demo(_path: &Path) -> Result<ParsedDemo> {
 
 #[cfg(not(feature = "demoparser"))]
 pub fn read_demo_bytes(_bytes: &[u8], _stem: &str, _display_path: &str) -> Result<ParsedDemo> {
+    Err(Error::FeatureDisabled("demoparser"))
+}
+
+#[cfg(not(feature = "demoparser"))]
+pub fn read_demo_header_map_bytes(_bytes: &[u8]) -> Result<Option<String>> {
     Err(Error::FeatureDisabled("demoparser"))
 }

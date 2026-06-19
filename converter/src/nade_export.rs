@@ -1,8 +1,8 @@
 use crate::demo_id::{demo_id, sha256_hex};
 use crate::export::{first_weapon_def_index, preload_weapon_def_indices, replay_loadout};
 use crate::model::{
-    ParsedDemo, ParsedPlayerTick, ParsedProjectile, ProjectileKind, ReplayLoadout,
-    ReplayProjectile, Side, SubtickMode, DEMOTRACER_ABI, DTR_FORMAT_VERSION,
+    ParsedDemo, ParsedPlayerTick, ParsedProjectile, ProjectileEffectSource, ProjectileKind,
+    ReplayLoadout, ReplayProjectile, Side, SubtickMode, DEMOTRACER_ABI, DTR_FORMAT_VERSION,
 };
 use crate::rec_writer::write_rec_file;
 use crate::synthesis::{synthesize_player_rec_with_options, SynthesisOptions, SynthesisStats};
@@ -82,10 +82,44 @@ pub struct NadeClip {
     pub projectile_initial_position: [f32; 3],
     pub projectile_initial_velocity: [f32; 3],
     pub projectile_detonation_position: [f32; 3],
+    #[serde(default)]
+    pub projectile_effect_position: [f32; 3],
+    #[serde(default)]
+    pub projectile_effect_tick: Option<i32>,
+    #[serde(default)]
+    pub projectile_effect_source: ProjectileEffectSource,
+    #[serde(default)]
+    pub projectile_effect_confidence: f32,
     pub first_weapon_def_index: i32,
     pub preload_weapon_def_indices: Vec<i32>,
     pub loadout: ReplayLoadout,
+    #[serde(default)]
+    pub timing: NadeTiming,
     pub source_context: NadeSourceContext,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct NadeTiming {
+    pub round: u32,
+    pub throw_tick: i32,
+    pub freeze_end_tick: Option<i32>,
+    pub round_live_tick: Option<i32>,
+    pub bomb_planted_tick: Option<i32>,
+    pub seconds_after_freeze_end: Option<f32>,
+    pub seconds_after_round_live: Option<f32>,
+    pub seconds_after_bomb_planted: Option<f32>,
+    pub time_bucket: NadeTimeBucket,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NadeTimeBucket {
+    #[default]
+    Unknown,
+    SpawnExec,
+    Opening,
+    Midround,
+    Retake,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -329,6 +363,13 @@ fn build_clip(
         round_bounds,
         options.opening_seconds,
     );
+    let timing = build_timing(
+        release_row.round,
+        projectile.tick,
+        parsed,
+        round_bounds,
+        options.opening_seconds,
+    );
     let kind_dir = grenade_dir(effective_weapon_def_index, projectile.kind);
     let clip_id = clip_id(
         &parsed.demo_sha256,
@@ -382,9 +423,14 @@ fn build_clip(
         projectile_initial_position: projectile.initial_position,
         projectile_initial_velocity: projectile.initial_velocity,
         projectile_detonation_position: projectile.detonation_position,
+        projectile_effect_position: projectile.effect_position,
+        projectile_effect_tick: projectile.effect_tick,
+        projectile_effect_source: projectile.effect_source,
+        projectile_effect_confidence: projectile.effect_confidence,
         first_weapon_def_index: first_weapon_def_index(&rec),
         preload_weapon_def_indices: preload_weapon_def_indices(&player_rows, &rec),
         loadout: replay_loadout(&player_rows[0]),
+        timing,
         source_context: NadeSourceContext {
             source_tick_rate: parsed.tick_rate,
             rows: player_rows.len(),
@@ -445,12 +491,7 @@ fn classify_phase(
     let Some((min_tick, max_tick)) = round_bounds.get(&round).copied() else {
         return NadePhase::Combat;
     };
-    let planted_tick = parsed
-        .bomb_planted_ticks
-        .iter()
-        .copied()
-        .filter(|plant_tick| *plant_tick >= min_tick && *plant_tick <= max_tick)
-        .min();
+    let planted_tick = bomb_planted_tick_for_round(parsed, min_tick, max_tick);
     match planted_tick {
         Some(plant_tick) if tick >= plant_tick => NadePhase::Retake,
         _ if is_opening_throw(round, tick, parsed, min_tick, max_tick, opening_seconds) => {
@@ -471,23 +512,106 @@ fn is_opening_throw(
     if opening_seconds <= 0.0 || !opening_seconds.is_finite() {
         return false;
     }
-    let live_start = parsed
+    let live_start = round_live_tick_for_round(round, parsed, min_tick, max_tick);
+    let opening_ticks = seconds_to_ticks(opening_seconds, parsed.tick_rate);
+    tick < live_start.saturating_add(opening_ticks)
+}
+
+fn build_timing(
+    round: u32,
+    tick: i32,
+    parsed: &ParsedDemo,
+    round_bounds: &BTreeMap<u32, (i32, i32)>,
+    opening_seconds: f32,
+) -> NadeTiming {
+    let Some((min_tick, max_tick)) = round_bounds.get(&round).copied() else {
+        return NadeTiming {
+            round,
+            throw_tick: tick,
+            ..NadeTiming::default()
+        };
+    };
+    let freeze_end_tick = freeze_end_tick_for_round(parsed, min_tick, max_tick);
+    let round_live_tick = Some(round_live_tick_for_round(round, parsed, min_tick, max_tick));
+    let bomb_planted_tick = bomb_planted_tick_for_round(parsed, min_tick, max_tick);
+    let seconds_after_freeze_end =
+        freeze_end_tick.map(|anchor| ticks_to_seconds(tick - anchor, parsed.tick_rate));
+    let seconds_after_round_live =
+        round_live_tick.map(|anchor| ticks_to_seconds(tick - anchor, parsed.tick_rate));
+    let seconds_after_bomb_planted =
+        bomb_planted_tick.map(|anchor| ticks_to_seconds(tick - anchor, parsed.tick_rate));
+    let time_bucket = classify_time_bucket(
+        tick,
+        opening_seconds,
+        bomb_planted_tick,
+        seconds_after_round_live,
+    );
+
+    NadeTiming {
+        round,
+        throw_tick: tick,
+        freeze_end_tick,
+        round_live_tick,
+        bomb_planted_tick,
+        seconds_after_freeze_end,
+        seconds_after_round_live,
+        seconds_after_bomb_planted,
+        time_bucket,
+    }
+}
+
+fn classify_time_bucket(
+    tick: i32,
+    opening_seconds: f32,
+    bomb_planted_tick: Option<i32>,
+    seconds_after_round_live: Option<f32>,
+) -> NadeTimeBucket {
+    if bomb_planted_tick.is_some_and(|plant_tick| tick >= plant_tick) {
+        return NadeTimeBucket::Retake;
+    }
+    let Some(seconds_after_round_live) = seconds_after_round_live else {
+        return NadeTimeBucket::Unknown;
+    };
+    if seconds_after_round_live <= 5.0 {
+        NadeTimeBucket::SpawnExec
+    } else if opening_seconds.is_finite()
+        && opening_seconds > 0.0
+        && seconds_after_round_live <= opening_seconds
+    {
+        NadeTimeBucket::Opening
+    } else {
+        NadeTimeBucket::Midround
+    }
+}
+
+fn freeze_end_tick_for_round(parsed: &ParsedDemo, min_tick: i32, max_tick: i32) -> Option<i32> {
+    parsed
         .round_freeze_end_ticks
         .iter()
         .copied()
         .filter(|freeze_end_tick| *freeze_end_tick >= min_tick && *freeze_end_tick <= max_tick)
         .min()
-        .unwrap_or_else(|| {
-            parsed
-                .rows
-                .iter()
-                .filter(|row| row.round == round && row.round_in_progress)
-                .map(|row| row.tick)
-                .min()
-                .unwrap_or(min_tick)
-        });
-    let opening_ticks = seconds_to_ticks(opening_seconds, parsed.tick_rate);
-    tick < live_start.saturating_add(opening_ticks)
+}
+
+fn round_live_tick_for_round(round: u32, parsed: &ParsedDemo, min_tick: i32, max_tick: i32) -> i32 {
+    freeze_end_tick_for_round(parsed, min_tick, max_tick).unwrap_or_else(|| {
+        parsed
+            .rows
+            .iter()
+            .filter(|row| row.round == round && row.round_in_progress)
+            .map(|row| row.tick)
+            .min()
+            .unwrap_or(min_tick)
+    })
+}
+
+fn bomb_planted_tick_for_round(parsed: &ParsedDemo, min_tick: i32, max_tick: i32) -> Option<i32> {
+    parsed
+        .bomb_planted_ticks
+        .iter()
+        .copied()
+        .filter(|plant_tick| *plant_tick >= min_tick && *plant_tick <= max_tick)
+        .min()
 }
 
 fn find_release_row<'a>(
@@ -535,6 +659,13 @@ fn seconds_to_ticks(seconds: f32, tick_rate: f32) -> i32 {
         return 0;
     }
     (seconds * tick_rate).round().max(0.0) as i32
+}
+
+fn ticks_to_seconds(ticks: i32, tick_rate: f32) -> f32 {
+    if !tick_rate.is_finite() || tick_rate <= 0.0 {
+        return 0.0;
+    }
+    ticks as f32 / tick_rate
 }
 
 fn clip_id(
@@ -650,6 +781,19 @@ mod tests {
         assert_eq!(clip.release_tick_index, 64);
         assert_eq!(clip.side, "t");
         assert!(clip.path.starts_with("nades/t/opening/smoke/"));
+        assert_eq!(clip.timing.round, 1);
+        assert_eq!(clip.timing.throw_tick, 164);
+        assert_eq!(clip.timing.freeze_end_tick, None);
+        assert_eq!(clip.timing.round_live_tick, Some(100));
+        assert_eq!(clip.timing.time_bucket, NadeTimeBucket::SpawnExec);
+        assert_option_f32_eq(clip.timing.seconds_after_round_live, 1.0);
+        assert_eq!(clip.projectile_effect_position, [400.0, 500.0, 600.0]);
+        assert_eq!(clip.projectile_effect_tick, Some(228));
+        assert_eq!(
+            clip.projectile_effect_source,
+            ProjectileEffectSource::SmokeDetonationProp
+        );
+        assert_eq!(clip.projectile_effect_confidence, 0.9);
 
         let rec = read_rec_file(&report.root.join(&clip.path)).unwrap();
         assert_eq!(rec.projectiles.len(), 1);
@@ -670,9 +814,28 @@ mod tests {
         let report = export_nade_clips(&parsed, &test_options(temp.path())).unwrap();
 
         assert_eq!(report.manifest.clips[0].phase, NadePhase::Combat);
+        assert_eq!(
+            report.manifest.clips[0].timing.time_bucket,
+            NadeTimeBucket::Midround
+        );
         assert!(report.manifest.clips[0]
             .path
             .starts_with("nades/t/combat/smoke/"));
+    }
+
+    #[test]
+    fn timing_uses_freeze_end_event_when_available() {
+        let mut parsed = sample_demo(vec![sample_projectile(164, [10.0, 20.0, 30.0])]);
+        parsed.round_freeze_end_ticks = vec![132];
+        let temp = tempfile::tempdir().unwrap();
+        let report = export_nade_clips(&parsed, &test_options(temp.path())).unwrap();
+        let timing = &report.manifest.clips[0].timing;
+
+        assert_eq!(timing.freeze_end_tick, Some(132));
+        assert_eq!(timing.round_live_tick, Some(132));
+        assert_option_f32_eq(timing.seconds_after_freeze_end, 0.5);
+        assert_option_f32_eq(timing.seconds_after_round_live, 0.5);
+        assert_eq!(timing.time_bucket, NadeTimeBucket::SpawnExec);
     }
 
     #[test]
@@ -683,6 +846,15 @@ mod tests {
         let report = export_nade_clips(&parsed, &test_options(temp.path())).unwrap();
 
         assert_eq!(report.manifest.clips[0].phase, NadePhase::Retake);
+        assert_eq!(
+            report.manifest.clips[0].timing.time_bucket,
+            NadeTimeBucket::Retake
+        );
+        assert_eq!(report.manifest.clips[0].timing.bomb_planted_tick, Some(200));
+        assert_option_f32_eq(
+            report.manifest.clips[0].timing.seconds_after_bomb_planted,
+            10.0 / 64.0,
+        );
         assert!(report.manifest.clips[0]
             .path
             .starts_with("nades/t/retake/smoke/"));
@@ -821,6 +993,18 @@ mod tests {
             initial_position: [100.0, 200.0, 300.0],
             initial_velocity: velocity,
             detonation_position: [400.0, 500.0, 600.0],
+            effect_position: [400.0, 500.0, 600.0],
+            effect_tick: Some(tick + 64),
+            effect_source: ProjectileEffectSource::SmokeDetonationProp,
+            effect_confidence: 0.9,
         }
+    }
+
+    fn assert_option_f32_eq(actual: Option<f32>, expected: f32) {
+        let actual = actual.expect("expected timing value");
+        assert!(
+            (actual - expected).abs() < 0.0001,
+            "actual={actual} expected={expected}"
+        );
     }
 }

@@ -1,9 +1,11 @@
 using CounterStrikeSharp.API;
 using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Core.Attributes.Registration;
+using CounterStrikeSharp.API.Core.Capabilities;
 using CounterStrikeSharp.API.Modules.Commands;
 using CounterStrikeSharp.API.Modules.Memory;
 using CounterStrikeSharp.API.Modules.Utils;
+using DemoTracerApi;
 using System.Globalization;
 using System.IO.Compression;
 using System.IO.MemoryMappedFiles;
@@ -20,11 +22,23 @@ public sealed class DemoTracerPlugin : BasePlugin
     public override string ModuleAuthor => "unicbm";
     public override string ModuleDescription => "Trace CS2 demos into bot-executable route replays.";
 
+    public DemoTracerPlugin()
+    {
+        _apiFacade = new DemoTracerApiFacade(this);
+    }
+
     private static readonly byte[] RecMagic =
     [
         (byte)'C', (byte)'S', (byte)'D', (byte)'T',
         (byte)'R', (byte)'R', (byte)'E', (byte)'C'
     ];
+    private static readonly PluginCapability<IDemoTracerApi> ApiCapability = new("demotracer:api");
+    private static readonly JsonSerializerOptions ManifestJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
+    private static readonly object NadeManifestCacheLock = new();
+    private static readonly Dictionary<string, CachedNadeManifest> NadeManifestCache = new(StringComparer.OrdinalIgnoreCase);
     private const float HandoffGraceSeconds = 0.25f;
     private const float BulletHandoffMatchSeconds = 0.25f;
     private const int BulletHandoffMinDamage = 10;
@@ -122,11 +136,13 @@ public sealed class DemoTracerPlugin : BasePlugin
     private readonly HashSet<int> _rebuiltInventorySlots = new();
     private readonly HashSet<int> _loadoutSyncedSlots = new();
     private readonly HashSet<int> _lastPlayingSlots = new();
+    private readonly HashSet<int> _quietReplaySlots = new();
     private readonly Dictionary<int, float> _replayStartedAt = new();
     private readonly Dictionary<int, PendingBulletHit> _pendingBulletHits = new();
     private readonly Dictionary<int, PendingBulletDamage> _pendingBulletDamages = new();
     private readonly Dictionary<uint, UtilityProjectileTrace> _utilityTraceProjectiles = new();
     private readonly BotHiderMemoryProbe _botHiderProbe = new();
+    private readonly DemoTracerApiFacade _apiFacade;
     private StreamWriter? _utilityTraceWriter;
     private string _utilityTracePath = string.Empty;
     private bool _utilityTraceEnabled;
@@ -162,6 +178,7 @@ public sealed class DemoTracerPlugin : BasePlugin
         RegisterListener<Listeners.OnTick>(OnTick);
         RegisterListener<Listeners.OnEntitySpawned>(OnEntitySpawned);
         RegisterListener<Listeners.OnEntityDeleted>(OnEntityDeleted);
+        Capabilities.RegisterPluginCapability(ApiCapability, () => (IDemoTracerApi)_apiFacade);
         ConfigureNativeSafetyOffsets();
         Server.PrintToConsole("dtr: CSS control plugin loaded");
     }
@@ -601,7 +618,9 @@ public sealed class DemoTracerPlugin : BasePlugin
 
         var ok = BotControllerNative.StartReplay(slot, loop);
         if (ok)
+        {
             MarkReplayStarted(slot);
+        }
         var state = ok ? default : BotControllerNative.GetReplayState(slot);
         command.ReplyToCommand(ok
             ? $"dtr: playing slot {slot}, loop={loop}"
@@ -649,6 +668,7 @@ public sealed class DemoTracerPlugin : BasePlugin
         _queuedNadeStartTokens.Clear();
         _rebuiltInventorySlots.Clear();
         _lastPlayingSlots.Clear();
+        _quietReplaySlots.Clear();
         _replayStartedAt.Clear();
         _pendingBulletHits.Clear();
         _pendingBulletDamages.Clear();
@@ -1471,7 +1491,7 @@ public sealed class DemoTracerPlugin : BasePlugin
         var fullMessage =
             $"{clipSummary} active_def={activeDef} playing={state.Playing} cursor={state.Cursor}/{state.Total} {message}";
 
-        if (IsNadeCycleSlot(slot))
+        if (IsNadeCycleSlot(slot) || IsQuietReplaySlot(slot))
             return;
 
         Server.PrintToConsole($"dtr: nade_trace {kind} slot={slot} {fullMessage}");
@@ -1973,19 +1993,17 @@ public sealed class DemoTracerPlugin : BasePlugin
         return false;
     }
 
-    private LoadRoundResult RunNadeClip(string manifestPath, string clipId, int slot, bool loop)
+    private LoadRoundResult RunNadeClip(string manifestPath, string clipId, int slot, bool loop, bool quiet = false)
     {
         try
         {
-            if (!TryReadNadeManifest(manifestPath, out var manifest, out var readError))
+            if (!TryFindNadeClip(manifestPath, clipId, out _, out var clip, out var readError))
                 return LoadRoundResult.Fail($"dtr: failed to read nade manifest: {readError}");
 
-            var clip = manifest.Clips.FirstOrDefault(item =>
-                string.Equals(item.ClipId, clipId, StringComparison.OrdinalIgnoreCase));
             if (clip == null)
                 return LoadRoundResult.Fail($"dtr: nade clip not found: {clipId}");
 
-            return RunNadeClip(manifestPath, clip, slot, loop);
+            return RunNadeClip(manifestPath, clip, slot, loop, quiet);
         }
         catch (Exception ex)
         {
@@ -1993,7 +2011,7 @@ public sealed class DemoTracerPlugin : BasePlugin
         }
     }
 
-    private LoadRoundResult RunNadeClip(string manifestPath, NadeClip clip, int slot, bool loop)
+    private LoadRoundResult RunNadeClip(string manifestPath, NadeClip clip, int slot, bool loop, bool quiet = false)
     {
         try
         {
@@ -2010,6 +2028,9 @@ public sealed class DemoTracerPlugin : BasePlugin
                     $"dtr: nade clip {clip.ClipId} has no valid utility weapon def (manifest={clip.WeaponDefIndex}, first={clip.FirstWeaponDefIndex})");
             }
 
+            if (quiet)
+                _quietReplaySlots.Add(slot);
+
             TraceNadeStage(
                 "nade_command",
                 slot,
@@ -2024,11 +2045,16 @@ public sealed class DemoTracerPlugin : BasePlugin
                 BotControllerNative.UnloadReplay(slot);
                 _loadedSlots.Remove(slot);
                 ForgetLoadedReplayMetadata(slot);
+                if (quiet)
+                    _quietReplaySlots.Add(slot);
             }
 
             if (!BotControllerNative.LoadReplayFromFile(slot, recPath))
+            {
+                _quietReplaySlots.Remove(slot);
                 return LoadRoundResult.Fail(
                     $"dtr: failed to load nade clip {clip.ClipId} on slot {slot}: {BotControllerNative.LastLoadError}");
+            }
 
             RememberLoadedSlot(slot);
             TrackLoadedReplay(
@@ -2045,6 +2071,8 @@ public sealed class DemoTracerPlugin : BasePlugin
             if (!PrepareNadeClipWeapon(slot, utilityWeaponDefIndex, out var weaponError))
             {
                 TraceNadeStage("nade_prepare_failed", slot, clip, weaponError);
+                if (quiet)
+                    _quietReplaySlots.Remove(slot);
                 return LoadRoundResult.Fail($"dtr: failed to prepare nade weapon: {weaponError}");
             }
             TraceNadeStage("nade_prepare_ok", slot, clip, $"initial prepare completed target_def={utilityWeaponDefIndex}");
@@ -2167,8 +2195,11 @@ public sealed class DemoTracerPlugin : BasePlugin
         _queuedNadeStartTokens.Remove(slot);
         MarkReplayStarted(slot);
         TraceNadeStage("nade_start_ok", slot, clip, $"loop={loop}");
-        Server.PrintToConsole(
-            $"dtr: playing nade {clip.ClipId} slot={slot} {clip.Side}/{clip.Phase}/{clip.Kind} round={clip.Round} player={clip.PlayerName} loop={loop}");
+        if (!IsQuietReplaySlot(slot))
+        {
+            Server.PrintToConsole(
+                $"dtr: playing nade {clip.ClipId} slot={slot} {clip.Side}/{clip.Phase}/{clip.Kind} round={clip.Round} player={clip.PlayerName} loop={loop}");
+        }
     }
 
     private bool IsQueuedNadeStartCurrent(int slot, int token)
@@ -2179,14 +2210,17 @@ public sealed class DemoTracerPlugin : BasePlugin
         if (!IsQueuedNadeStartCurrent(slot, token))
             return;
 
+        var quiet = IsQuietReplaySlot(slot);
         _queuedNadeStartTokens.Remove(slot);
         BotControllerNative.StopReplay(slot);
         ReleaseReplaySlot(slot, "nade_start_failed");
         BotControllerNative.UnloadReplay(slot);
         _loadedSlots.Remove(slot);
         ForgetLoadedReplayMetadata(slot);
-        TraceNadeStage("nade_start_failed", slot, new NadeClip { ClipId = clipId }, reason);
-        Server.PrintToConsole($"dtr: failed to play nade {clipId} on slot {slot}: {reason}");
+        if (!quiet)
+            TraceNadeStage("nade_start_failed", slot, new NadeClip { ClipId = clipId }, reason);
+        if (!quiet)
+            Server.PrintToConsole($"dtr: failed to play nade {clipId} on slot {slot}: {reason}");
         if (IsNadeCycleSlot(slot))
             QueueNextNadeCycleClip("nade_start_failed");
     }
@@ -2510,11 +2544,15 @@ public sealed class DemoTracerPlugin : BasePlugin
             {
                 if (replay.UtilityOnly)
                 {
-                    PrepareNadeClipWeapon(slot, replay.UtilityWeaponDefIndex, out _);
+                    if (_weaponAlignEnabled)
+                        PrepareNadeClipWeapon(slot, replay.UtilityWeaponDefIndex, out _);
                     continue;
                 }
-                ApplyReplayLoadoutForSlot(slot, replay);
-                PreloadReplayWeaponsForSlot(slot, replay);
+                if (_weaponAlignEnabled)
+                {
+                    ApplyReplayLoadoutForSlot(slot, replay);
+                    PreloadReplayWeaponsForSlot(slot, replay);
+                }
             }
         }
     }
@@ -2564,6 +2602,7 @@ public sealed class DemoTracerPlugin : BasePlugin
         _rebuiltInventorySlots.Clear();
         _loadoutSyncedSlots.Clear();
         _lastPlayingSlots.Clear();
+        _quietReplaySlots.Clear();
         _replayStartedAt.Clear();
         _pendingBulletHits.Clear();
         _pendingBulletDamages.Clear();
@@ -2599,7 +2638,9 @@ public sealed class DemoTracerPlugin : BasePlugin
         BotControllerNative.UnlockReplayControl(slot);
         BotControllerNative.UnlockWeaponSlot(slot);
         ResetBotBrainForHandoff(slot);
-        Server.PrintToConsole($"dtr: released slot={slot} reason={reason}");
+        var quiet = _quietReplaySlots.Remove(slot);
+        if (!quiet)
+            Server.PrintToConsole($"dtr: released slot={slot} reason={reason}");
     }
 
     private bool HasActiveReplaySlots()
@@ -2770,6 +2811,17 @@ public sealed class DemoTracerPlugin : BasePlugin
     private static bool IsReplaySlotPlaying(int slot)
     {
         return slot >= 0 && BotControllerNative.GetReplayState(slot).Playing;
+    }
+
+    private bool IsQuietReplaySlot(int slot)
+        => _quietReplaySlots.Contains(slot);
+
+    private bool IsReplaySlotBusy(int slot)
+    {
+        if (slot < 0)
+            return false;
+        var state = BotControllerNative.GetReplayState(slot);
+        return state.Playing || _queuedNadeStartTokens.ContainsKey(slot);
     }
 
     private bool ReplayHasPassedHandoffGrace(int slot)
@@ -2975,7 +3027,8 @@ public sealed class DemoTracerPlugin : BasePlugin
         BotControllerNative.SwitchBotWeapon(slot, normalized);
         _lastEnsuredWeaponDef[slot] = normalized;
         _lastReplayWeaponDef[slot] = normalized;
-        Server.PrintToConsole($"dtr: prepared nade slot={slot} def={normalized} item={className}");
+        if (!IsQuietReplaySlot(slot))
+            Server.PrintToConsole($"dtr: prepared nade slot={slot} def={normalized} item={className}");
         return true;
     }
 
@@ -4076,13 +4129,7 @@ public sealed class DemoTracerPlugin : BasePlugin
         error = string.Empty;
         try
         {
-            manifest = JsonSerializer.Deserialize<NadeManifest>(
-                           ReadMaybeBrotliText(manifestPath),
-                           new JsonSerializerOptions
-                           {
-                               PropertyNameCaseInsensitive = true
-                           })
-                       ?? throw new InvalidOperationException("nade manifest JSON is empty");
+            manifest = ReadNadeManifestCached(manifestPath).Manifest;
             return true;
         }
         catch (FileNotFoundException)
@@ -4094,6 +4141,68 @@ public sealed class DemoTracerPlugin : BasePlugin
         {
             error = ex.Message;
             return false;
+        }
+    }
+
+    private static bool TryFindNadeClip(
+        string manifestPath,
+        string clipId,
+        out NadeManifest manifest,
+        out NadeClip? clip,
+        out string error)
+    {
+        manifest = new NadeManifest();
+        clip = null;
+        error = string.Empty;
+        try
+        {
+            var cached = ReadNadeManifestCached(manifestPath);
+            manifest = cached.Manifest;
+            cached.ClipsById.TryGetValue(clipId, out clip);
+            return true;
+        }
+        catch (FileNotFoundException)
+        {
+            error = $"file not found: {manifestPath}";
+            return false;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    private static CachedNadeManifest ReadNadeManifestCached(string manifestPath)
+    {
+        var fullPath = Path.GetFullPath(manifestPath);
+        var file = new FileInfo(fullPath);
+        if (!file.Exists)
+            throw new FileNotFoundException("nade manifest file not found", manifestPath);
+
+        lock (NadeManifestCacheLock)
+        {
+            if (NadeManifestCache.TryGetValue(fullPath, out var cached) &&
+                cached.LastWriteUtc == file.LastWriteTimeUtc &&
+                cached.Length == file.Length)
+            {
+                return cached;
+            }
+
+            var manifest = JsonSerializer.Deserialize<NadeManifest>(
+                               ReadMaybeBrotliText(fullPath),
+                               ManifestJsonOptions)
+                           ?? throw new InvalidOperationException("nade manifest JSON is empty");
+            var clipsById = new Dictionary<string, NadeClip>(manifest.Clips.Count, StringComparer.OrdinalIgnoreCase);
+            foreach (var clip in manifest.Clips)
+            {
+                if (!string.IsNullOrWhiteSpace(clip.ClipId))
+                    clipsById[clip.ClipId] = clip;
+            }
+
+            cached = new CachedNadeManifest(manifest, clipsById, file.LastWriteTimeUtc, file.Length);
+            NadeManifestCache[fullPath] = cached;
+            return cached;
         }
     }
 
@@ -4258,6 +4367,151 @@ public sealed class DemoTracerPlugin : BasePlugin
     {
         public static LoadRoundResult Success(string message) => new(true, message);
         public static LoadRoundResult Fail(string message) => new(false, message);
+    }
+
+    private sealed class DemoTracerApiFacade : IDemoTracerApi
+    {
+        private readonly DemoTracerPlugin _plugin;
+
+        public DemoTracerApiFacade(DemoTracerPlugin plugin)
+        {
+            _plugin = plugin;
+        }
+
+        public int ApiVersion => 2;
+
+        public bool TryLoadNadeManifest(
+            string manifestPath,
+            out DemoTracerNadeManifest manifest,
+            out string error)
+        {
+            manifest = new DemoTracerNadeManifest();
+            if (!TryReadNadeManifest(manifestPath, out var internalManifest, out error))
+                return false;
+
+            manifest = ToApiManifest(internalManifest);
+            return true;
+        }
+
+        public bool TryRunNadeClip(
+            string manifestPath,
+            string clipId,
+            int slot,
+            bool loop,
+            out DemoTracerNadeRunResult result)
+        {
+            var run = _plugin.RunNadeClip(manifestPath, clipId, slot, loop, quiet: true);
+            result = new DemoTracerNadeRunResult
+            {
+                Queued = run.Ok,
+                Slot = slot,
+                ClipId = clipId,
+                Message = run.Message
+            };
+            return run.Ok;
+        }
+
+        public bool TryRunNadeClipDirect(
+            string clipBasePath,
+            DemoTracerNadeClip clip,
+            int slot,
+            bool loop,
+            out DemoTracerNadeRunResult result)
+        {
+            var internalClip = FromApiClip(clip);
+            var baseManifestPath = Path.Combine(
+                string.IsNullOrWhiteSpace(clipBasePath) ? "." : clipBasePath,
+                "__direct_nade_clip__.json");
+            var run = _plugin.RunNadeClip(baseManifestPath, internalClip, slot, loop, quiet: true);
+            result = new DemoTracerNadeRunResult
+            {
+                Queued = run.Ok,
+                Slot = slot,
+                ClipId = clip.ClipId,
+                DurationSeconds = clip.DurationSeconds,
+                Message = run.Message
+            };
+            return run.Ok;
+        }
+
+        public bool IsSlotBusy(int slot)
+            => _plugin.IsReplaySlotBusy(slot);
+
+        private static DemoTracerNadeManifest ToApiManifest(NadeManifest manifest)
+        {
+            var clips = new List<DemoTracerNadeClip>(manifest.Clips.Count);
+            foreach (var clip in manifest.Clips)
+                clips.Add(ToApiClip(clip));
+
+            return new DemoTracerNadeManifest
+            {
+                FormatVersion = manifest.FormatVersion,
+                Map = manifest.Map,
+                CoordinateMode = manifest.CoordinateMode,
+                TickRate = manifest.TickRate,
+                Clips = clips
+            };
+        }
+
+        private static DemoTracerNadeClip ToApiClip(NadeClip clip)
+            => new()
+            {
+                ClipId = clip.ClipId,
+                Path = clip.Path,
+                Kind = clip.Kind,
+                GrenadeType = clip.GrenadeType,
+                WeaponDefIndex = clip.WeaponDefIndex,
+                FirstWeaponDefIndex = clip.FirstWeaponDefIndex,
+                Phase = clip.Phase,
+                Round = clip.Round,
+                Side = clip.Side,
+                SteamId = clip.SteamId,
+                PlayerName = clip.PlayerName,
+                ThrowTick = clip.ThrowTick,
+                StartOrigin = ToApiVector(clip.StartOrigin),
+                StartYaw = clip.StartYaw,
+                ProjectileInitialVelocity = ToApiVector(clip.ProjectileInitialVelocity),
+                ProjectileDetonationPosition = ToApiVector(clip.ProjectileDetonationPosition),
+                DurationSeconds = clip.DurationSeconds
+            };
+
+        private static NadeClip FromApiClip(DemoTracerNadeClip clip)
+            => new()
+            {
+                ClipId = clip.ClipId,
+                Path = clip.Path,
+                Kind = clip.Kind,
+                GrenadeType = clip.GrenadeType,
+                WeaponDefIndex = clip.WeaponDefIndex,
+                FirstWeaponDefIndex = clip.FirstWeaponDefIndex != 0 ? clip.FirstWeaponDefIndex : clip.WeaponDefIndex,
+                Phase = clip.Phase,
+                Round = clip.Round,
+                Side = clip.Side,
+                SteamId = clip.SteamId,
+                PlayerName = clip.PlayerName,
+                ThrowTick = clip.ThrowTick,
+                StartOrigin = FromApiVector(clip.StartOrigin),
+                StartYaw = clip.StartYaw,
+                ProjectileInitialVelocity = FromApiVector(clip.ProjectileInitialVelocity),
+                ProjectileDetonationPosition = FromApiVector(clip.ProjectileDetonationPosition),
+                DurationSeconds = clip.DurationSeconds,
+                PreloadWeaponDefIndices = clip.WeaponDefIndex != 0 ? [clip.WeaponDefIndex] : null
+            };
+
+        private static DemoTracerVector3 ToApiVector(float[]? values)
+        {
+            if (values == null || values.Length < 3)
+                return new DemoTracerVector3();
+            return new DemoTracerVector3
+            {
+                X = values[0],
+                Y = values[1],
+                Z = values[2]
+            };
+        }
+
+        private static float[] FromApiVector(DemoTracerVector3? value)
+            => value == null ? [0f, 0f, 0f] : [value.X, value.Y, value.Z];
     }
 
     private readonly record struct LoadedReplay(
@@ -4463,9 +4717,28 @@ public sealed class DemoTracerPlugin : BasePlugin
         [JsonPropertyName("map")]
         public string Map { get; set; } = string.Empty;
 
+        [JsonPropertyName("coordinate_mode")]
+        public string CoordinateMode { get; set; } = string.Empty;
+
+        [JsonPropertyName("tickrate")]
+        public float TickRate { get; set; }
+
+        [JsonPropertyName("tick_rate")]
+        public float TickRateAlt
+        {
+            get => TickRate;
+            set => TickRate = value;
+        }
+
         [JsonPropertyName("clips")]
         public List<NadeClip> Clips { get; set; } = new();
     }
+
+    private sealed record CachedNadeManifest(
+        NadeManifest Manifest,
+        Dictionary<string, NadeClip> ClipsById,
+        DateTime LastWriteUtc,
+        long Length);
 
     private sealed class NadeClip
     {
@@ -4492,6 +4765,21 @@ public sealed class DemoTracerPlugin : BasePlugin
 
         [JsonPropertyName("side")]
         public string Side { get; set; } = string.Empty;
+
+        [JsonPropertyName("start_origin")]
+        public float[]? StartOrigin { get; set; }
+
+        [JsonPropertyName("start_yaw")]
+        public float StartYaw { get; set; }
+
+        [JsonPropertyName("projectile_initial_velocity")]
+        public float[]? ProjectileInitialVelocity { get; set; }
+
+        [JsonPropertyName("projectile_detonation_position")]
+        public float[]? ProjectileDetonationPosition { get; set; }
+
+        [JsonPropertyName("duration_seconds")]
+        public float DurationSeconds { get; set; }
 
         [JsonPropertyName("steam_id")]
         public ulong SteamId { get; set; }
@@ -4627,4 +4915,5 @@ public sealed class DemoTracerPlugin : BasePlugin
         [JsonPropertyName("has_defuser")]
         public bool HasDefuser { get; set; }
     }
+
 }

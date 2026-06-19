@@ -110,6 +110,7 @@ pub struct NadeLibraryExportRequest {
     pub recursive: bool,
     pub jobs: usize,
     pub max_demos: Option<usize>,
+    pub map_filter: Option<String>,
     pub reuse_roots: Vec<PathBuf>,
     pub aggregate_only: bool,
     pub side: Side,
@@ -126,6 +127,7 @@ impl NadeLibraryExportRequest {
             recursive: false,
             jobs: 1,
             max_demos: None,
+            map_filter: None,
             reuse_roots: Vec::new(),
             aggregate_only: false,
             side: Side::Both,
@@ -142,6 +144,7 @@ impl NadeLibraryExportRequest {
             recursive: self.recursive,
             jobs: self.jobs,
             max_demos: self.max_demos,
+            map_filter: self.map_filter.clone(),
             reuse_roots: self.reuse_roots.clone(),
             aggregate_only: self.aggregate_only,
             side: self.side,
@@ -227,7 +230,9 @@ fn read_maybe_brotli(path: &Path) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ParsedPlayerTick, ParsedProjectile, ProjectileKind, ReplayLoadout};
+    use crate::model::{
+        ParsedPlayerTick, ParsedProjectile, ProjectileEffectSource, ProjectileKind, ReplayLoadout,
+    };
     use crate::nade_export::NadePhase;
     use crate::nade_library::{
         NadeLibraryDedupeManifest, NadeLibraryMapSummary, LIBRARY_MANIFEST_FORMAT_VERSION,
@@ -438,6 +443,10 @@ mod tests {
             initial_position: [100.0, 200.0, 300.0],
             initial_velocity: velocity,
             detonation_position: [400.0, 500.0, 600.0],
+            effect_position: [400.0, 500.0, 600.0],
+            effect_tick: Some(tick + 64),
+            effect_source: ProjectileEffectSource::SmokeDetonationProp,
+            effect_confidence: 0.9,
         }
     }
 
@@ -462,9 +471,14 @@ mod tests {
             projectile_initial_position: [0.0, 0.0, 0.0],
             projectile_initial_velocity: [1.0, 0.0, 0.0],
             projectile_detonation_position: [0.0, 0.0, 0.0],
+            projectile_effect_position: [0.0, 0.0, 0.0],
+            projectile_effect_tick: None,
+            projectile_effect_source: ProjectileEffectSource::Unknown,
+            projectile_effect_confidence: 0.0,
             first_weapon_def_index: 45,
             preload_weapon_def_indices: vec![45],
             loadout: ReplayLoadout::default(),
+            timing: crate::nade_export::NadeTiming::default(),
             source_context: crate::nade_export::NadeSourceContext {
                 source_tick_rate: 64.0,
                 rows: 2,

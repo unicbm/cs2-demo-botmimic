@@ -1,5 +1,5 @@
 use crate::demo_id::{demo_id, sha256_hex};
-use crate::demo_reader::read_demo_bytes;
+use crate::demo_reader::{read_demo_bytes, read_demo_header_map_bytes};
 use crate::model::{Side, SubtickMode, DEMOTRACER_ABI, DTR_FORMAT_VERSION};
 use crate::nade_export::{
     export_nade_clips, NadeClip, NadeExportOptions, NadeManifest, NADE_MANIFEST_FORMAT_VERSION,
@@ -25,6 +25,7 @@ pub struct BuildNadeLibraryOptions {
     pub recursive: bool,
     pub jobs: usize,
     pub max_demos: Option<usize>,
+    pub map_filter: Option<String>,
     pub reuse_roots: Vec<PathBuf>,
     pub aggregate_only: bool,
     pub side: Side,
@@ -46,6 +47,7 @@ pub struct BuildNadeLibraryReport {
     pub demos_converted: usize,
     pub demos_reused: usize,
     pub demos_skipped_existing: usize,
+    pub demos_filtered_map: usize,
     pub failures: usize,
     pub maps_written: usize,
     pub source_clips: usize,
@@ -134,6 +136,11 @@ enum DemoTaskResult {
         map: String,
         clips: usize,
     },
+    SkippedMap {
+        demo_id: String,
+        map: String,
+        elapsed: Duration,
+    },
     Failed {
         path: PathBuf,
         error: String,
@@ -190,6 +197,11 @@ pub enum NadeLibraryDemoStatus {
         map: String,
         clips: usize,
     },
+    SkippedMap {
+        demo_id: String,
+        map: String,
+        elapsed_seconds: f32,
+    },
     Failed {
         path: PathBuf,
         error: String,
@@ -228,9 +240,15 @@ fn build_nade_library_inner(
 
     if options.aggregate_only {
         let dedupe_options = DedupeOptions::from_build_options(options);
-        let (maps_written, source_clips, clips) =
-            rebuild_map_manifests(&options.output_dir, &dedupe_options)?;
-        let demo_count = scan_existing_exports(&demos_root)?.len();
+        let (maps_written, source_clips, clips) = rebuild_map_manifests(
+            &options.output_dir,
+            &dedupe_options,
+            options.map_filter.as_deref(),
+        )?;
+        let demo_count = scan_existing_exports(&demos_root)?
+            .values()
+            .filter(|export| map_matches(options.map_filter.as_deref(), &export.manifest.map))
+            .count();
         emit_progress(
             &mut progress,
             NadeLibraryProgress::AggregateOnly {
@@ -247,6 +265,7 @@ fn build_nade_library_inner(
             demos_converted: 0,
             demos_reused: 0,
             demos_skipped_existing: demo_count,
+            demos_filtered_map: 0,
             failures: 0,
             maps_written,
             source_clips,
@@ -311,6 +330,7 @@ fn build_nade_library_inner(
     let mut demos_converted = 0_usize;
     let mut demos_reused = 0_usize;
     let mut demos_skipped_existing = 0_usize;
+    let mut demos_filtered_map = 0_usize;
     let mut failures = 0_usize;
     let mut clips_from_results = 0_usize;
 
@@ -329,6 +349,7 @@ fn build_nade_library_inner(
                 demos_skipped_existing += 1;
                 clips_from_results += clips;
             }
+            DemoTaskResult::SkippedMap { .. } => demos_filtered_map += 1,
             DemoTaskResult::Failed { .. } => failures += 1,
         }
         emit_progress(
@@ -343,8 +364,11 @@ fn build_nade_library_inner(
     }
 
     let dedupe_options = DedupeOptions::from_build_options(&options);
-    let (maps_written, source_clips, clips) =
-        rebuild_map_manifests(&options.output_dir, &dedupe_options)?;
+    let (maps_written, source_clips, clips) = rebuild_map_manifests(
+        &options.output_dir,
+        &dedupe_options,
+        options.map_filter.as_deref(),
+    )?;
     emit_progress(
         &mut progress,
         NadeLibraryProgress::Aggregated {
@@ -362,6 +386,7 @@ fn build_nade_library_inner(
         demos_converted,
         demos_reused,
         demos_skipped_existing,
+        demos_filtered_map,
         failures,
         maps_written,
         source_clips,
@@ -405,6 +430,13 @@ fn process_demo_task(
     let id = demo_id(stem, &demo_sha256);
 
     if let Some(existing) = existing_exports.get(&demo_sha256) {
+        if !map_matches(options.map_filter.as_deref(), &existing.manifest.map) {
+            return DemoTaskResult::SkippedMap {
+                demo_id: existing.manifest.demo_id.clone(),
+                map: existing.manifest.map.clone(),
+                elapsed: started.elapsed(),
+            };
+        }
         return DemoTaskResult::SkippedExisting {
             demo_id: existing.manifest.demo_id.clone(),
             map: existing.manifest.map.clone(),
@@ -413,6 +445,13 @@ fn process_demo_task(
     }
 
     if let Some(existing) = reuse_exports.get(&demo_sha256) {
+        if !map_matches(options.map_filter.as_deref(), &existing.manifest.map) {
+            return DemoTaskResult::SkippedMap {
+                demo_id: existing.manifest.demo_id.clone(),
+                map: existing.manifest.map.clone(),
+                elapsed: started.elapsed(),
+            };
+        }
         let target_root = demos_root.join(&existing.manifest.demo_id);
         if let Err(err) = copy_export_root(&existing.root, &target_root) {
             return DemoTaskResult::Failed {
@@ -429,21 +468,49 @@ fn process_demo_task(
         };
     }
 
-    match read_demo_bytes(&bytes, stem, &task.demo_path.display().to_string()).and_then(|parsed| {
-        export_nade_clips(
-            &parsed,
-            &NadeExportOptions {
-                output_dir: demos_root,
-                output_stem: Some(id),
-                side: options.side,
-                selected_rounds: None,
-                pre_roll_seconds: options.pre_roll_seconds,
-                post_roll_seconds: options.post_roll_seconds,
-                opening_seconds: options.opening_seconds,
-                subtick_mode: options.subtick_mode,
-            },
-        )
-    }) {
+    if let Some(filter) = options.map_filter.as_deref() {
+        if let Ok(Some(map)) = read_demo_header_map_bytes(&bytes) {
+            if !map_matches(Some(filter), &map) {
+                return DemoTaskResult::SkippedMap {
+                    demo_id: id,
+                    map,
+                    elapsed: started.elapsed(),
+                };
+            }
+        }
+    }
+
+    let parsed = match read_demo_bytes(&bytes, stem, &task.demo_path.display().to_string()) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            return DemoTaskResult::Failed {
+                path: task.demo_path,
+                error: err.to_string(),
+                elapsed: started.elapsed(),
+            }
+        }
+    };
+    if !map_matches(options.map_filter.as_deref(), &parsed.map) {
+        return DemoTaskResult::SkippedMap {
+            demo_id: id,
+            map: parsed.map,
+            elapsed: started.elapsed(),
+        };
+    }
+
+    match export_nade_clips(
+        &parsed,
+        &NadeExportOptions {
+            output_dir: demos_root,
+            output_stem: Some(id),
+            side: options.side,
+            selected_rounds: None,
+            pre_roll_seconds: options.pre_roll_seconds,
+            post_roll_seconds: options.post_roll_seconds,
+            opening_seconds: options.opening_seconds,
+            subtick_mode: options.subtick_mode,
+        },
+    ) {
         Ok(report) => DemoTaskResult::Converted {
             demo_id: report.manifest.demo_id,
             map: report.manifest.map,
@@ -462,6 +529,7 @@ fn process_demo_task(
 fn rebuild_map_manifests(
     root: &Path,
     dedupe_options: &DedupeOptions,
+    map_filter: Option<&str>,
 ) -> Result<(usize, usize, usize)> {
     let demos_root = root.join("demos");
     let map_root = root.join("maps");
@@ -470,6 +538,9 @@ fn rebuild_map_manifests(
     let exports = scan_existing_exports(&demos_root)?;
     let mut by_map: BTreeMap<String, Vec<NadeManifest>> = BTreeMap::new();
     for export in exports.into_values() {
+        if !map_matches(map_filter, &export.manifest.map) {
+            continue;
+        }
         by_map
             .entry(export.manifest.map.clone())
             .or_default()
@@ -586,6 +657,15 @@ impl NadeLibraryDemoStatus {
                 map: map.clone(),
                 clips: *clips,
             },
+            DemoTaskResult::SkippedMap {
+                demo_id,
+                map,
+                elapsed,
+            } => Self::SkippedMap {
+                demo_id: demo_id.clone(),
+                map: map.clone(),
+                elapsed_seconds: elapsed.as_secs_f32(),
+            },
             DemoTaskResult::Failed {
                 path,
                 error,
@@ -597,6 +677,10 @@ impl NadeLibraryDemoStatus {
             },
         }
     }
+}
+
+fn map_matches(map_filter: Option<&str>, map: &str) -> bool {
+    map_filter.is_none_or(|filter| filter.eq_ignore_ascii_case(map))
 }
 
 impl DedupeOptions {
@@ -814,6 +898,14 @@ pub fn print_nade_library_progress(event: &NadeLibraryProgress) {
                 } => println!(
                     "[{done}/{total}] {worker} existing map={map} demo={demo_id} clips={clips}"
                 ),
+                NadeLibraryDemoStatus::SkippedMap {
+                    demo_id,
+                    map,
+                    elapsed_seconds,
+                } => println!(
+                    "[{done}/{total}] {worker} skipped-map map={map} demo={demo_id} time={:.1}s",
+                    elapsed_seconds
+                ),
                 NadeLibraryDemoStatus::Failed {
                     path,
                     error,
@@ -909,7 +1001,7 @@ fn write_brotli_file(path: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{ProjectileKind, ReplayLoadout};
+    use crate::model::{ProjectileEffectSource, ProjectileKind, ReplayLoadout};
     use crate::nade_export::NadePhase;
 
     #[test]
@@ -949,6 +1041,34 @@ mod tests {
         assert_eq!(deduped.len(), 2);
     }
 
+    #[test]
+    fn rebuild_map_manifests_honors_map_filter() {
+        let temp = tempfile::tempdir().unwrap();
+        write_test_export(temp.path(), "mirage_demo", "sha_mirage", "de_mirage");
+        write_test_export(temp.path(), "inferno_demo", "sha_inferno", "de_inferno");
+        let options = DedupeOptions {
+            enabled: false,
+            origin_units: 48.0,
+            yaw_degrees: 8.0,
+            velocity_units: 120.0,
+        };
+
+        let (maps, source_clips, clips) =
+            rebuild_map_manifests(temp.path(), &options, Some("de_mirage")).unwrap();
+
+        assert_eq!(maps, 1);
+        assert_eq!(source_clips, 1);
+        assert_eq!(clips, 1);
+        assert!(temp
+            .path()
+            .join("maps/de_mirage/nade_manifest.json")
+            .exists());
+        assert!(!temp
+            .path()
+            .join("maps/de_inferno/nade_manifest.json")
+            .exists());
+    }
+
     fn test_clip(id: &str, origin: [f32; 3], yaw: f32, velocity: [f32; 3]) -> NadeClip {
         NadeClip {
             clip_id: id.to_string(),
@@ -970,9 +1090,14 @@ mod tests {
             projectile_initial_position: origin,
             projectile_initial_velocity: velocity,
             projectile_detonation_position: [0.0, 0.0, 0.0],
+            projectile_effect_position: [0.0, 0.0, 0.0],
+            projectile_effect_tick: None,
+            projectile_effect_source: ProjectileEffectSource::Unknown,
+            projectile_effect_confidence: 0.0,
             first_weapon_def_index: 45,
             preload_weapon_def_indices: vec![45],
             loadout: ReplayLoadout::default(),
+            timing: crate::nade_export::NadeTiming::default(),
             source_context: crate::nade_export::NadeSourceContext {
                 source_tick_rate: 64.0,
                 rows: 2,
@@ -981,5 +1106,36 @@ mod tests {
                 release_game_time: None,
             },
         }
+    }
+
+    fn write_test_export(root: &Path, demo_id: &str, sha: &str, map: &str) {
+        let export_root = root.join("demos").join(demo_id);
+        fs::create_dir_all(&export_root).unwrap();
+        let manifest = NadeManifest {
+            format_version: NADE_MANIFEST_FORMAT_VERSION,
+            demo_path: format!("{demo_id}.dem"),
+            demo_id: demo_id.to_string(),
+            demo_sha256: sha.to_string(),
+            map: map.to_string(),
+            tick_rate: 64.0,
+            abi: DEMOTRACER_ABI,
+            dtr_format_version: DTR_FORMAT_VERSION,
+            coordinate_mode: "map_absolute".to_string(),
+            pre_roll_seconds: 1.0,
+            post_roll_seconds: 0.5,
+            opening_seconds: 20.0,
+            clips: vec![test_clip(
+                &format!("{demo_id}_clip"),
+                [100.0, 200.0, -40.0],
+                90.0,
+                [300.0, 20.0, 450.0],
+            )],
+            skipped: Vec::new(),
+        };
+        fs::write(
+            export_root.join("nade_manifest.json"),
+            serde_json::to_string_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
     }
 }
