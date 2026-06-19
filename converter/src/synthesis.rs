@@ -36,6 +36,22 @@ impl SynthesisStats {
     }
 }
 
+trait PlayerRow {
+    fn row(&self) -> &ParsedPlayerTick;
+}
+
+impl PlayerRow for ParsedPlayerTick {
+    fn row(&self) -> &ParsedPlayerTick {
+        self
+    }
+}
+
+impl PlayerRow for &ParsedPlayerTick {
+    fn row(&self) -> &ParsedPlayerTick {
+        *self
+    }
+}
+
 pub fn synthesize_player_rec(
     rows: &[ParsedPlayerTick],
     map: &str,
@@ -89,8 +105,26 @@ pub fn synthesize_player_rec_with_projectile_refs(
     )
 }
 
+pub fn synthesize_player_rec_with_row_refs(
+    rows: &[&ParsedPlayerTick],
+    projectiles: &[&ParsedProjectile],
+    map: &str,
+    tick_rate: f32,
+    round: u32,
+    options: SynthesisOptions,
+) -> Result<(Cs2Rec, SynthesisStats)> {
+    synthesize_player_rec_with_projectile_iter(
+        rows,
+        projectiles.iter().copied(),
+        map,
+        tick_rate,
+        round,
+        options,
+    )
+}
+
 fn synthesize_player_rec_with_projectile_iter<'a>(
-    rows: &[ParsedPlayerTick],
+    rows: &[impl PlayerRow],
     projectiles: impl IntoIterator<Item = &'a ParsedProjectile>,
     map: &str,
     tick_rate: f32,
@@ -109,20 +143,22 @@ fn synthesize_player_rec_with_projectile_iter<'a>(
             rows.len().saturating_sub(1)
         )));
     }
-    let first = &rows[0];
+    let first = rows[0].row();
     let mut ticks = Vec::with_capacity(rows.len().saturating_sub(1));
     let mut subticks = Vec::new();
     let mut stats = SynthesisStats::default();
     for pair in rows.windows(2) {
-        let pre = pair[0].snapshot();
-        let post = pair[1].snapshot();
-        let mut tick_subticks = sanitize_subticks(&pair[0], options.subtick_mode, &mut stats);
+        let pre_row = pair[0].row();
+        let post_row = pair[1].row();
+        let pre = pre_row.snapshot();
+        let post = post_row.snapshot();
+        let mut tick_subticks = sanitize_subticks(pre_row, options.subtick_mode, &mut stats);
         let num_subtick = tick_subticks.len() as u32;
         subticks.append(&mut tick_subticks);
         ticks.push(ReplayTick {
             pre,
             post,
-            weapon_def_index: normalize_replay_weapon_def_index(pair[0].item_def_idx),
+            weapon_def_index: normalize_replay_weapon_def_index(pre_row.item_def_idx),
             num_subtick,
         });
     }
@@ -150,7 +186,7 @@ fn synthesize_player_rec_with_projectile_iter<'a>(
 }
 
 fn synthesize_projectiles<'a>(
-    rows: &[ParsedPlayerTick],
+    rows: &[impl PlayerRow],
     projectiles: impl IntoIterator<Item = &'a ParsedProjectile>,
     tick_count: usize,
 ) -> Vec<ReplayProjectile> {
@@ -158,10 +194,10 @@ fn synthesize_projectiles<'a>(
         return Vec::new();
     }
 
-    let steam_id = rows[0].steam_id;
+    let steam_id = rows[0].row().steam_id;
     let mut tick_to_index = BTreeMap::new();
     for (index, row) in rows.iter().take(tick_count).enumerate() {
-        tick_to_index.entry(row.tick).or_insert(index as u32);
+        tick_to_index.entry(row.row().tick).or_insert(index as u32);
     }
 
     let mut out = projectiles
@@ -436,5 +472,37 @@ mod tests {
         assert_eq!(borrowed_rec.projectiles.len(), 2);
         assert_eq!(borrowed_rec.projectiles[0].tick_index, 0);
         assert_eq!(borrowed_rec.projectiles[1].tick_index, 2);
+    }
+
+    #[test]
+    fn synthesis_row_refs_match_owned_rows() {
+        let mut r0 = row(10, 7);
+        r0.subtick_moves = vec![subtick(0.25, 1)];
+        let rows = [r0, row(11, 7), row(12, 9)];
+        let row_refs = rows.iter().collect::<Vec<_>>();
+        let projectiles = [projectile(11, 42, crate::model::ProjectileKind::Smoke)];
+        let projectile_refs = projectiles.iter().collect::<Vec<_>>();
+
+        let (owned_rec, owned_stats) = synthesize_player_rec_with_projectile_refs(
+            &rows,
+            &projectile_refs,
+            "de_nuke",
+            64.0,
+            1,
+            SynthesisOptions::default(),
+        )
+        .unwrap();
+        let (borrowed_rec, borrowed_stats) = synthesize_player_rec_with_row_refs(
+            &row_refs,
+            &projectile_refs,
+            "de_nuke",
+            64.0,
+            1,
+            SynthesisOptions::default(),
+        )
+        .unwrap();
+
+        assert_eq!(borrowed_rec, owned_rec);
+        assert_eq!(borrowed_stats, owned_stats);
     }
 }

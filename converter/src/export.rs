@@ -6,9 +6,7 @@ use crate::model::{
 };
 use crate::quality::{analyze_demo, AnalysisOptions};
 use crate::rec_writer::write_rec;
-use crate::synthesis::{
-    synthesize_player_rec_with_projectile_refs, SynthesisOptions, SynthesisStats,
-};
+use crate::synthesis::{synthesize_player_rec_with_row_refs, SynthesisOptions, SynthesisStats};
 use crate::{io_error, Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -169,7 +167,7 @@ pub fn export_demo_to_memory(
         let ct_economy = team_economy(round_rows, round.start_tick, end_tick, 3, pistol_round);
         let first_file_index = manifest.files.len();
 
-        let mut players: BTreeMap<u64, Vec<ParsedPlayerTick>> = BTreeMap::new();
+        let mut players: BTreeMap<u64, Vec<&ParsedPlayerTick>> = BTreeMap::new();
         for &row in round_rows {
             if row.tick < recording_start_tick
                 || row.tick > end_tick
@@ -180,7 +178,7 @@ pub fn export_demo_to_memory(
             {
                 continue;
             }
-            players.entry(row.steam_id).or_default().push(row.clone());
+            players.entry(row.steam_id).or_default().push(row);
         }
 
         for (steam_id, mut player_rows) in players {
@@ -200,7 +198,7 @@ pub fn export_demo_to_memory(
                 .get(&steam_id)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
-            let (rec, stats) = synthesize_player_rec_with_projectile_refs(
+            let (rec, stats) = synthesize_player_rec_with_row_refs(
                 &player_rows,
                 player_projectiles,
                 &parsed.map,
@@ -234,8 +232,11 @@ pub fn export_demo_to_memory(
                 subticks: rec.subticks.len(),
                 play_start_tick_index: rec.header.play_start_tick_index,
                 first_weapon_def_index: first_weapon_def_index(&rec),
-                preload_weapon_def_indices: preload_weapon_def_indices(&player_rows, &rec),
-                loadout: replay_loadout(&player_rows[0]),
+                preload_weapon_def_indices: preload_weapon_def_indices_from_refs(
+                    &player_rows,
+                    &rec,
+                ),
+                loadout: replay_loadout(player_rows[0]),
             });
             artifacts.push(ConversionArtifact {
                 path,
@@ -415,7 +416,7 @@ fn seconds_to_ticks(seconds: f32, tick_rate: f32) -> i32 {
     (seconds * tick_rate).round() as i32
 }
 
-fn play_start_tick_index(rows: &[ParsedPlayerTick], live_start_tick: i32) -> u32 {
+fn play_start_tick_index(rows: &[&ParsedPlayerTick], live_start_tick: i32) -> u32 {
     let tick_count = rows.len().saturating_sub(1);
     if tick_count == 0 {
         return 0;
@@ -560,6 +561,20 @@ pub(crate) fn first_weapon_def_index(rec: &crate::model::Cs2Rec) -> i32 {
 
 pub(crate) fn preload_weapon_def_indices(
     rows: &[ParsedPlayerTick],
+    rec: &crate::model::Cs2Rec,
+) -> Vec<i32> {
+    preload_weapon_def_indices_from_iter(rows.iter(), rec)
+}
+
+fn preload_weapon_def_indices_from_refs(
+    rows: &[&ParsedPlayerTick],
+    rec: &crate::model::Cs2Rec,
+) -> Vec<i32> {
+    preload_weapon_def_indices_from_iter(rows.iter().copied(), rec)
+}
+
+fn preload_weapon_def_indices_from_iter<'a>(
+    rows: impl IntoIterator<Item = &'a ParsedPlayerTick>,
     rec: &crate::model::Cs2Rec,
 ) -> Vec<i32> {
     let mut seen = BTreeSet::new();
