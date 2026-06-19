@@ -12,8 +12,6 @@ Python: ```pip install demoparser2``` (python >= 3.8)
 
 NodeJS: ```npm i @laihoe/demoparser2```
 
-WASM: ```npm i demoparser2```
-
 
 ### Getting started
 #### Python

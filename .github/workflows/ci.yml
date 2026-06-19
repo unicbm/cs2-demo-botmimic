@@ -40,7 +40,13 @@ jobs:
       - name: Check public-source hygiene
         shell: pwsh
         run: |
-          $hits = git grep -n -E 'C:\\Users\\|cs2-demotracer-wasm|converter/wasm|current writer format is `\.dtr` v4' -- . ':!converter/Cargo.lock'
+          $browserTargetDir = Join-Path "converter" ("wa" + "sm")
+          if (Test-Path $browserTargetDir) {
+            Write-Error "unexpected browser-target converter directory: $browserTargetDir"
+            exit 1
+          }
+
+          $hits = git grep -n -E 'C:\\Users\\|[Ww][Aa][Ss][Mm]|[Cc]urrent writer format is `\.dtr` v4' -- . ':!converter/Cargo.lock'
           if ($LASTEXITCODE -eq 1) {
             exit 0
           }
