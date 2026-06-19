@@ -44,6 +44,7 @@ namespace BotController
             std::vector<uint32_t> subOffset; // prefix sum, size ticks.size()+1
             std::atomic<int> cursor{0};
             std::atomic<int> startCursor{0};
+            std::atomic<int> holdBeforeCursor{-1};
             std::atomic<int> lastAppliedDef{-1};
             std::mutex mu; // guards ticks/subs/subOffset
         };
@@ -884,6 +885,7 @@ namespace BotController
             RebuildSubOffset(p);
             p.cursor.store(0, std::memory_order_relaxed);
             p.startCursor.store(0, std::memory_order_relaxed);
+            p.holdBeforeCursor.store(-1, std::memory_order_relaxed);
             p.lastAppliedDef.store(-1, std::memory_order_relaxed);
             g_lastFinalViewCursor[slot] = -1;
             g_serverViewChangeIndex[slot] = 0;
@@ -908,6 +910,30 @@ namespace BotController
             }
             p.cursor.store(startIndex, std::memory_order_relaxed);
             p.startCursor.store(startIndex, std::memory_order_relaxed);
+            p.holdBeforeCursor.store(-1, std::memory_order_relaxed);
+            p.lastAppliedDef.store(-1, std::memory_order_relaxed);
+            g_lastFinalViewCursor[slot] = -1;
+            g_serverViewChangeIndex[slot] = 0;
+            p.loop.store(loop, std::memory_order_relaxed);
+            p.playing.store(true, std::memory_order_release);
+            return true;
+        }
+
+        bool StartReplayUntil(int slot, bool loop, int startIndex, int holdBeforeIndex)
+        {
+            if (!ValidSlot(slot))
+                return false;
+            ReplayState &p = g_rep[slot];
+            {
+                std::lock_guard<std::mutex> lk(p.mu);
+                const int total = static_cast<int>(p.ticks.size());
+                if (total <= 0 || startIndex < 0 || startIndex >= total ||
+                    holdBeforeIndex <= startIndex || holdBeforeIndex > total)
+                    return false;
+            }
+            p.cursor.store(startIndex, std::memory_order_relaxed);
+            p.startCursor.store(startIndex, std::memory_order_relaxed);
+            p.holdBeforeCursor.store(holdBeforeIndex, std::memory_order_relaxed);
             p.lastAppliedDef.store(-1, std::memory_order_relaxed);
             g_lastFinalViewCursor[slot] = -1;
             g_serverViewChangeIndex[slot] = 0;
@@ -923,6 +949,7 @@ namespace BotController
             ReplayState &p = g_rep[slot];
             ClearReplayStopMovementResidue(slot, p);
             p.playing.store(false, std::memory_order_release);
+            p.holdBeforeCursor.store(-1, std::memory_order_relaxed);
             g_lastFinalViewCursor[slot] = -1;
             g_serverViewChangeIndex[slot] = 0;
             return true;
@@ -1671,6 +1698,12 @@ namespace BotController
                 WriteMovementServiceState(services, t->post);
             }
 
+            const int holdBefore = p.holdBeforeCursor.load(std::memory_order_relaxed);
+            if (holdBefore > 0 && cur + 1 >= holdBefore)
+            {
+                p.cursor.store(holdBefore - 1, std::memory_order_relaxed);
+                return;
+            }
             p.cursor.store(cur + 1, std::memory_order_relaxed);
         }
 
@@ -1697,6 +1730,7 @@ namespace BotController
                 g_rec[i].liveWs.store(nullptr, std::memory_order_relaxed);
                 g_rep[i].cursor.store(0, std::memory_order_relaxed);
                 g_rep[i].startCursor.store(0, std::memory_order_relaxed);
+                g_rep[i].holdBeforeCursor.store(-1, std::memory_order_relaxed);
                 g_rep[i].lastAppliedDef.store(-1, std::memory_order_relaxed);
                 g_lastFinalViewCursor[i] = -1;
                 g_serverViewChangeIndex[i] = 0;

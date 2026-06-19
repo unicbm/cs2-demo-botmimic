@@ -111,7 +111,7 @@ Drop `scripts/BotController.NativeApi.cs` into your project.
 ```csharp
 using BotControllerApi;
 
-if (!BotController.IsCompatible()) return;   // requires ABI 14
+if (!BotController.IsCompatible()) return;   // requires ABI 15
 ```
 
 ### Locks

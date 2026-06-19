@@ -3205,10 +3205,23 @@ public sealed class DemoTracerPlugin : BasePlugin
         var startIndex = 0u;
         if (_loadedReplays.TryGetValue(slot, out var replay))
         {
+            if (anchor == ReplayStartAnchor.FreezePreroll)
+            {
+                if (replay.PlayStartTickIndex == 0)
+                    return false;
+
+                startIndex = FreezePrerollStartIndex(replay, freezeTimeSeconds ?? 0.0f);
+                return startIndex < replay.PlayStartTickIndex &&
+                       BotControllerNative.StartReplayUntil(
+                           slot,
+                           loop,
+                           startIndex,
+                           replay.PlayStartTickIndex);
+            }
+
             startIndex = anchor switch
             {
                 ReplayStartAnchor.Live => replay.PlayStartTickIndex,
-                ReplayStartAnchor.FreezePreroll => FreezePrerollStartIndex(replay, freezeTimeSeconds ?? 0.0f),
                 _ => 0,
             };
         }
@@ -3285,9 +3298,70 @@ public sealed class DemoTracerPlugin : BasePlugin
             return false;
         }
 
-        delaySeconds = Math.Max(0.0f, freezeTimeSeconds - maxRecordedPrerollSeconds);
+        var playbackPrerollSeconds = Math.Min(freezeTimeSeconds, maxRecordedPrerollSeconds);
+        var scheduleWindowSeconds = freezeTimeSeconds;
+        if (TryReadFreezePhaseRemaining(out var phaseRemainingSeconds, out _) &&
+            phaseRemainingSeconds > 0.0f)
+        {
+            scheduleWindowSeconds = phaseRemainingSeconds;
+        }
+
+        delaySeconds = Math.Max(0.0f, scheduleWindowSeconds - playbackPrerollSeconds);
         reason = string.Empty;
         return true;
+    }
+
+    private static bool TryReadFreezePhaseRemaining(out float seconds, out string reason)
+    {
+        seconds = 0.0f;
+        try
+        {
+            var proxy = Utilities
+                .FindAllEntitiesByDesignerName<CCSGameRulesProxy>("cs_gamerules")
+                .FirstOrDefault(entity => entity is { IsValid: true });
+            if (proxy is not { IsValid: true })
+            {
+                reason = "cs_gamerules entity was not found";
+                return false;
+            }
+
+            var rules = proxy.GameRules;
+            if (rules == null)
+            {
+                reason = "cs_gamerules has no rules object";
+                return false;
+            }
+
+            if (!rules.FreezePeriod)
+            {
+                reason = "game rules are not in freeze period";
+                return false;
+            }
+
+            var phaseTime = rules.TimeUntilNextPhaseStarts;
+            if (!float.IsFinite(phaseTime))
+            {
+                reason = "game rules phase end time is invalid";
+                return false;
+            }
+
+            seconds = phaseTime > Server.CurrentTime
+                ? phaseTime - Server.CurrentTime
+                : phaseTime;
+            if (seconds > 0.0f && float.IsFinite(seconds))
+            {
+                reason = string.Empty;
+                return true;
+            }
+        }
+        catch (Exception ex)
+        {
+            reason = $"failed to read game rules freeze phase: {ex.Message}";
+            return false;
+        }
+
+        reason = "game rules freeze phase has no remaining time";
+        return false;
     }
 
     private static bool TryReadFreezeTimeConVar(out float seconds, out string reason)

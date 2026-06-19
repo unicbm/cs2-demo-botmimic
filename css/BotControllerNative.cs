@@ -5,7 +5,7 @@ namespace DemoTracer;
 
 internal static class BotControllerNative
 {
-    public const int ExpectedAbiVersion = 14;
+    public const int ExpectedAbiVersion = 15;
     public const uint RecFormatVersion = 5;
     public const uint MinRecFormatVersion = 3;
     public const int MovementSnapshotByteSize = 92;
@@ -54,6 +54,13 @@ internal static class BotControllerNative
 
     [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
     private static extern int BotController_StartReplayAt(int slot, int loop, int startIndex);
+
+    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int BotController_StartReplayUntil(
+        int slot,
+        int loop,
+        int startIndex,
+        int holdBeforeIndex);
 
     [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
     private static extern int BotController_StopReplay(int slot);
@@ -202,6 +209,27 @@ internal static class BotControllerNative
         var ok = startIndex == 0
             ? BotController_StartReplay(slot, loop ? 1 : 0) == 0
             : BotController_StartReplayAt(slot, loop ? 1 : 0, checked((int)startIndex)) == 0;
+        if (!ok)
+            BotController_Unlock(slot, LockKindAll);
+        return ok;
+    }
+
+    public static bool StartReplayUntil(
+        int slot,
+        bool loop,
+        uint startIndex,
+        uint holdBeforeIndex)
+    {
+        if (holdBeforeIndex <= startIndex)
+            return false;
+        if (BotController_Lock(slot, LockKindAll, 0) != 0)
+            return false;
+
+        var ok = BotController_StartReplayUntil(
+            slot,
+            loop ? 1 : 0,
+            checked((int)startIndex),
+            checked((int)holdBeforeIndex)) == 0;
         if (!ok)
             BotController_Unlock(slot, LockKindAll);
         return ok;

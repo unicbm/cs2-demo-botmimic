@@ -1,4 +1,4 @@
-// P/Invoke wrapper for BotController.dll (ABI 14). Check IsCompatible() before use.
+// P/Invoke wrapper for BotController.dll (ABI 15). Check IsCompatible() before use.
 // Main-thread only.
 
 using System.Runtime.InteropServices;
@@ -79,7 +79,7 @@ namespace BotControllerApi
     // Thin static binding over the native exports. No orchestration here.
     public static class BotController
     {
-        private const int ExpectedAbiVersion = 14;
+        private const int ExpectedAbiVersion = 15;
 
         // Sentinel weapon def meaning "any knife"
         public const int KnifeDef = 9001;
@@ -135,6 +135,10 @@ namespace BotControllerApi
 
         [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
         private static extern int BotController_StartReplayAt(int slot, int loop, int startIndex);
+
+        [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int BotController_StartReplayUntil(
+            int slot, int loop, int startIndex, int holdBeforeIndex);
 
         [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
         private static extern int BotController_StopReplay(int slot);
@@ -249,6 +253,9 @@ namespace BotControllerApi
 
         public static bool StartReplayAt(int slot, bool loop, int startIndex)
             => BotController_StartReplayAt(slot, loop ? 1 : 0, startIndex) == 0;
+
+        public static bool StartReplayUntil(int slot, bool loop, int startIndex, int holdBeforeIndex)
+            => BotController_StartReplayUntil(slot, loop ? 1 : 0, startIndex, holdBeforeIndex) == 0;
 
         public static bool StopReplay(int slot) => BotController_StopReplay(slot) == 0;
 
