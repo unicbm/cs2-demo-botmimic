@@ -18,6 +18,8 @@ use cs2_demotracer::rec_writer::read_rec_file;
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
 use std::collections::BTreeMap;
 use std::fmt::Display;
+use std::fs;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 #[derive(Parser)]
@@ -140,7 +142,7 @@ enum Command {
         #[arg(long, default_value_t = 120.0)]
         dedupe_velocity_units: f32,
     },
-    /// Validate .dtr files under a file or directory.
+    /// Validate .dtr files and public output-pack hygiene.
     Validate {
         #[arg(long)]
         input: PathBuf,
@@ -693,6 +695,7 @@ fn collect_dtr_files(root: &PathBuf) -> cs2_demotracer::Result<Vec<PathBuf>> {
 }
 
 fn validate_dtr_path(input: &Path) -> cs2_demotracer::Result<usize> {
+    validate_public_artifacts(input)?;
     let mut count = 0_usize;
     for path in collect_dtr_files(&input.to_path_buf())? {
         let rec = read_rec_file(&path)?;
@@ -705,6 +708,103 @@ fn validate_dtr_path(input: &Path) -> cs2_demotracer::Result<usize> {
         count += 1;
     }
     Ok(count)
+}
+
+fn validate_public_artifacts(input: &Path) -> cs2_demotracer::Result<()> {
+    for path in collect_files(input)? {
+        if path.extension().and_then(|e| e.to_str()) == Some("dem") {
+            return Err(cs2_demotracer::Error::InvalidDemo(format!(
+                "raw demo file must not be included in output packs: {}",
+                path.display()
+            )));
+        }
+
+        if is_manifest_json(&path) {
+            let text = read_manifest_text(&path)?;
+            let json: serde_json::Value = serde_json::from_str(&text)?;
+            validate_manifest_demo_paths(&path, &json)?;
+        }
+    }
+    Ok(())
+}
+
+fn collect_files(input: &Path) -> cs2_demotracer::Result<Vec<PathBuf>> {
+    let mut out = Vec::new();
+    collect_files_recursively(input, &mut out)?;
+    Ok(out)
+}
+
+fn collect_files_recursively(path: &Path, out: &mut Vec<PathBuf>) -> cs2_demotracer::Result<()> {
+    if path.is_file() {
+        out.push(path.to_path_buf());
+        return Ok(());
+    }
+    let entries = fs::read_dir(path).map_err(|e| cs2_demotracer::io_error(path, e))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| cs2_demotracer::io_error(path, e))?;
+        collect_files_recursively(&entry.path(), out)?;
+    }
+    Ok(())
+}
+
+fn is_manifest_json(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    name.ends_with(".json") || name.ends_with(".json.br")
+}
+
+fn read_manifest_text(path: &Path) -> cs2_demotracer::Result<String> {
+    if !path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|name| name.ends_with(".json.br"))
+    {
+        return fs::read_to_string(path).map_err(|e| cs2_demotracer::io_error(path, e));
+    }
+
+    let file = fs::File::open(path).map_err(|e| cs2_demotracer::io_error(path, e))?;
+    let mut decompressor = brotli::Decompressor::new(file, 4096);
+    let mut text = String::new();
+    decompressor
+        .read_to_string(&mut text)
+        .map_err(|e| cs2_demotracer::Error::InvalidDemo(e.to_string()))?;
+    Ok(text)
+}
+
+fn validate_manifest_demo_paths(
+    path: &Path,
+    value: &serde_json::Value,
+) -> cs2_demotracer::Result<()> {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, value) in map {
+                if key == "demo_path" {
+                    if let Some(text) = value.as_str() {
+                        if is_local_demo_path(text) {
+                            return Err(cs2_demotracer::Error::InvalidDemo(format!(
+                                "{} contains local demo_path {:?}",
+                                path.display(),
+                                text
+                            )));
+                        }
+                    }
+                }
+                validate_manifest_demo_paths(path, value)?;
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                validate_manifest_demo_paths(path, item)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn is_local_demo_path(value: &str) -> bool {
+    value.contains('\\') || value.contains('/') || value.contains(':')
 }
 
 fn collect_recursively(path: &PathBuf, out: &mut Vec<PathBuf>) -> cs2_demotracer::Result<()> {
@@ -720,4 +820,44 @@ fn collect_recursively(path: &PathBuf, out: &mut Vec<PathBuf>) -> cs2_demotracer
         collect_recursively(&entry.path(), out)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn local_demo_path_detector_rejects_directories_and_drive_letters() {
+        assert!(is_local_demo_path(r"C:\demos\match.dem"));
+        assert!(is_local_demo_path("C:/demos/match.dem"));
+        assert!(is_local_demo_path("/home/user/match.dem"));
+        assert!(is_local_demo_path("demos/match.dem"));
+        assert!(!is_local_demo_path("match.dem"));
+    }
+
+    #[test]
+    fn manifest_hygiene_rejects_nested_local_demo_path() {
+        let manifest = json!({
+            "files": [],
+            "candidates": [
+                { "demo_path": r"C:\demos\match.dem" }
+            ]
+        });
+
+        let err =
+            validate_manifest_demo_paths(Path::new("pool_manifest.json"), &manifest).unwrap_err();
+
+        assert!(err.to_string().contains("contains local demo_path"));
+    }
+
+    #[test]
+    fn manifest_hygiene_allows_sanitized_demo_path() {
+        let manifest = json!({
+            "demo_path": "match.dem",
+            "files": []
+        });
+
+        validate_manifest_demo_paths(Path::new("manifest.json"), &manifest).unwrap();
+    }
 }
