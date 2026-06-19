@@ -190,6 +190,15 @@ dtr_run_manifest "<输出目录>\<demo-id>\manifest.json" 0
 - 最后的 `0` 表示从 round 0 开始。
 - 插件会在 `round_start` 准备 bot，在 `round_freeze_end` 开始播放。
 
+完整回合回放开始时，DemoTracer 会把选中的 replay bot 当作回合起点状态处理：
+仍然存活的 replay bot 会恢复到 100 HP；已经死亡的 replay bot 会先复活，再开始
+播放；武器/loadout 同步只会吞掉 DemoTracer 自己为了替换 bot slot 而主动丢出的
+武器，不会扫描或清理场上无关的可拾取实体。
+
+`dtr_projectile_align 1` 会在“出生后修正稳定”的情况下使用 demo 投掷物元数据。
+火（molotov/incendiary）保留 CS2 原生 projectile 和 inferno 行为，因为出生后修改
+火瓶实体可能破坏本来有效的燃烧。
+
 如果只想测试某一回合，可以把最后的数字改成对应 round：
 
 ```text
@@ -237,7 +246,7 @@ dtr_stop_all
 - 目前主要面向 Windows x64 本地 CS2 环境。Linux x64 converter binary 是
   WSL Ubuntu 构建产物，在纯 Linux 环境下仍需要额外验证。
 - 需要同一张地图，并且服务器里要有足够的 bot。
-- `.dtr` 是无损压缩的 BotController 兼容 replay 格式，并包含用于烟雾弹对齐的 demo 原始投掷物元数据；离线 subtick 和完整 usercmd 还会继续补。
+- `.dtr` 是无损压缩的 BotController 兼容 replay 格式，并包含用于运行时道具对齐的 demo 原始投掷物元数据；离线 subtick 和完整 usercmd 还会继续补。
 - 某些武器和默认手枪配置在 CS2 里比较麻烦，目前优先保证不崩服和基本行为正确。
 - CS2 demo 可能暴露饰品/econ 元数据，但 DemoTracer 有意不提取或应用皮肤、刀、手套、贴纸、挂件/charms 或探员。Valve 的 [Game Server Operation Guidelines](https://blog.counter-strike.net/server_guidelines/) 禁止社区服务器伪造玩家库存或授予玩家未拥有的物品；Valve 曾经禁用提供这类服务的服务器运营者的 GSLT（Game Server Login Token）。第三方饰品覆写不属于本项目范围，风险由使用者自行承担。
 - 这个工具不是作弊工具，也不会接入匹配服务器；它面向本地服务器、研究和内容制作。

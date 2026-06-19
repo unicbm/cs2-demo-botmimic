@@ -327,6 +327,17 @@ dtr_run_manifest "<output-dir>\<demo-id>\manifest.json" 0
 
 The last number is the starting round. Use `0` to start from round 0.
 
+When full-round playback starts, DemoTracer treats the selected replay bots as
+being reset to the replay round start: alive replay bots are restored to 100 HP,
+dead replay bots are respawned before playback, and weapon/loadout sync only
+removes weapons that DemoTracer itself actively drops while replacing a bot's
+slot. It does not sweep unrelated world pickups.
+
+`dtr_projectile_align 1` uses demo projectile metadata where post-spawn
+alignment is stable. Fire grenades keep CS2's native projectile and inferno
+behavior, because mutating molotov/incendiary projectiles after spawn can break
+valid burns.
+
 To start from a specific round:
 
 ```text
@@ -376,7 +387,7 @@ For normal use, export the recommended rounds only.
 - Windows x64 local CS2 is the primary target. Linux x64 converter binaries are
   WSL Ubuntu build artifacts and may need extra validation on native Linux.
 - The server should run the same map and have enough bots.
-- `.dtr` uses a lossless compressed BotController-compatible replay format with demo-derived projectile metadata for smoke alignment. Full offline subtick/usercmd reconstruction is future work.
+- `.dtr` uses a lossless compressed BotController-compatible replay format with demo-derived projectile metadata for runtime utility alignment. Full offline subtick/usercmd reconstruction is future work.
 - Some weapon/loadout details are still limited by CS2 slot behavior, especially default pistols.
 - CS2 demos can expose cosmetic/econ metadata, but DemoTracer intentionally does not extract or apply skins, knives, gloves, stickers, charms, or agents. Valve's [Game Server Operation Guidelines](https://blog.counter-strike.net/server_guidelines/) prohibit falsifying inventories or granting items players do not own, and Valve has previously disabled Game Server Login Tokens (GSLTs) for operators that offered those services. Third-party cosmetic overrides are outside this project and are at your own risk.
 - This is for local servers, research, content creation, and plugin development. It is not intended for matchmaking or cheating.

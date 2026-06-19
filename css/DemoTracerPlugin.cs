@@ -49,6 +49,7 @@ public sealed class DemoTracerPlugin : BasePlugin
     private const float NadeCycleDefaultGapSeconds = 1.5f;
     private const float NadeCycleMaxGapSeconds = 30.0f;
     private const int MaxPlayerSlots = 64;
+    private const int ReplayStartHealth = 100;
     private static readonly string[] UtilityTraceColumns =
     [
         "kind",
@@ -1084,6 +1085,12 @@ public sealed class DemoTracerPlugin : BasePlugin
     {
         if (!_projectileAlignEnabled)
             return;
+        if (kind == ReplayProjectileKind.Molotov)
+        {
+            if (_utilityTraceEnabled && _nadeCycle == null)
+                TraceUtilityMessage("projectile_align_skipped", $"projectile={projectile.Index} kind=molotov");
+            return;
+        }
 
         var pending = new PendingProjectileAlign(projectile.Index, projectile.Handle, kind, weaponDefIndex)
         {
@@ -2655,6 +2662,22 @@ public sealed class DemoTracerPlugin : BasePlugin
 
     private string StartLoaded(bool loop)
     {
+        var respawned = RespawnDeadLoadedReplayBots();
+        if (respawned > 0)
+        {
+            Server.NextFrame(() =>
+            {
+                PreloadLoadedReplays();
+                Server.PrintToConsole($"dtr: queued start after respawn: {StartLoadedReady(loop)}");
+            });
+            return $"dtr: respawned {respawned} replay bot(s), start queued";
+        }
+
+        return StartLoadedReady(loop);
+    }
+
+    private string StartLoadedReady(bool loop)
+    {
         var ok = 0;
         foreach (var slot in _loadedSlots)
         {
@@ -2668,6 +2691,15 @@ public sealed class DemoTracerPlugin : BasePlugin
                 continue;
             }
 
+            if (_loadedReplays.TryGetValue(slot, out var replay) && !replay.UtilityOnly)
+            {
+                if (!ResetReplayPawnRoundStartHealth(slot))
+                {
+                    ReleaseReplaySlot(slot, "dead_start_target");
+                    continue;
+                }
+            }
+
             if (BotControllerNative.StartReplay(slot, loop))
             {
                 MarkReplayStarted(slot);
@@ -2675,6 +2707,40 @@ public sealed class DemoTracerPlugin : BasePlugin
             }
         }
         return $"dtr: started {ok}/{_loadedSlots.Count} loaded slots, loop={loop}";
+    }
+
+    private int RespawnDeadLoadedReplayBots()
+    {
+        var respawned = 0;
+        foreach (var slot in _loadedSlots)
+        {
+            if (!_loadedReplays.TryGetValue(slot, out var replay) || replay.UtilityOnly)
+                continue;
+
+            if (!IsReplaySlotStillSafe(slot))
+                continue;
+
+            var player = Utilities.GetPlayerFromSlot(slot);
+            if (player is not { IsValid: true } || player.PawnIsAlive)
+                continue;
+
+            try
+            {
+                player.Respawn();
+                _loadoutSyncedSlots.Remove(slot);
+                _rebuiltInventorySlots.Remove(slot);
+                _lastEnsuredWeaponDef.Remove(slot);
+                _lastReplayWeaponDef.Remove(slot);
+                _lastLockedWeaponTarget.Remove(slot);
+                respawned++;
+            }
+            catch (Exception ex)
+            {
+                Server.PrintToConsole($"dtr: failed to respawn replay bot slot={slot}: {ex.Message}");
+            }
+        }
+
+        return respawned;
     }
 
     private void StopAndUnloadLoaded()
@@ -3057,7 +3123,7 @@ public sealed class DemoTracerPlugin : BasePlugin
 
         var player = Utilities.GetPlayerFromSlot(slot);
         var pawn = player?.PlayerPawn.Value;
-        if (player is not { IsValid: true } || pawn is not { IsValid: true })
+        if (player is not { IsValid: true, PawnIsAlive: true } || pawn is not { IsValid: true })
             return;
 
         ApplyReplayArmorAndKit(player, pawn, replay.Loadout);
@@ -3146,6 +3212,19 @@ public sealed class DemoTracerPlugin : BasePlugin
         itemServices.HasDefuser = player.Team == CsTeam.CounterTerrorist && loadout.HasDefuser;
     }
 
+    private static bool ResetReplayPawnRoundStartHealth(int slot)
+    {
+        var player = Utilities.GetPlayerFromSlot(slot);
+        if (player is not { IsValid: true, PawnIsAlive: true } ||
+            player.PlayerPawn is not { IsValid: true, Value.IsValid: true })
+            return false;
+
+        var pawn = player.PlayerPawn.Value;
+        pawn.Health = ReplayStartHealth;
+        Utilities.SetStateChanged(pawn, "CBaseEntity", "m_iHealth");
+        return true;
+    }
+
     private static Dictionary<string, int> BuildLoadoutItemCounts(ReplayLoadoutSnapshot loadout)
     {
         var counts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -3167,20 +3246,25 @@ public sealed class DemoTracerPlugin : BasePlugin
         Func<string, bool> predicate)
     {
         var targetItem = BestTargetSlotItem(targetItems, predicate);
-        if (targetItem == null)
-            return false;
-
         var pawn = player.PlayerPawn.Value;
         if (pawn == null || !pawn.IsValid || pawn.WeaponServices == null)
         {
-            TryGiveNamedItem(player, targetItem);
+            if (targetItem != null)
+                TryGiveNamedItem(player, targetItem);
             return false;
         }
 
-        if (HasReplayWeapon(pawn, targetItem))
+        if (targetItem != null && HasReplayWeapon(pawn, targetItem))
             return false;
 
         var currentSlotWeapons = GetWeaponsInReplaySlot(pawn, slot).ToList();
+        if (targetItem == null)
+        {
+            var extraWeapon = currentSlotWeapons.FirstOrDefault();
+            return extraWeapon != null &&
+                   DropAndKillReplayWeapon(player, pawn, extraWeapon, "extra_loadout_slot");
+        }
+
         if (currentSlotWeapons.Count == 0)
         {
             TryGiveNamedItem(player, targetItem);
@@ -3197,18 +3281,8 @@ public sealed class DemoTracerPlugin : BasePlugin
         if (fallbackItem == null || weaponToDrop == null)
             return false;
 
-        if (!TrySelectWeapon(player, pawn, weaponToDrop))
+        if (!DropAndKillReplayWeapon(player, pawn, weaponToDrop, "replace_loadout_slot"))
             return false;
-
-        try
-        {
-            player.DropActiveWeapon();
-        }
-        catch (Exception ex)
-        {
-            Server.PrintToConsole($"dtr: failed to drop slot={player.Slot} item={weaponToDrop.DesignerName}: {ex.Message}");
-            return false;
-        }
 
         _lastEnsuredWeaponDef.Remove(player.Slot);
         _lastReplayWeaponDef.Remove(player.Slot);
@@ -3301,6 +3375,48 @@ public sealed class DemoTracerPlugin : BasePlugin
         return counts;
     }
 
+    private static bool DropAndKillReplayWeapon(
+        CCSPlayerController player,
+        CCSPlayerPawn pawn,
+        CBasePlayerWeapon weapon,
+        string reason)
+    {
+        var weaponName = weapon.DesignerName;
+        if (!TrySelectWeapon(player, pawn, weapon))
+            return false;
+
+        try
+        {
+            player.DropActiveWeapon();
+        }
+        catch (Exception ex)
+        {
+            Server.PrintToConsole($"dtr: failed to drop slot={player.Slot} item={weaponName}: {ex.Message}");
+            return false;
+        }
+
+        KillDroppedWeapon(player.Slot, weapon, weaponName, reason);
+        Server.NextFrame(() => KillDroppedWeapon(player.Slot, weapon, weaponName, reason));
+        return true;
+    }
+
+    private static void KillDroppedWeapon(
+        int slot,
+        CBasePlayerWeapon weapon,
+        string weaponName,
+        string reason)
+    {
+        try
+        {
+            if (weapon.IsValid)
+                weapon.AcceptInput("Kill");
+        }
+        catch (Exception ex)
+        {
+            Server.PrintToConsole($"dtr: failed to kill dropped weapon slot={slot} item={weaponName} reason={reason}: {ex.Message}");
+        }
+    }
+
     private static bool TryGiveNamedItem(CCSPlayerController player, string itemName)
     {
         try
@@ -3355,7 +3471,7 @@ public sealed class DemoTracerPlugin : BasePlugin
         if (!_rebuiltInventorySlots.Contains(slot))
         {
             foreach (var def in replay.PreloadWeaponDefIndices)
-                EnsureReplayWeaponForSlot(
+                _ = EnsureReplayWeaponForSlot(
                     slot,
                     def,
                     forceSwitch: false,
@@ -3402,16 +3518,23 @@ public sealed class DemoTracerPlugin : BasePlugin
 
         if (allowSlotReplacement && IsSlotReplaceableWeaponDef(normalized))
         {
-            EnsureReplayWeaponForSlot(
+            var ensured = EnsureReplayWeaponForSlot(
                 slot,
                 normalized,
                 forceSwitch: false,
                 allowGive: true,
                 replaceConflictingSlot: false);
+            if (!ensured)
+            {
+                _lastReplayWeaponDef.Remove(slot);
+                return;
+            }
         }
 
-        BotControllerNative.SwitchBotWeapon(slot, normalized);
-        _lastReplayWeaponDef[slot] = normalized;
+        if (BotControllerNative.SwitchBotWeapon(slot, normalized))
+            _lastReplayWeaponDef[slot] = normalized;
+        else
+            _lastReplayWeaponDef.Remove(slot);
     }
 
     private static int ChooseStartWeaponDef(LoadedReplay replay)
@@ -3458,7 +3581,7 @@ public sealed class DemoTracerPlugin : BasePlugin
         var pending = _pendingWeaponAlign.ToArray();
         _pendingWeaponAlign.Clear();
         foreach (var (slot, request) in pending)
-            EnsureReplayWeaponForSlot(
+            _ = EnsureReplayWeaponForSlot(
                 slot,
                 request.WeaponDefIndex,
                 request.ForceSwitch,
@@ -3466,7 +3589,7 @@ public sealed class DemoTracerPlugin : BasePlugin
                 replaceConflictingSlot: false);
     }
 
-    private void EnsureReplayWeaponForSlot(
+    private bool EnsureReplayWeaponForSlot(
         int slot,
         int weaponDefIndex,
         bool forceSwitch,
@@ -3475,14 +3598,14 @@ public sealed class DemoTracerPlugin : BasePlugin
     {
         var normalized = NormalizeWeaponDefIndex(weaponDefIndex);
         if (normalized < 0)
-            return;
+            return false;
         if (_lastEnsuredWeaponDef.TryGetValue(slot, out var last) && last == normalized && !forceSwitch)
-            return;
+            return true;
 
         var player = Utilities.GetPlayerFromSlot(slot);
         if (player is not { IsValid: true } ||
             player.PlayerPawn is not { IsValid: true, Value.IsValid: true })
-            return;
+            return false;
 
         if (!TryEnsureReplayWeapon(
                 player,
@@ -3490,16 +3613,20 @@ public sealed class DemoTracerPlugin : BasePlugin
                 allowGive,
                 replaceConflictingSlot,
                 out var className))
-        {
-            _lastEnsuredWeaponDef[slot] = normalized;
-            return;
-        }
+            return false;
 
         _lastEnsuredWeaponDef[slot] = normalized;
         if (forceSwitch)
-            BotControllerNative.SwitchBotWeapon(slot, normalized);
+        {
+            if (!BotControllerNative.SwitchBotWeapon(slot, normalized))
+            {
+                _lastEnsuredWeaponDef.Remove(slot);
+                return false;
+            }
+        }
 
         Server.PrintToConsole($"dtr: aligned slot={slot} def={normalized} item={className}");
+        return true;
     }
 
     private static bool TryEnsureReplayWeapon(
