@@ -61,6 +61,42 @@ pub fn synthesize_player_rec_with_options(
     round: u32,
     options: SynthesisOptions,
 ) -> Result<(Cs2Rec, SynthesisStats)> {
+    synthesize_player_rec_with_projectile_iter(
+        rows,
+        projectiles.iter(),
+        map,
+        tick_rate,
+        round,
+        options,
+    )
+}
+
+pub fn synthesize_player_rec_with_projectile_refs(
+    rows: &[ParsedPlayerTick],
+    projectiles: &[&ParsedProjectile],
+    map: &str,
+    tick_rate: f32,
+    round: u32,
+    options: SynthesisOptions,
+) -> Result<(Cs2Rec, SynthesisStats)> {
+    synthesize_player_rec_with_projectile_iter(
+        rows,
+        projectiles.iter().copied(),
+        map,
+        tick_rate,
+        round,
+        options,
+    )
+}
+
+fn synthesize_player_rec_with_projectile_iter<'a>(
+    rows: &[ParsedPlayerTick],
+    projectiles: impl IntoIterator<Item = &'a ParsedProjectile>,
+    map: &str,
+    tick_rate: f32,
+    round: u32,
+    options: SynthesisOptions,
+) -> Result<(Cs2Rec, SynthesisStats)> {
     if rows.len() < 2 {
         return Err(Error::InvalidDemo(
             "need at least two player rows to synthesize replay".to_string(),
@@ -113,12 +149,12 @@ pub fn synthesize_player_rec_with_options(
     ))
 }
 
-fn synthesize_projectiles(
+fn synthesize_projectiles<'a>(
     rows: &[ParsedPlayerTick],
-    projectiles: &[ParsedProjectile],
+    projectiles: impl IntoIterator<Item = &'a ParsedProjectile>,
     tick_count: usize,
 ) -> Vec<ReplayProjectile> {
-    if rows.is_empty() || tick_count == 0 || projectiles.is_empty() {
+    if rows.is_empty() || tick_count == 0 {
         return Vec::new();
     }
 
@@ -129,7 +165,7 @@ fn synthesize_projectiles(
     }
 
     let mut out = projectiles
-        .iter()
+        .into_iter()
         .filter(|projectile| projectile.steam_id == steam_id)
         .filter_map(|projectile| {
             let tick_index = *tick_to_index.get(&projectile.tick)?;

@@ -6,7 +6,9 @@ use crate::model::{
 };
 use crate::quality::{analyze_demo, AnalysisOptions};
 use crate::rec_writer::write_rec;
-use crate::synthesis::{synthesize_player_rec_with_options, SynthesisOptions, SynthesisStats};
+use crate::synthesis::{
+    synthesize_player_rec_with_projectile_refs, SynthesisOptions, SynthesisStats,
+};
 use crate::{io_error, Error, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -198,7 +200,7 @@ pub fn export_demo_to_memory(
                 .get(&steam_id)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
-            let (rec, stats) = synthesize_player_rec_with_options(
+            let (rec, stats) = synthesize_player_rec_with_projectile_refs(
                 &player_rows,
                 player_projectiles,
                 &parsed.map,
@@ -368,13 +370,13 @@ fn rows_by_round(rows: &[ParsedPlayerTick]) -> BTreeMap<u32, Vec<&ParsedPlayerTi
 
 fn projectiles_by_steam_id(
     projectiles: &[ParsedProjectile],
-) -> BTreeMap<u64, Vec<ParsedProjectile>> {
-    let mut by_steam_id: BTreeMap<u64, Vec<ParsedProjectile>> = BTreeMap::new();
+) -> BTreeMap<u64, Vec<&ParsedProjectile>> {
+    let mut by_steam_id: BTreeMap<u64, Vec<&ParsedProjectile>> = BTreeMap::new();
     for projectile in projectiles {
         by_steam_id
             .entry(projectile.steam_id)
             .or_default()
-            .push(projectile.clone());
+            .push(projectile);
     }
     by_steam_id
 }
