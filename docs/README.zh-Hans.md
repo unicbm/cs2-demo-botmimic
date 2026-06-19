@@ -275,15 +275,28 @@ cargo run --release -- wizard
 - `docs/`：格式和使用补充说明。
 - `third_party/`：保留的第三方源码和上游许可文件。
 
-## 依赖和致谢
+## 致谢
 
-主要上游项目：
+CS2 DemoTracer 建立在多个优秀的开源项目之上。
 
-- [XBribo/CS2-Bot-Controller](https://github.com/XBribo/CS2-Bot-Controller)，GPL-3.0：BotController runtime 架构、bot replay hook、录制、输入注入和武器锁定。
-- [XBribo/CS2-Bot-Hider](https://github.com/XBribo/CS2-Bot-Hider)，GPL-3.0：可选 BotHider 互操作，用于识别 BotHider 管理的 bot，以及对齐显示名和 SteamID64。
-- [LaihoE/demoparser](https://github.com/LaihoE/demoparser)，MIT：Rust CS2 demo parser，本项目 converter 使用它解析 demo。源码 vendored 在 `third_party/demoparser`，保留上游 license 和 README。
-- [csgowiki/minidemo-encoder](https://github.com/csgowiki/minidemo-encoder)，MIT：历史 `.dem -> replay file` 工作流启发；本项目没有复制它的 Go 源码。
-- [alliedmodders/metamod-source](https://github.com/alliedmodders/metamod-source)：Metamod:Source 插件基础设施，runtime 使用它接入 CS2。
-- [roflmuffin/CounterStrikeSharp](https://github.com/roflmuffin/CounterStrikeSharp)：CounterStrikeSharp 插件 API，C# control plugin 使用它实现服务器指令和事件处理。
+没有 [XBribo/CS2-Bot-Controller](https://github.com/XBribo/CS2-Bot-Controller)，
+runtime bot replay 路径很难成立。它提供了 GPL-3.0 的 BotController 基础，
+包括 replay hook、录制、输入注入和武器锁定。
 
-CS2 DemoTracer 自身代码按 GPL-3.0-only 发布。vendored 第三方源码在 `third_party/` 中保留各自的上游许可文件。
+感谢 [XBribo/CS2-Bot-Hider](https://github.com/XBribo/CS2-Bot-Hider)，本项目使用
+它提供 BotHider 互操作路径，用于识别 BotHider 管理的 bot，并对齐显示名和
+SteamID64。
+
+感谢 [LaihoE/demoparser](https://github.com/LaihoE/demoparser) 提供 Rust CS2 demo
+parser。本项目 converter 使用它解析 demo；vendored 源码保留在
+`third_party/demoparser`，并保留上游 license 和 README 文件。
+
+感谢 [csgowiki/minidemo-encoder](https://github.com/csgowiki/minidemo-encoder)
+提供历史 `.dem -> replay file` 工作流启发。本项目没有复制它的 Go 源码。
+
+CS2 DemoTracer 也使用 [Metamod:Source](https://github.com/alliedmodders/metamod-source)
+和 [CounterStrikeSharp](https://github.com/roflmuffin/CounterStrikeSharp) 构建
+runtime/plugin 栈。
+
+CS2 DemoTracer 自己的代码使用 GPL-3.0-only。vendored 的第三方源码保留各自上游
+license 文件。

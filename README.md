@@ -414,15 +414,30 @@ Repository layout:
 - `docs/`: extra docs.
 - `third_party/`: vendored third-party source and upstream license files.
 
-## Dependencies And Credits
+## Acknowledgements
 
-The main upstream projects are:
+CS2 DemoTracer builds on several excellent open-source projects.
 
-- [XBribo/CS2-Bot-Controller](https://github.com/XBribo/CS2-Bot-Controller), GPL-3.0: BotController runtime architecture, bot replay hooks, recording, input injection, and weapon locking.
-- [XBribo/CS2-Bot-Hider](https://github.com/XBribo/CS2-Bot-Hider), GPL-3.0: optional BotHider integration for BotHider-managed bot detection, display-name alignment, and SteamID64 alignment.
-- [LaihoE/demoparser](https://github.com/LaihoE/demoparser), MIT: Rust CS2 demo parser used by the converter. Vendored under `third_party/demoparser` with upstream license and README files preserved.
-- [csgowiki/minidemo-encoder](https://github.com/csgowiki/minidemo-encoder), MIT: historical `.dem -> replay file` workflow inspiration. No Go source from this project is copied.
-- [alliedmodders/metamod-source](https://github.com/alliedmodders/metamod-source): Metamod:Source plugin infrastructure used by the runtime.
-- [roflmuffin/CounterStrikeSharp](https://github.com/roflmuffin/CounterStrikeSharp): CounterStrikeSharp plugin API used by the C# control plugin.
+Without [XBribo/CS2-Bot-Controller](https://github.com/XBribo/CS2-Bot-Controller),
+the runtime bot replay path would not have been possible. It provides the
+GPL-3.0 BotController foundation for replay hooks, recording, input injection,
+and weapon locking.
 
-CS2 DemoTracer's own code is licensed under GPL-3.0-only. Vendored third-party source keeps its upstream license files in `third_party/`.
+Thank you to [XBribo/CS2-Bot-Hider](https://github.com/XBribo/CS2-Bot-Hider)
+for the BotHider integration path used for managed bot detection, display-name
+alignment, and SteamID64 alignment.
+
+Thank you to [LaihoE/demoparser](https://github.com/LaihoE/demoparser) for the
+Rust CS2 demo parser used by the converter. The vendored source is preserved
+under `third_party/demoparser` with upstream license and README files.
+
+Thank you to [csgowiki/minidemo-encoder](https://github.com/csgowiki/minidemo-encoder)
+for historical `.dem -> replay file` workflow inspiration. No Go source from
+that project is copied.
+
+CS2 DemoTracer also uses [Metamod:Source](https://github.com/alliedmodders/metamod-source)
+and [CounterStrikeSharp](https://github.com/roflmuffin/CounterStrikeSharp) for
+the runtime/plugin stack.
+
+CS2 DemoTracer's own code is licensed under GPL-3.0-only. Vendored third-party
+source keeps its upstream license files in `third_party/`.
