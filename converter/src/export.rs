@@ -1,8 +1,8 @@
 use crate::demo_id::demo_id;
 use crate::model::{
     public_demo_path, ConversionManifest, ConvertedFile, ConvertedRound, EconomyClass, ParsedDemo,
-    ParsedPlayerTick, ReplayLoadout, Side, SubtickMode, TeamEconomy, DEMOTRACER_ABI,
-    DTR_FORMAT_VERSION,
+    ParsedPlayerTick, ParsedProjectile, ReplayLoadout, Side, SubtickMode, TeamEconomy,
+    DEMOTRACER_ABI, DTR_FORMAT_VERSION,
 };
 use crate::quality::{analyze_demo, AnalysisOptions};
 use crate::rec_writer::write_rec;
@@ -115,6 +115,7 @@ pub fn export_demo_to_memory(
     let mut artifacts = Vec::new();
     let mut subtick_stats = SynthesisStats::default();
     let rows_by_round = rows_by_round(&parsed.rows);
+    let projectiles_by_steam_id = projectiles_by_steam_id(&parsed.projectiles);
     log.push(format!(
         "demo={} id={} sha256={} map={} tick_rate={:.3}",
         parsed.path, output_stem, parsed.demo_sha256, parsed.map, parsed.tick_rate
@@ -193,9 +194,13 @@ pub fn export_demo_to_memory(
                 continue;
             }
             let play_start_tick_index = play_start_tick_index(&player_rows, round.start_tick);
+            let player_projectiles = projectiles_by_steam_id
+                .get(&steam_id)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
             let (rec, stats) = synthesize_player_rec_with_options(
                 &player_rows,
-                &parsed.projectiles,
+                player_projectiles,
                 &parsed.map,
                 parsed.tick_rate,
                 round.round,
@@ -359,6 +364,19 @@ fn rows_by_round(rows: &[ParsedPlayerTick]) -> BTreeMap<u32, Vec<&ParsedPlayerTi
         by_round.entry(row.round).or_default().push(row);
     }
     by_round
+}
+
+fn projectiles_by_steam_id(
+    projectiles: &[ParsedProjectile],
+) -> BTreeMap<u64, Vec<ParsedProjectile>> {
+    let mut by_steam_id: BTreeMap<u64, Vec<ParsedProjectile>> = BTreeMap::new();
+    for projectile in projectiles {
+        by_steam_id
+            .entry(projectile.steam_id)
+            .or_default()
+            .push(projectile.clone());
+    }
+    by_steam_id
 }
 
 fn recording_start_tick_for_round(
