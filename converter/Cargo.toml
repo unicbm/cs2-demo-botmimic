@@ -5,9 +5,6 @@ edition = "2021"
 license = "GPL-3.0-only"
 publish = false
 
-[workspace]
-members = ["wasm"]
-
 [features]
 default = ["cli", "demoparser"]
 cli = ["dep:clap", "dep:dialoguer"]

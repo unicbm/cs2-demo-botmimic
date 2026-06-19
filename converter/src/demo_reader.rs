@@ -118,12 +118,7 @@ mod demoparser_impl {
             list_props: false,
             fallback_bytes: None,
         };
-        let parsing_mode = if cfg!(target_family = "wasm") {
-            ParsingMode::ForceSingleThreaded
-        } else {
-            ParsingMode::Normal
-        };
-        let mut parser = Parser::new(settings, parsing_mode);
+        let mut parser = Parser::new(settings, ParsingMode::Normal);
         let output = parser
             .parse_demo(bytes)
             .map_err(|e| Error::Parser(format!("{e:?}")))?;
@@ -324,12 +319,7 @@ mod demoparser_impl {
             list_props: false,
             fallback_bytes: None,
         };
-        let parsing_mode = if cfg!(target_family = "wasm") {
-            ParsingMode::ForceSingleThreaded
-        } else {
-            ParsingMode::Normal
-        };
-        let mut parser = Parser::new(settings, parsing_mode);
+        let mut parser = Parser::new(settings, ParsingMode::Normal);
         let output = parser
             .parse_demo(bytes)
             .map_err(|e| Error::Parser(format!("{e:?}")))?;
