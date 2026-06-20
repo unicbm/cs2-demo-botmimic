@@ -5,6 +5,7 @@ namespace DemoTracer;
 
 public sealed partial class DemoTracerPlugin
 {
+    private const int NadeManifestFormatVersion = 1;
     private const int RoundPoolManifestFormatVersion = 1;
 
     private static bool TryReadManifest(
@@ -173,11 +174,11 @@ public sealed partial class DemoTracerPlugin
                 fullPath,
                 ReadMaybeBrotliText(fullPath),
                 "nade manifest");
+            ValidateNadeManifest(manifest);
             var clipsById = new Dictionary<string, NadeClip>(manifest.Clips.Count, StringComparer.OrdinalIgnoreCase);
             foreach (var clip in manifest.Clips)
             {
-                if (!string.IsNullOrWhiteSpace(clip.ClipId))
-                    clipsById[clip.ClipId] = clip;
+                clipsById[clip.ClipId] = clip;
             }
 
             cached = new CachedNadeManifest(manifest, clipsById, file.LastWriteTimeUtc, file.Length);
@@ -292,6 +293,34 @@ public sealed partial class DemoTracerPlugin
             error = ex.Message;
             return false;
         }
+    }
+
+    private static void ValidateNadeManifest(NadeManifest manifest)
+    {
+        if (manifest.FormatVersion != NadeManifestFormatVersion)
+        {
+            throw new InvalidDataException(
+                $"nade manifest format_version {manifest.FormatVersion} unsupported; expected {NadeManifestFormatVersion}");
+        }
+        if (string.IsNullOrWhiteSpace(manifest.Map))
+            throw new InvalidDataException("nade manifest map is required");
+
+        manifest.Clips ??= new List<NadeClip>();
+        var clipIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        for (var i = 0; i < manifest.Clips.Count; i++)
+            ValidateNadeClip(manifest.Clips[i], i, clipIds);
+    }
+
+    private static void ValidateNadeClip(NadeClip? clip, int index, HashSet<string> clipIds)
+    {
+        if (clip == null)
+            throw new InvalidDataException($"nade clip {index} is null");
+        if (string.IsNullOrWhiteSpace(clip.ClipId))
+            throw new InvalidDataException($"nade clip {index} clip_id is required");
+        if (!clipIds.Add(clip.ClipId))
+            throw new InvalidDataException($"duplicate nade clip_id: {clip.ClipId}");
+        if (string.IsNullOrWhiteSpace(clip.Path))
+            throw new InvalidDataException($"nade clip {clip.ClipId} path is required");
     }
 
     private static void ValidateRoundPoolManifest(RoundPoolManifest manifest)
