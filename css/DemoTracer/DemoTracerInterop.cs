@@ -244,33 +244,6 @@ internal static class BotControllerNative
         }
     }
 
-    public static bool TryReadReplayTickAtIndex(
-        string path,
-        uint tickIndex,
-        out NativeReplayTick tick,
-        out string error)
-    {
-        tick = default;
-        error = string.Empty;
-        try
-        {
-            var replay = ReadReplayFile(path);
-            if (tickIndex >= replay.Ticks.Length)
-            {
-                error = $"tick index {tickIndex} is outside replay ticks={replay.Ticks.Length}";
-                return false;
-            }
-
-            tick = replay.Ticks[tickIndex];
-            return true;
-        }
-        catch (Exception ex)
-        {
-            error = ex.Message;
-            return false;
-        }
-    }
-
     public static bool UnloadReplay(int slot)
     {
         if (!ValidSlot(slot))
