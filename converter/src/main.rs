@@ -717,9 +717,9 @@ fn validate_public_artifacts(input: &Path) -> cs2_demotracer::Result<()> {
         input
     };
     for path in collect_files(input)? {
-        if path.extension().and_then(|e| e.to_str()) == Some("dem") {
+        if let Some(reason) = forbidden_public_artifact_reason(&path) {
             return Err(cs2_demotracer::Error::InvalidDemo(format!(
-                "raw demo file must not be included in output packs: {}",
+                "{reason} must not be included in output packs: {}",
                 path.display()
             )));
         }
@@ -732,6 +732,16 @@ fn validate_public_artifacts(input: &Path) -> cs2_demotracer::Result<()> {
         }
     }
     Ok(())
+}
+
+fn forbidden_public_artifact_reason(path: &Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    match ext.as_str() {
+        "dem" => Some("raw demo file"),
+        "cs2rec" => Some("raw replay dump"),
+        "csv" | "parquet" => Some("debug trace/data dump"),
+        _ => None,
+    }
 }
 
 fn collect_files(input: &Path) -> cs2_demotracer::Result<Vec<PathBuf>> {
@@ -936,6 +946,41 @@ mod tests {
         assert!(is_local_demo_path("/home/user/match.dem"));
         assert!(is_local_demo_path("demos/match.dem"));
         assert!(!is_local_demo_path("match.dem"));
+    }
+
+    #[test]
+    fn public_artifact_hygiene_rejects_raw_and_debug_dumps() {
+        assert_eq!(
+            forbidden_public_artifact_reason(Path::new("match.dem")),
+            Some("raw demo file")
+        );
+        assert_eq!(
+            forbidden_public_artifact_reason(Path::new("round.cs2rec")),
+            Some("raw replay dump")
+        );
+        assert_eq!(
+            forbidden_public_artifact_reason(Path::new("utility.csv")),
+            Some("debug trace/data dump")
+        );
+        assert_eq!(
+            forbidden_public_artifact_reason(Path::new("ticks.parquet")),
+            Some("debug trace/data dump")
+        );
+        assert_eq!(
+            forbidden_public_artifact_reason(Path::new("conversion.log")),
+            None
+        );
+    }
+
+    #[test]
+    fn public_artifact_hygiene_scans_output_pack_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let trace = temp.path().join("debug_trace.csv");
+        fs::write(&trace, b"slot,tick").unwrap();
+
+        let err = validate_public_artifacts(temp.path()).unwrap_err();
+
+        assert!(err.to_string().contains("debug trace/data dump"));
     }
 
     #[test]
