@@ -10,6 +10,7 @@ internal static class BotControllerNative
     public const uint MinRecFormatVersion = 3;
     public const int MovementSnapshotByteSize = 92;
     public const int ReplayTickByteSize = 192;
+    public const int MaxSlots = 64;
 
     private const byte RecCodecBrotli = 1;
     private const int TickMetadataByteSize = 8;
@@ -151,6 +152,12 @@ internal static class BotControllerNative
     public static bool LoadReplayFromFile(int slot, string path, out ReplayFileMetadata metadata)
     {
         metadata = ReplayFileMetadata.Empty;
+        if (!ValidSlot(slot))
+        {
+            LastLoadError = $"slot {slot} out of range 0..{MaxSlots - 1}";
+            return false;
+        }
+
         try
         {
             EnsureNativeLayout();
@@ -198,6 +205,8 @@ internal static class BotControllerNative
 
     public static bool UnloadReplay(int slot)
     {
+        if (!ValidSlot(slot))
+            return false;
         StopReplay(slot);
         LastLoadError = string.Empty;
         return true;
@@ -208,6 +217,8 @@ internal static class BotControllerNative
 
     public static bool StartReplayAt(int slot, bool loop, uint startIndex)
     {
+        if (!ValidSlot(slot))
+            return false;
         if (BotController_Lock(slot, LockKindAll, 0) != 0)
             return false;
 
@@ -225,6 +236,8 @@ internal static class BotControllerNative
         uint startIndex,
         uint holdBeforeIndex)
     {
+        if (!ValidSlot(slot))
+            return false;
         if (holdBeforeIndex <= startIndex)
             return false;
         if (BotController_Lock(slot, LockKindAll, 0) != 0)
@@ -242,6 +255,8 @@ internal static class BotControllerNative
 
     public static bool StopReplay(int slot)
     {
+        if (!ValidSlot(slot))
+            return false;
         var ok = BotController_StopReplay(slot) == 0;
         BotController_Unlock(slot, LockKindAll);
         return ok;
@@ -249,6 +264,9 @@ internal static class BotControllerNative
 
     public static ReplayState GetReplayState(int slot)
     {
+        if (!ValidSlot(slot))
+            return ReplayState.Empty;
+
         try
         {
             if (BotController_GetReplaySlotState(slot, out var state) == 0)
@@ -272,16 +290,21 @@ internal static class BotControllerNative
     }
 
     public static bool TryGetReplayTick(int slot, out NativeReplayTick tick)
-        => BotController_GetReplayTick(slot, out tick) == 0;
+    {
+        tick = default;
+        return ValidSlot(slot) && BotController_GetReplayTick(slot, out tick) == 0;
+    }
 
     public static bool SwitchBotWeapon(int slot, int defIndex)
-        => BotController_SwitchBotWeapon(slot, defIndex) == 0;
+        => ValidSlot(slot) && BotController_SwitchBotWeapon(slot, defIndex) == 0;
 
     public static int BotActiveWeaponDef(int slot)
-        => BotController_GetBotActiveWeaponDef(slot);
+        => ValidSlot(slot) ? BotController_GetBotActiveWeaponDef(slot) : -1;
 
     public static bool SetBuyPlan(int slot, string aliases)
     {
+        if (!ValidSlot(slot))
+            return false;
         try
         {
             return BotController_SetBuyPlan(slot, aliases ?? string.Empty) == 0;
@@ -294,6 +317,8 @@ internal static class BotControllerNative
 
     public static bool SetBuySkip(int slot)
     {
+        if (!ValidSlot(slot))
+            return false;
         try
         {
             return BotController_SetBuySkip(slot) == 0;
@@ -306,6 +331,8 @@ internal static class BotControllerNative
 
     public static bool ClearBuyPlan(int slot)
     {
+        if (!ValidSlot(slot))
+            return false;
         try
         {
             return BotController_ClearBuyPlan(slot) == 0;
@@ -330,6 +357,8 @@ internal static class BotControllerNative
 
     public static int BuyPlanItemCount(int slot)
     {
+        if (!ValidSlot(slot))
+            return -1;
         try
         {
             return BotController_GetBuyPlanItemCount(slot);
@@ -341,17 +370,22 @@ internal static class BotControllerNative
     }
 
     public static bool LockWeaponSlot(int slot, int target)
-        => target is >= 1 and <= 5 && BotController_Lock(slot, LockKindWeapon, target) == 0;
+        => ValidSlot(slot) && target is >= 1 and <= 5 && BotController_Lock(slot, LockKindWeapon, target) == 0;
 
     public static bool UnlockWeaponSlot(int slot)
-        => BotController_Unlock(slot, LockKindWeapon) == 0;
+        => ValidSlot(slot) && BotController_Unlock(slot, LockKindWeapon) == 0;
 
     public static void UnlockReplayControl(int slot)
     {
+        if (!ValidSlot(slot))
+            return;
         BotController_Unlock(slot, LockKindAll);
         BotController_Unlock(slot, LockKindAim);
         BotController_Unlock(slot, LockKindJump);
     }
+
+    private static bool ValidSlot(int slot)
+        => slot is >= 0 and < MaxSlots;
 
     private static ReplayFile ReadReplayFile(string path)
     {
@@ -618,7 +652,10 @@ internal readonly record struct ReplayState(
     bool Playing,
     int CurrentTickIndex,
     int WeaponDefIndex,
-    int NumSubtick);
+    int NumSubtick)
+{
+    public static ReplayState Empty { get; } = new(-1, 0, false, -1, -1, 0);
+}
 
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
 internal struct NativeReplaySlotState
