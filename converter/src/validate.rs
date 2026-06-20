@@ -47,7 +47,7 @@ fn validate_public_artifacts(input: &Path) -> cs2_demotracer::Result<()> {
 
         if is_manifest_json(&path) {
             let text = read_manifest_text(&path)?;
-            let json: serde_json::Value = serde_json::from_str(&text)?;
+            let json = parse_manifest_json(&path, &text)?;
             validate_manifest_demo_paths(&path, &json)?;
             validate_manifest_artifact_paths(pack_root, &path, &json)?;
         }
@@ -103,10 +103,19 @@ fn read_manifest_text(path: &Path) -> cs2_demotracer::Result<String> {
     let file = fs::File::open(path).map_err(|e| cs2_demotracer::io_error(path, e))?;
     let mut decompressor = brotli::Decompressor::new(file, 4096);
     let mut text = String::new();
-    decompressor
-        .read_to_string(&mut text)
-        .map_err(|e| cs2_demotracer::Error::InvalidDemo(e.to_string()))?;
+    decompressor.read_to_string(&mut text).map_err(|e| {
+        cs2_demotracer::Error::InvalidDemo(format!(
+            "{} could not be decompressed as Brotli JSON manifest: {e}",
+            path.display()
+        ))
+    })?;
     Ok(text)
+}
+
+fn parse_manifest_json(path: &Path, text: &str) -> cs2_demotracer::Result<serde_json::Value> {
+    serde_json::from_str(text).map_err(|e| {
+        cs2_demotracer::Error::InvalidDemo(format!("{} contains invalid JSON: {e}", path.display()))
+    })
 }
 
 fn validate_manifest_demo_paths(
@@ -359,6 +368,30 @@ mod tests {
         let err = validate_dtr_path(temp.path()).unwrap_err();
 
         assert!(err.to_string().contains("no .dtr files"));
+    }
+
+    #[test]
+    fn manifest_hygiene_reports_invalid_json_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = temp.path().join("manifest.json");
+        fs::write(&manifest_path, "{").unwrap();
+
+        let err = validate_public_artifacts(temp.path()).unwrap_err();
+
+        assert!(err.to_string().contains("manifest.json"));
+        assert!(err.to_string().contains("contains invalid JSON"));
+    }
+
+    #[test]
+    fn manifest_hygiene_reports_invalid_brotli_manifest_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = temp.path().join("nade_manifest.json.br");
+        fs::write(&manifest_path, b"not brotli").unwrap();
+
+        let err = validate_public_artifacts(temp.path()).unwrap_err();
+
+        assert!(err.to_string().contains("nade_manifest.json.br"));
+        assert!(err.to_string().contains("could not be decompressed"));
     }
 
     #[test]
