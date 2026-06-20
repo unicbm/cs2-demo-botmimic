@@ -711,6 +711,11 @@ fn validate_dtr_path(input: &Path) -> cs2_demotracer::Result<usize> {
 }
 
 fn validate_public_artifacts(input: &Path) -> cs2_demotracer::Result<()> {
+    let pack_root = if input.is_file() {
+        input.parent().unwrap_or_else(|| Path::new("."))
+    } else {
+        input
+    };
     for path in collect_files(input)? {
         if path.extension().and_then(|e| e.to_str()) == Some("dem") {
             return Err(cs2_demotracer::Error::InvalidDemo(format!(
@@ -723,6 +728,7 @@ fn validate_public_artifacts(input: &Path) -> cs2_demotracer::Result<()> {
             let text = read_manifest_text(&path)?;
             let json: serde_json::Value = serde_json::from_str(&text)?;
             validate_manifest_demo_paths(&path, &json)?;
+            validate_manifest_artifact_paths(pack_root, &path, &json)?;
         }
     }
     Ok(())
@@ -803,6 +809,95 @@ fn validate_manifest_demo_paths(
     Ok(())
 }
 
+fn validate_manifest_artifact_paths(
+    pack_root: &Path,
+    manifest_path: &Path,
+    value: &serde_json::Value,
+) -> cs2_demotracer::Result<()> {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, value) in map {
+                if is_manifest_artifact_path_key(key) {
+                    if let Some(text) = value.as_str() {
+                        validate_manifest_artifact_path(pack_root, manifest_path, key, text)?;
+                    }
+                }
+                validate_manifest_artifact_paths(pack_root, manifest_path, value)?;
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                validate_manifest_artifact_paths(pack_root, manifest_path, item)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn is_manifest_artifact_path_key(key: &str) -> bool {
+    key == "path" || key == "manifest"
+}
+
+fn validate_manifest_artifact_path(
+    pack_root: &Path,
+    manifest_path: &Path,
+    key: &str,
+    value: &str,
+) -> cs2_demotracer::Result<()> {
+    if value.trim().is_empty() {
+        return Err(cs2_demotracer::Error::InvalidDemo(format!(
+            "{} contains empty {key}",
+            manifest_path.display()
+        )));
+    }
+    if is_absolute_manifest_artifact_path(value) {
+        return Err(cs2_demotracer::Error::InvalidDemo(format!(
+            "{} contains absolute {key} {:?}",
+            manifest_path.display(),
+            value
+        )));
+    }
+
+    let manifest_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+    let full =
+        normalize_path(&manifest_dir.join(value.replace('\\', std::path::MAIN_SEPARATOR_STR)));
+    let root = normalize_path(pack_root);
+    if !path_is_under_root(&full, &root) {
+        return Err(cs2_demotracer::Error::InvalidDemo(format!(
+            "{} contains {key} outside output pack {:?}",
+            manifest_path.display(),
+            value
+        )));
+    }
+    Ok(())
+}
+
+fn is_absolute_manifest_artifact_path(value: &str) -> bool {
+    Path::new(value).is_absolute()
+        || value.starts_with('/')
+        || value.starts_with('\\')
+        || value.contains(':')
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
+fn path_is_under_root(path: &Path, root: &Path) -> bool {
+    path == root || path.starts_with(root)
+}
+
 fn is_local_demo_path(value: &str) -> bool {
     value.contains('\\') || value.contains('/') || value.contains(':')
 }
@@ -859,5 +954,60 @@ mod tests {
         });
 
         validate_manifest_demo_paths(Path::new("manifest.json"), &manifest).unwrap();
+    }
+
+    #[test]
+    fn manifest_hygiene_allows_artifact_paths_inside_pack() {
+        let manifest = json!({
+            "clips": [
+                { "path": "../../demos/demo-a/nades/t/opening/smoke/a.dtr" }
+            ],
+            "maps": [
+                { "manifest": "maps/de_mirage/nade_manifest.json" }
+            ]
+        });
+
+        validate_manifest_artifact_paths(
+            Path::new("pack"),
+            Path::new("pack/maps/de_mirage/nade_manifest.json"),
+            &manifest,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn manifest_hygiene_rejects_artifact_paths_outside_pack() {
+        let manifest = json!({
+            "files": [
+                { "path": "../../../outside.dtr" }
+            ]
+        });
+
+        let err = validate_manifest_artifact_paths(
+            Path::new("pack"),
+            Path::new("pack/maps/de_mirage/nade_manifest.json"),
+            &manifest,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("outside output pack"));
+    }
+
+    #[test]
+    fn manifest_hygiene_rejects_absolute_artifact_paths() {
+        let manifest = json!({
+            "candidates": [
+                { "manifest": r"C:\demos\manifest.json" }
+            ]
+        });
+
+        let err = validate_manifest_artifact_paths(
+            Path::new("pack"),
+            Path::new("pack/pool_manifest.json"),
+            &manifest,
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("absolute manifest"));
     }
 }
