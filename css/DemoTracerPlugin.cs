@@ -488,6 +488,11 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             command.ReplyToCommand($"dtr: failed to read nade manifest: {error}");
             return;
         }
+        if (!CurrentMapMatchesManifest(manifest.Map, out var currentMap))
+        {
+            command.ReplyToCommand(
+                $"[DTR WARN] map mismatch: server=\"{currentMap}\" nade_manifest=\"{manifest.Map}\" path=\"{manifestPath}\"");
+        }
 
         var kindFilter = command.ArgCount >= 3 ? command.GetArg(2) : string.Empty;
         var clips = manifest.Clips
@@ -1422,8 +1427,13 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     {
         try
         {
-            if (!TryFindNadeClip(manifestPath, clipId, out _, out var clip, out var readError))
+            if (!TryFindNadeClip(manifestPath, clipId, out var manifest, out var clip, out var readError))
                 return LoadRoundResult.Fail($"dtr: failed to read nade manifest: {readError}");
+            if (!CurrentMapMatchesManifest(manifest.Map, out var currentMap))
+            {
+                return LoadRoundResult.Fail(
+                    $"dtr: map mismatch, server=\"{currentMap}\" nade_manifest=\"{manifest.Map}\" path=\"{manifestPath}\"");
+            }
 
             if (clip == null)
                 return LoadRoundResult.Fail($"dtr: nade clip not found: {clipId}");
@@ -1663,6 +1673,11 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         {
             if (!TryReadNadeManifest(manifestPath, out var manifest, out var readError))
                 return LoadRoundResult.Fail($"dtr: failed to read nade manifest: {readError}");
+            if (!CurrentMapMatchesManifest(manifest.Map, out var currentMap))
+            {
+                return LoadRoundResult.Fail(
+                    $"dtr: map mismatch, server=\"{currentMap}\" nade_manifest=\"{manifest.Map}\" path=\"{manifestPath}\"");
+            }
             if (!IsReplaySlotStillSafe(slot))
                 return LoadRoundResult.Fail($"dtr: refused to cycle {kindFilter}s on slot {slot}: not a safe bot target");
 
