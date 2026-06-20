@@ -246,7 +246,7 @@ pub struct HighFidelityMetadata {
 impl Default for HighFidelityMetadata {
     fn default() -> Self {
         Self {
-            schema_version: 1,
+            schema_version: 2,
             events: Vec::new(),
             inventory_snapshots: Vec::new(),
         }
@@ -259,7 +259,7 @@ impl HighFidelityMetadata {
         inventory_snapshots: Vec<ReplayInventorySnapshot>,
     ) -> Self {
         Self {
-            schema_version: 1,
+            schema_version: 2,
             events,
             inventory_snapshots,
         }
@@ -273,6 +273,7 @@ impl HighFidelityMetadata {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReplayHifiEventKind {
+    BombInitialOwner,
     ItemDrop,
     ItemPickup,
     ItemTransfer,

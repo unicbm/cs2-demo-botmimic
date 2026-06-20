@@ -219,6 +219,7 @@ pub fn export_demo_to_memory(
                 parsed,
                 round.round,
                 recording_start_tick,
+                round.start_tick,
                 end_tick,
                 &player_rows,
                 round_rows,
@@ -428,6 +429,7 @@ fn build_player_high_fidelity_metadata(
     parsed: &ParsedDemo,
     _round: u32,
     start_tick: i32,
+    live_start_tick: i32,
     end_tick: i32,
     player_rows: &[&ParsedPlayerTick],
     round_rows: &[&ParsedPlayerTick],
@@ -440,10 +442,19 @@ fn build_player_high_fidelity_metadata(
         return HighFidelityMetadata::default();
     }
 
-    let mut events = player_scoped_hifi_events(parsed, steam_id, start_tick, end_tick, round_rows)
-        .into_iter()
-        .filter_map(|event| event.with_tick_index(player_rows))
-        .collect::<Vec<_>>();
+    let initial_c4_owner =
+        infer_initial_c4_owner(parsed, start_tick, live_start_tick, end_tick, round_rows);
+    let mut events = player_scoped_hifi_events(
+        parsed,
+        steam_id,
+        start_tick,
+        end_tick,
+        round_rows,
+        initial_c4_owner,
+    )
+    .into_iter()
+    .filter_map(|event| event.with_tick_index(player_rows))
+    .collect::<Vec<_>>();
     events.sort_by_key(|event| (event.tick_index, event.tick, hifi_event_rank(event.kind)));
     events.dedup_by(|lhs, rhs| {
         lhs.tick_index == rhs.tick_index
@@ -464,12 +475,29 @@ fn player_scoped_hifi_events(
     start_tick: i32,
     end_tick: i32,
     round_rows: &[&ParsedPlayerTick],
+    initial_c4_owner: Option<u64>,
 ) -> Vec<AbsoluteHifiEvent> {
     let mut drops = inferred_inventory_drops(parsed, start_tick, end_tick, round_rows);
     let mut pickups = inferred_inventory_pickups(start_tick, end_tick, round_rows, &parsed.events);
     pair_inventory_transfers(&mut drops, &mut pickups);
 
     let mut events = Vec::new();
+    if initial_c4_owner == Some(steam_id) {
+        events.push(AbsoluteHifiEvent {
+            tick: start_tick,
+            kind: ReplayHifiEventKind::BombInitialOwner,
+            actor_steam_id: Some(steam_id),
+            target_steam_id: Some(steam_id),
+            weapon_def_index: Some(49),
+            item_name: Some("weapon_c4".to_string()),
+            entity_id: None,
+            actor_count_after: Some(1),
+            target_count_after: Some(1),
+            damage: None,
+            health: None,
+        });
+    }
+
     for drop in drops.into_iter().filter(|drop| drop.steam_id == steam_id) {
         events.push(AbsoluteHifiEvent {
             tick: drop.tick,
@@ -518,6 +546,43 @@ fn player_scoped_hifi_events(
     }
 
     events
+}
+
+fn infer_initial_c4_owner(
+    parsed: &ParsedDemo,
+    start_tick: i32,
+    live_start_tick: i32,
+    end_tick: i32,
+    round_rows: &[&ParsedPlayerTick],
+) -> Option<u64> {
+    let inventory_owner = round_rows
+        .iter()
+        .filter(|row| {
+            row.tick >= start_tick
+                && row.tick <= end_tick
+                && row.team_num == 2
+                && row.steam_id != 0
+                && row.is_alive
+        })
+        .filter(|row| inventory_counts(row).get(&49).copied().unwrap_or(0) > 0)
+        .min_by_key(|row| (row.tick, row.steam_id))
+        .map(|row| row.steam_id);
+    if inventory_owner.is_some() {
+        return inventory_owner;
+    }
+
+    parsed
+        .events
+        .iter()
+        .filter(|event| event.tick >= live_start_tick && event.tick <= end_tick)
+        .filter(|event| {
+            matches!(
+                event.name.as_str(),
+                "bomb_dropped" | "bomb_pickup" | "bomb_beginplant" | "bomb_planted"
+            )
+        })
+        .min_by_key(|event| event.tick)
+        .and_then(|event| event.user_steam_id.or(event.attacker_steam_id))
 }
 
 fn map_recorded_game_event(event: &ParsedGameEvent, steam_id: u64) -> Option<AbsoluteHifiEvent> {
@@ -833,18 +898,19 @@ fn tick_index_for_event(player_rows: &[&ParsedPlayerTick], tick: i32) -> Option<
 
 fn hifi_event_rank(kind: ReplayHifiEventKind) -> u8 {
     match kind {
-        ReplayHifiEventKind::RoundStart => 0,
-        ReplayHifiEventKind::RoundFreezeEnd => 1,
-        ReplayHifiEventKind::BombDrop => 2,
-        ReplayHifiEventKind::ItemDrop => 3,
-        ReplayHifiEventKind::BombPickup => 4,
-        ReplayHifiEventKind::ItemPickup => 5,
-        ReplayHifiEventKind::ItemTransfer => 6,
-        ReplayHifiEventKind::BombBeginplant => 7,
-        ReplayHifiEventKind::BombPlanted => 8,
-        ReplayHifiEventKind::WeaponFire => 9,
-        ReplayHifiEventKind::PlayerHurt => 10,
-        ReplayHifiEventKind::PlayerDeath => 11,
+        ReplayHifiEventKind::BombInitialOwner => 0,
+        ReplayHifiEventKind::RoundStart => 1,
+        ReplayHifiEventKind::RoundFreezeEnd => 2,
+        ReplayHifiEventKind::BombDrop => 3,
+        ReplayHifiEventKind::ItemDrop => 4,
+        ReplayHifiEventKind::BombPickup => 5,
+        ReplayHifiEventKind::ItemPickup => 6,
+        ReplayHifiEventKind::ItemTransfer => 7,
+        ReplayHifiEventKind::BombBeginplant => 8,
+        ReplayHifiEventKind::BombPlanted => 9,
+        ReplayHifiEventKind::WeaponFire => 10,
+        ReplayHifiEventKind::PlayerHurt => 11,
+        ReplayHifiEventKind::PlayerDeath => 12,
     }
 }
 
@@ -1717,6 +1783,61 @@ mod tests {
             .events
             .iter()
             .any(|event| event.kind == ReplayHifiEventKind::BombPlanted
+                && event.weapon_def_index == Some(49)));
+    }
+
+    #[test]
+    fn initial_c4_owner_is_recorded_from_first_visible_inventory() {
+        let owner = 76561198000000002;
+        let other = 76561198000000003;
+        let mut parsed = sample_demo();
+        parsed.rows = vec![
+            row_with_inventory(100, owner, "owner", vec![7, 49]),
+            row_with_inventory(164, owner, "owner", vec![7, 49]),
+            row_with_inventory(100, other, "other", vec![7]),
+            row_with_inventory(164, other, "other", vec![7]),
+        ];
+
+        let owner_rec = rec_for_steam(&export_memory(parsed.clone()), owner);
+        let other_rec = rec_for_steam(&export_memory(parsed), other);
+
+        assert!(owner_rec
+            .high_fidelity
+            .events
+            .iter()
+            .any(|event| event.kind == ReplayHifiEventKind::BombInitialOwner
+                && event.actor_steam_id == Some(owner)
+                && event.weapon_def_index == Some(49)));
+        assert!(other_rec
+            .high_fidelity
+            .events
+            .iter()
+            .all(|event| event.kind != ReplayHifiEventKind::BombInitialOwner));
+    }
+
+    #[test]
+    fn initial_c4_owner_falls_back_to_first_bomb_event_actor() {
+        let owner = 76561198000000002;
+        let mut parsed = sample_demo();
+        parsed.rows = vec![
+            row_with_inventory(100, owner, "owner", vec![7]),
+            row_with_inventory(164, owner, "owner", vec![7]),
+        ];
+        parsed.events = vec![ParsedGameEvent {
+            tick: 120,
+            name: "bomb_pickup".to_string(),
+            user_steam_id: Some(owner),
+            ..ParsedGameEvent::default()
+        }];
+
+        let rec = rec_for_steam(&export_memory(parsed), owner);
+
+        assert!(rec
+            .high_fidelity
+            .events
+            .iter()
+            .any(|event| event.kind == ReplayHifiEventKind::BombInitialOwner
+                && event.actor_steam_id == Some(owner)
                 && event.weapon_def_index == Some(49)));
     }
 

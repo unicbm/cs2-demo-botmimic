@@ -74,6 +74,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     private readonly Dictionary<uint, UtilityProjectileTrace> _utilityTraceProjectiles = new();
     private readonly BotHiderMemoryProbe _botHiderProbe = new();
     private readonly RayTraceLosProbe _rayTraceLosProbe = new();
+    private bool _initialC4Aligned;
     private readonly DemoTracerApiFacade _apiFacade;
     private StreamWriter? _utilityTraceWriter;
     private string _utilityTracePath = string.Empty;
@@ -1952,28 +1953,85 @@ public sealed partial class DemoTracerPlugin : BasePlugin
 
     private void PreloadLoadedReplays()
     {
-        if (!_weaponAlignEnabled)
-            return;
-
-        foreach (var slot in _loadedSlots)
+        if (_weaponAlignEnabled)
         {
-            if (!IsReplaySlotStillSafe(slot))
-                continue;
-            if (_loadedReplays.TryGetValue(slot, out var replay))
+            foreach (var slot in _loadedSlots)
             {
-                if (replay.UtilityOnly)
-                {
-                    if (_weaponAlignEnabled)
-                        PrepareNadeClipWeapon(slot, replay.UtilityWeaponDefIndex, out _);
+                if (!IsReplaySlotStillSafe(slot))
                     continue;
-                }
-                if (_weaponAlignEnabled)
+                if (_loadedReplays.TryGetValue(slot, out var replay))
                 {
+                    if (replay.UtilityOnly)
+                    {
+                        PrepareNadeClipWeapon(slot, replay.UtilityWeaponDefIndex, out _);
+                        continue;
+                    }
                     ApplyReplayLoadoutForSlot(slot, replay);
                     PreloadReplayWeaponsForSlot(slot, replay);
                 }
             }
         }
+
+        AlignInitialC4OwnerForLoadedReplays();
+    }
+
+    private void AlignInitialC4OwnerForLoadedReplays()
+    {
+        if (_initialC4Aligned)
+            return;
+
+        var targetSlot = -1;
+        ulong targetSteamId = 0;
+        foreach (var slot in _loadedSlots)
+        {
+            if (!_loadedReplays.TryGetValue(slot, out var replay) || replay.UtilityOnly)
+                continue;
+            if (replay.HifiEvents.Any(IsBombInitialOwnerEvent))
+            {
+                targetSlot = slot;
+                targetSteamId = replay.SteamId;
+                break;
+            }
+        }
+
+        if (targetSlot < 0 || !IsReplaySlotStillSafe(targetSlot))
+            return;
+
+        foreach (var slot in _loadedSlots.ToArray())
+        {
+            if (slot == targetSlot || !_loadedReplays.TryGetValue(slot, out var replay) || replay.UtilityOnly)
+                continue;
+            RemoveC4FromReplaySlot(slot, "initial_c4_owner_align");
+        }
+
+        var player = Utilities.GetPlayerFromSlot(targetSlot);
+        if (player is not { IsValid: true, PawnIsAlive: true })
+            return;
+        if (CountCurrentReplayItems(player, "weapon_c4") <= 0 &&
+            !TryGiveNamedItem(player, "weapon_c4"))
+        {
+            Server.PrintToConsole(
+                $"dtr: initial C4 owner align failed slot={targetSlot} steam_id={targetSteamId}");
+            return;
+        }
+
+        _initialC4Aligned = true;
+        Server.PrintToConsole($"dtr: initial C4 owner aligned slot={targetSlot} steam_id={targetSteamId}");
+    }
+
+    private static bool IsBombInitialOwnerEvent(ReplayHifiEvent replayEvent)
+        => replayEvent.Kind.Trim().Equals("bomb_initial_owner", StringComparison.OrdinalIgnoreCase);
+
+    private void RemoveC4FromReplaySlot(int slot, string reason)
+    {
+        var player = Utilities.GetPlayerFromSlot(slot);
+        if (player is not { IsValid: true, PawnIsAlive: true } ||
+            player.PlayerPawn is not { IsValid: true, Value.IsValid: true })
+            return;
+
+        var pawn = player.PlayerPawn.Value;
+        foreach (var weapon in GetReplayWeaponsByClass(pawn, "weapon_c4").ToArray())
+            DropAndKillReplayWeapon(player, pawn, weapon, reason);
     }
 
     private string StartLoaded(bool loop)
@@ -2345,6 +2403,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         _pendingBulletHits.Clear();
         _pendingBulletDamages.Clear();
         _pendingThreat360.Clear();
+        _initialC4Aligned = false;
         if (clearArmedPlan)
         {
             _armed = false;
@@ -2383,6 +2442,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         _pendingBulletHits.Clear();
         _pendingBulletDamages.Clear();
         _pendingThreat360.Clear();
+        _initialC4Aligned = false;
         SetReplayPovMask(0);
     }
 
@@ -2622,6 +2682,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         _replayHifiEventNextBySlot[slot] = 0;
         _rebuiltInventorySlots.Remove(slot);
         _loadoutSyncedSlots.Remove(slot);
+        _initialC4Aligned = false;
     }
 
     private static ReplayFileMetadata ReadReplayMetadataOrEmpty(string path)
