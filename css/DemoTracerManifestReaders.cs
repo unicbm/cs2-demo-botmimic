@@ -346,7 +346,19 @@ public sealed partial class DemoTracerPlugin
             throw new InvalidDataException($"duplicate nade clip_id: {clip.ClipId}");
         if (string.IsNullOrWhiteSpace(clip.Path))
             throw new InvalidDataException($"nade clip {clip.ClipId} path is required");
+        if (!clip.Path.EndsWith(".dtr", StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException($"nade clip {clip.ClipId} path must point to .dtr: {clip.Path}");
+        if (!IsManifestValueOneOf(clip.Side, "t", "ct"))
+            throw new InvalidDataException($"nade clip {clip.ClipId} side must be t or ct: {clip.Side}");
+        if (!IsManifestValueOneOf(clip.Phase, "opening", "combat", "retake"))
+            throw new InvalidDataException($"nade clip {clip.ClipId} phase is unsupported: {clip.Phase}");
+        if (!IsManifestValueOneOf(clip.Kind, "unknown", "smoke", "flash", "he", "molotov", "decoy"))
+            throw new InvalidDataException($"nade clip {clip.ClipId} kind is unsupported: {clip.Kind}");
     }
+
+    private static bool IsManifestValueOneOf(string? value, params string[] allowed)
+        => !string.IsNullOrWhiteSpace(value) &&
+           allowed.Any(item => value.Equals(item, StringComparison.OrdinalIgnoreCase));
 
     private static void ValidateRoundPoolManifest(string manifestPath, RoundPoolManifest manifest)
     {
