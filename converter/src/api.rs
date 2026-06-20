@@ -206,7 +206,12 @@ pub fn read_nade_library_manifest(path: impl AsRef<Path>) -> Result<NadeLibraryM
 fn read_manifest_json<T: DeserializeOwned>(path: impl AsRef<Path>) -> Result<T> {
     let path = path.as_ref();
     let bytes = read_maybe_brotli(path)?;
-    serde_json::from_slice(&bytes).map_err(Error::from)
+    serde_json::from_slice(&bytes).map_err(|e| {
+        Error::InvalidDemo(format!(
+            "{} contains invalid manifest JSON: {e}",
+            path.display()
+        ))
+    })
 }
 
 fn read_maybe_brotli(path: &Path) -> Result<Vec<u8>> {
@@ -218,9 +223,12 @@ fn read_maybe_brotli(path: &Path) -> Result<Vec<u8>> {
     {
         let mut decompressed = Vec::new();
         let mut reader = brotli::Decompressor::new(bytes.as_slice(), 4096);
-        reader
-            .read_to_end(&mut decompressed)
-            .map_err(|e| io_error(path, e))?;
+        reader.read_to_end(&mut decompressed).map_err(|e| {
+            Error::InvalidDemo(format!(
+                "{} could not be decompressed as Brotli manifest: {e}",
+                path.display()
+            ))
+        })?;
         Ok(decompressed)
     } else {
         Ok(bytes)
@@ -353,6 +361,30 @@ mod tests {
 
         assert_eq!(read_map.map, "de_mirage");
         assert_eq!(read_library.maps[0].map, "de_mirage");
+    }
+
+    #[test]
+    fn read_manifest_reports_invalid_json_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = temp.path().join("nade_library.json");
+        fs::write(&manifest_path, "{").unwrap();
+
+        let err = read_nade_library_manifest(&manifest_path).unwrap_err();
+
+        assert!(err.to_string().contains("nade_library.json"));
+        assert!(err.to_string().contains("contains invalid manifest JSON"));
+    }
+
+    #[test]
+    fn read_manifest_reports_invalid_brotli_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest_path = temp.path().join("nade_manifest.json.br");
+        fs::write(&manifest_path, b"not brotli").unwrap();
+
+        let err = read_nade_manifest(&manifest_path).unwrap_err();
+
+        assert!(err.to_string().contains("nade_manifest.json.br"));
+        assert!(err.to_string().contains("could not be decompressed"));
     }
 
     #[test]
