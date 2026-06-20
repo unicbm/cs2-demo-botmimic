@@ -74,7 +74,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     private readonly Dictionary<uint, UtilityProjectileTrace> _utilityTraceProjectiles = new();
     private readonly BotHiderMemoryProbe _botHiderProbe = new();
     private readonly RayTraceLosProbe _rayTraceLosProbe = new();
-    private bool _initialC4Aligned;
+    private bool _safeC4Aligned;
     private readonly DemoTracerApiFacade _apiFacade;
     private StreamWriter? _utilityTraceWriter;
     private string _utilityTracePath = string.Empty;
@@ -834,7 +834,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                 break;
 
             case "bomb_pickup":
-                // Initial C4 ownership is aligned before replay start. Do not clone or move C4
+                // Safe C4 ownership is aligned before replay start. Do not clone or move C4
                 // during live replay ticks.
                 break;
         }
@@ -2011,28 +2011,23 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             }
         }
 
-        AlignInitialC4OwnerForLoadedReplays();
+        AlignSafeC4OwnerForLoadedReplays();
     }
 
-    private void AlignInitialC4OwnerForLoadedReplays()
+    private void AlignSafeC4OwnerForLoadedReplays()
     {
-        if (_initialC4Aligned)
+        if (_safeC4Aligned)
             return;
 
-        var targetSlot = -1;
-        ulong targetSteamId = 0;
-        foreach (var slot in _loadedSlots)
-        {
-            if (!_loadedReplays.TryGetValue(slot, out var replay) || replay.UtilityOnly)
-                continue;
-            if (replay.HifiEvents.Any(IsBombInitialOwnerEvent))
-            {
-                targetSlot = slot;
-                targetSteamId = replay.SteamId;
-                break;
-            }
-        }
+        var plantedOwner = FindLoadedC4Owner(IsBombPlantedEvent);
+        var initialOwner = FindLoadedC4Owner(IsBombInitialOwnerEvent);
+        var targetOwner = plantedOwner ?? initialOwner;
 
+        if (!targetOwner.HasValue)
+            return;
+
+        var targetSlot = targetOwner.Value.Slot;
+        var targetSteamId = targetOwner.Value.SteamId;
         if (targetSlot < 0 || !IsReplaySlotStillSafe(targetSlot))
             return;
 
@@ -2040,7 +2035,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         {
             if (slot == targetSlot || !_loadedReplays.TryGetValue(slot, out var replay) || replay.UtilityOnly)
                 continue;
-            RemoveC4FromReplaySlot(slot, "initial_c4_owner_align");
+            RemoveC4FromReplaySlot(slot, "safe_c4_owner_align");
         }
 
         var player = Utilities.GetPlayerFromSlot(targetSlot);
@@ -2050,16 +2045,49 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             !TryGiveNamedItem(player, "weapon_c4"))
         {
             Server.PrintToConsole(
-                $"dtr: initial C4 owner align failed slot={targetSlot} steam_id={targetSteamId}");
+                $"dtr: C4 safe owner align failed slot={targetSlot} steam_id={targetSteamId}");
             return;
         }
 
-        _initialC4Aligned = true;
-        Server.PrintToConsole($"dtr: initial C4 owner aligned slot={targetSlot} steam_id={targetSteamId}");
+        _safeC4Aligned = true;
+        if (plantedOwner.HasValue &&
+            initialOwner.HasValue &&
+            plantedOwner.Value.SteamId != initialOwner.Value.SteamId)
+        {
+            Server.PrintToConsole(
+                "dtr: C4 safe owner collapsed to planter " +
+                $"slot={targetSlot} steam_id={targetSteamId} initial_steam_id={initialOwner.Value.SteamId}");
+            return;
+        }
+
+        var source = plantedOwner.HasValue ? "bomb_planted" : "bomb_initial_owner";
+        Server.PrintToConsole(
+            $"dtr: C4 safe owner aligned slot={targetSlot} steam_id={targetSteamId} source={source}");
     }
 
     private static bool IsBombInitialOwnerEvent(ReplayHifiEvent replayEvent)
         => replayEvent.Kind.Trim().Equals("bomb_initial_owner", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsBombPlantedEvent(ReplayHifiEvent replayEvent)
+        => replayEvent.Kind.Trim().Equals("bomb_planted", StringComparison.OrdinalIgnoreCase);
+
+    private (int Slot, ulong SteamId)? FindLoadedC4Owner(Func<ReplayHifiEvent, bool> predicate)
+    {
+        foreach (var slot in _loadedSlots)
+        {
+            if (!_loadedReplays.TryGetValue(slot, out var replay) || replay.UtilityOnly)
+                continue;
+
+            var replayEvent = replay.HifiEvents.FirstOrDefault(predicate);
+            if (replayEvent is null)
+                continue;
+
+            var steamId = replayEvent.ActorSteamId.GetValueOrDefault(replay.SteamId);
+            return (slot, steamId);
+        }
+
+        return null;
+    }
 
     private void RemoveC4FromReplaySlot(int slot, string reason)
     {
@@ -2442,7 +2470,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         _pendingBulletHits.Clear();
         _pendingBulletDamages.Clear();
         _pendingThreat360.Clear();
-        _initialC4Aligned = false;
+        _safeC4Aligned = false;
         if (clearArmedPlan)
         {
             _armed = false;
@@ -2481,7 +2509,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         _pendingBulletHits.Clear();
         _pendingBulletDamages.Clear();
         _pendingThreat360.Clear();
-        _initialC4Aligned = false;
+        _safeC4Aligned = false;
         SetReplayPovMask(0);
     }
 
@@ -2721,7 +2749,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         _replayHifiEventNextBySlot[slot] = 0;
         _rebuiltInventorySlots.Remove(slot);
         _loadoutSyncedSlots.Remove(slot);
-        _initialC4Aligned = false;
+        _safeC4Aligned = false;
     }
 
     private static ReplayFileMetadata ReadReplayMetadataOrEmpty(string path)
