@@ -51,6 +51,8 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     private const int MaxPlayerSlots = BotControllerNative.MaxSlots;
     private const int ReplayStartHealth = 100;
     private const string FreezeTimeConVarName = "mp_freezetime";
+    private const float MomentFreezeSeconds = 2.0f;
+    private const float MomentDefaultC4TimerSeconds = 40.0f;
 
     private readonly List<int> _loadedSlots = new();
     private readonly Dictionary<int, LoadedReplay> _loadedReplays = new();
@@ -99,6 +101,8 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     private RoundPoolManifest? _poolManifest;
     private int _poolRoundIndex;
     private readonly HashSet<string> _poolUsedCandidates = new();
+    private MomentChallengeState? _momentChallenge;
+    private int _momentChallengeToken;
     private bool _weaponAlignEnabled = true;
     private bool _projectileAlignEnabled = true;
     private bool _weaponAlignFrameQueued;
@@ -539,6 +543,12 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     [GameEventHandler]
     public HookResult OnRoundStart(EventRoundStart @event, GameEventInfo info)
     {
+        if (_momentChallenge != null)
+        {
+            PrepareMomentChallengeRound("round_start");
+            return HookResult.Continue;
+        }
+
         if (_sequenceActive)
         {
             if (PrepareNextSequenceRound("round_start"))
@@ -565,6 +575,12 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     public HookResult OnRoundFreezeEnd(EventRoundFreezeEnd @event, GameEventInfo info)
     {
         InvalidateFreezePreroll();
+
+        if (_momentChallenge != null)
+        {
+            Server.NextFrame(StartPreparedMomentChallengeRound);
+            return HookResult.Continue;
+        }
 
         if (_sequenceActive)
         {
@@ -602,6 +618,12 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     [GameEventHandler]
     public HookResult OnPlayerDeath(EventPlayerDeath @event, GameEventInfo info)
     {
+        if (TryHandleMomentPlayerDeath(@event))
+            return HookResult.Continue;
+
+        if (_momentChallenge != null)
+            return HookResult.Continue;
+
         if (HandoffIncludesDeath(_handoffMode) && HasActiveReplaySlots())
         {
             var triggerSlot = GetDeathHandoffSlot(@event);
@@ -642,6 +664,9 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     [GameEventHandler]
     public HookResult OnBulletDamage(EventBulletDamage @event, GameEventInfo info)
     {
+        if (_momentChallenge != null)
+            return HookResult.Continue;
+
         if (!HandoffIncludesContact(_handoffMode) || !HasActiveReplaySlots())
             return HookResult.Continue;
 
@@ -667,6 +692,9 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     [GameEventHandler]
     public HookResult OnPlayerHurt(EventPlayerHurt @event, GameEventInfo info)
     {
+        if (_momentChallenge != null)
+            return HookResult.Continue;
+
         if (!HandoffIncludesContact(_handoffMode) || !HasActiveReplaySlots())
             return HookResult.Continue;
 
@@ -735,7 +763,9 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             if (!_lastPlayingSlots.Contains(slot))
                 MarkReplayStarted(slot);
 
-            if (HandoffIncludesContact(_handoffMode) && ReplayHasPassedHandoffGrace(slot) &&
+            if (_momentChallenge == null &&
+                HandoffIncludesContact(_handoffMode) &&
+                ReplayHasPassedHandoffGrace(slot) &&
                 ReplayBotHasContact(slot, playerSnapshot, out var contactReason, out _))
             {
                 HandoffActiveReplays($"enemy_contact_{contactReason}_slot{slot}", slot);
@@ -1787,7 +1817,9 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                 continue;
             }
 
-            if (_loadedReplays.TryGetValue(slot, out var replay) && !replay.UtilityOnly)
+            if (_loadedReplays.TryGetValue(slot, out var replay) &&
+                !replay.UtilityOnly &&
+                secondsAfterLive is not > 0.0f)
             {
                 if (!ResetReplayPawnRoundStartHealth(slot))
                 {
@@ -2180,6 +2212,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     private void StopAllState(string reason)
     {
         StopLoadedReplaySlots(reason);
+        StopMomentChallenge(reason, restoreFreezeTime: true);
         _armed = false;
         _armedPrepared = false;
         _armedStartSecondsAfterLive = null;

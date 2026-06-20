@@ -427,6 +427,7 @@ mod tests {
             name: steam_id.to_string(),
             team_num,
             is_alive: true,
+            health: 100,
             round,
             round_in_progress: true,
             is_freeze_period: false,
@@ -475,6 +476,7 @@ mod tests {
             round_freeze_end_ticks: Vec::new(),
             bomb_beginplant_ticks: Vec::new(),
             bomb_planted_ticks: Vec::new(),
+            bomb_plants: Vec::new(),
             rows: vec![row(1, 0, 2, 1), row(1, 640, 3, 2)],
             projectiles: Vec::new(),
         };
@@ -500,6 +502,7 @@ mod tests {
             round_freeze_end_ticks: Vec::new(),
             bomb_beginplant_ticks: Vec::new(),
             bomb_planted_ticks: Vec::new(),
+            bomb_plants: Vec::new(),
             rows: vec![frozen],
             projectiles: Vec::new(),
         };
@@ -547,6 +550,7 @@ mod tests {
             round_freeze_end_ticks: Vec::new(),
             bomb_beginplant_ticks: Vec::new(),
             bomb_planted_ticks: Vec::new(),
+            bomb_plants: Vec::new(),
             rows,
             projectiles: Vec::new(),
         };
@@ -577,6 +581,7 @@ mod tests {
             round_freeze_end_ticks: vec![150],
             bomb_beginplant_ticks: Vec::new(),
             bomb_planted_ticks: Vec::new(),
+            bomb_plants: Vec::new(),
             rows,
             projectiles: Vec::new(),
         };
@@ -614,6 +619,7 @@ mod tests {
             round_freeze_end_ticks: vec![500, 2_000],
             bomb_beginplant_ticks: Vec::new(),
             bomb_planted_ticks: Vec::new(),
+            bomb_plants: Vec::new(),
             rows,
             projectiles: Vec::new(),
         };
@@ -651,6 +657,7 @@ mod tests {
             round_freeze_end_ticks: Vec::new(),
             bomb_beginplant_ticks: Vec::new(),
             bomb_planted_ticks: Vec::new(),
+            bomb_plants: Vec::new(),
             rows,
             projectiles: Vec::new(),
         };

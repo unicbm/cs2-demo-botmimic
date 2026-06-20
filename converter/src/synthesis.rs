@@ -291,6 +291,7 @@ mod tests {
             name: "p".to_string(),
             team_num: 2,
             is_alive: true,
+            health: 100,
             round: 1,
             round_in_progress: true,
             is_freeze_period: false,
