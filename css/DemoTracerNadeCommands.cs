@@ -57,11 +57,8 @@ public sealed partial class DemoTracerPlugin
             command.ReplyToCommand("usage: dtr_run_nade <nade_manifest.json> <clip_id> <slot> [loop:0|1]");
             return;
         }
-        if (!int.TryParse(command.GetArg(3), out var slot) || slot < 0)
-        {
-            command.ReplyToCommand("dtr: slot must be a non-negative integer");
+        if (!TryParseSlotAt(command, 3, out var slot))
             return;
-        }
 
         var manifestPath = command.GetArg(1);
         var clipId = command.GetArg(2);
@@ -109,11 +106,8 @@ public sealed partial class DemoTracerPlugin
             command.ReplyToCommand($"usage: {commandName} <nade_manifest.json> <slot> [t|ct|all] [combat|retake|all] [gap_seconds]");
             return;
         }
-        if (!int.TryParse(command.GetArg(2), out var slot) || slot < 0)
-        {
-            command.ReplyToCommand("dtr: slot must be a non-negative integer");
+        if (!TryParseSlotAt(command, 2, out var slot))
             return;
-        }
         if (!TryParseNadeCycleArgs(command, 3, commandName, out var sideFilter, out var phaseFilter, out var gapSeconds, out var parseError))
         {
             command.ReplyToCommand(parseError);

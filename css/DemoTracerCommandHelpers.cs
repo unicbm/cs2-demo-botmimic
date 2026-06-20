@@ -112,10 +112,12 @@ public sealed partial class DemoTracerPlugin
     private static bool TryParseSlotAt(CommandInfo command, int argIndex, out int slot)
     {
         slot = 0;
-        if (command.ArgCount > argIndex && int.TryParse(command.GetArg(argIndex), out slot) && slot >= 0)
+        if (command.ArgCount > argIndex &&
+            int.TryParse(command.GetArg(argIndex), out slot) &&
+            slot is >= 0 and < MaxPlayerSlots)
             return true;
 
-        command.ReplyToCommand("usage: command <slot> ...");
+        command.ReplyToCommand($"dtr: slot must be an integer from 0 to {MaxPlayerSlots - 1}");
         return false;
     }
 
