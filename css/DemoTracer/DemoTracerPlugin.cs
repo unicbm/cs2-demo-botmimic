@@ -542,12 +542,20 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         if (_sequenceActive)
         {
             if (PrepareNextSequenceRound("round_start"))
-                ScheduleFreezePrerollStart($"sequence round {_sequencePreparedRound}");
+            {
+                if (!ScheduleFreezePrerollStart($"sequence round {_sequencePreparedRound}"))
+                    PositionLoadedReplayBots(ReplayStartAnchor.Live, null, null);
+            }
         }
         else if (_armed)
         {
             if (PrepareArmedRound("round_start"))
-                ScheduleFreezePrerollStart(_armedLabel);
+            {
+                if (_armedStartSecondsAfterLive.HasValue)
+                    PositionLoadedReplayBots(ReplayStartAnchor.Live, null, _armedStartSecondsAfterLive);
+                else if (!ScheduleFreezePrerollStart(_armedLabel))
+                    PositionLoadedReplayBots(ReplayStartAnchor.Live, null, null);
+            }
         }
 
         return HookResult.Continue;
@@ -1692,11 +1700,12 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         return StartLoaded(loop);
     }
 
-    private void PreloadLoadedReplays()
+    private void PreloadLoadedReplays(
+        ReplayStartAnchor anchor = ReplayStartAnchor.Live,
+        float? freezeTimeSeconds = null,
+        float? secondsAfterLive = null,
+        bool applyStartPosition = true)
     {
-        if (!_weaponAlignEnabled)
-            return;
-
         foreach (var slot in _loadedSlots)
         {
             if (!IsReplaySlotStillSafe(slot))
@@ -1714,7 +1723,24 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                     ApplyReplayLoadoutForSlot(slot, replay);
                     PreloadReplayWeaponsForSlot(slot, replay);
                 }
+                if (applyStartPosition)
+                    ApplyReplayStartPositionForSlot(slot, replay, anchor, freezeTimeSeconds, secondsAfterLive);
             }
+        }
+    }
+
+    private void PositionLoadedReplayBots(
+        ReplayStartAnchor anchor,
+        float? freezeTimeSeconds,
+        float? secondsAfterLive)
+    {
+        foreach (var slot in _loadedSlots)
+        {
+            if (!IsReplaySlotStillSafe(slot))
+                continue;
+            if (!_loadedReplays.TryGetValue(slot, out var replay) || replay.UtilityOnly)
+                continue;
+            ApplyReplayStartPositionForSlot(slot, replay, anchor, freezeTimeSeconds, secondsAfterLive);
         }
     }
 
@@ -1732,7 +1758,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         {
             Server.NextFrame(() =>
             {
-                PreloadLoadedReplays();
+                PreloadLoadedReplays(anchor, freezeTimeSeconds, secondsAfterLive);
                 Server.PrintToConsole(
                     $"dtr: queued start after respawn: {StartLoadedReady(loop, anchor, freezeTimeSeconds, secondsAfterLive)}");
             });
@@ -1792,12 +1818,10 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         var startIndex = 0u;
         if (_loadedReplays.TryGetValue(slot, out var replay))
         {
+            if (!TryGetReplayStartIndex(replay, anchor, freezeTimeSeconds, secondsAfterLive, out startIndex))
+                return false;
             if (anchor == ReplayStartAnchor.FreezePreroll)
             {
-                if (replay.PlayStartTickIndex == 0)
-                    return false;
-
-                startIndex = FreezePrerollStartIndex(replay, freezeTimeSeconds ?? 0.0f);
                 return startIndex < replay.PlayStartTickIndex &&
                        BotControllerNative.StartReplayUntil(
                            slot,
@@ -1805,34 +1829,82 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                            startIndex,
                            replay.PlayStartTickIndex);
             }
-
-            startIndex = anchor switch
-            {
-                ReplayStartAnchor.Live => replay.PlayStartTickIndex,
-                _ => 0,
-            };
-            if (anchor == ReplayStartAnchor.Live && secondsAfterLive is > 0.0f)
-            {
-                if (replay.TickRate <= 0.0f || replay.TickCount <= 0)
-                    return false;
-
-                var offsetTicks = (uint)MathF.Round(secondsAfterLive.Value * replay.TickRate);
-                startIndex = replay.PlayStartTickIndex + offsetTicks;
-                if (startIndex >= replay.TickCount)
-                    return false;
-            }
         }
         return BotControllerNative.StartReplayAt(slot, loop, startIndex);
     }
 
-    private void ScheduleFreezePrerollStart(string label)
+    private static bool TryGetReplayStartIndex(
+        LoadedReplay replay,
+        ReplayStartAnchor anchor,
+        float? freezeTimeSeconds,
+        float? secondsAfterLive,
+        out uint startIndex)
+    {
+        startIndex = 0;
+        if (replay.TickCount <= 0)
+            return false;
+
+        if (anchor == ReplayStartAnchor.FreezePreroll)
+        {
+            if (replay.PlayStartTickIndex == 0)
+                return false;
+            startIndex = FreezePrerollStartIndex(replay, freezeTimeSeconds ?? 0.0f);
+            return startIndex < replay.PlayStartTickIndex && startIndex < replay.TickCount;
+        }
+
+        startIndex = anchor switch
+        {
+            ReplayStartAnchor.Live => replay.PlayStartTickIndex,
+            _ => 0,
+        };
+        if (anchor == ReplayStartAnchor.Live && secondsAfterLive is > 0.0f)
+        {
+            if (replay.TickRate <= 0.0f)
+                return false;
+
+            var offsetTicks = (uint)MathF.Round(secondsAfterLive.Value * replay.TickRate);
+            startIndex = replay.PlayStartTickIndex + offsetTicks;
+        }
+
+        return startIndex < replay.TickCount;
+    }
+
+    private static void ApplyReplayStartPositionForSlot(
+        int slot,
+        LoadedReplay replay,
+        ReplayStartAnchor anchor,
+        float? freezeTimeSeconds,
+        float? secondsAfterLive)
+    {
+        if (!TryGetReplayStartIndex(replay, anchor, freezeTimeSeconds, secondsAfterLive, out var startIndex))
+            return;
+        if (!BotControllerNative.TryReadReplayTickAtIndex(replay.Path, startIndex, out var tick, out var error))
+        {
+            Server.PrintToConsole($"dtr: failed to read start snapshot slot={slot} path=\"{replay.Path}\": {error}");
+            return;
+        }
+
+        var player = Utilities.GetPlayerFromSlot(slot);
+        if (player is not { IsValid: true, PawnIsAlive: true } ||
+            player.PlayerPawn is not { IsValid: true, Value.IsValid: true })
+            return;
+
+        var snapshot = tick.Pre;
+        var origin = new Vector(snapshot.OriginX, snapshot.OriginY, snapshot.OriginZ);
+        var angles = new QAngle(snapshot.Pitch, snapshot.Yaw, snapshot.Roll);
+        var velocity = new Vector(snapshot.VelX, snapshot.VelY, snapshot.VelZ);
+        player.PlayerPawn.Value.Teleport(origin, angles, velocity);
+    }
+
+    private bool ScheduleFreezePrerollStart(string label)
     {
         if (!TryGetFreezePrerollSchedule(out var freezeTimeSeconds, out var delaySeconds, out var reason))
         {
             Server.PrintToConsole($"dtr: freeze pre-roll skipped for {label}: {reason}");
-            return;
+            return false;
         }
 
+        PositionLoadedReplayBots(ReplayStartAnchor.FreezePreroll, freezeTimeSeconds, null);
         var token = ++_freezePrerollToken;
         _freezePrerollStarted = false;
         void Start()
@@ -1840,7 +1912,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             if (token != _freezePrerollToken || _freezePrerollStarted)
                 return;
             _freezePrerollStarted = true;
-            PreloadLoadedReplays();
+            PreloadLoadedReplays(ReplayStartAnchor.FreezePreroll, freezeTimeSeconds, null);
             var message = StartLoaded(loop: false, ReplayStartAnchor.FreezePreroll, freezeTimeSeconds);
             Server.PrintToConsole(
                 $"dtr: freeze pre-roll start {label}: mp_freezetime={freezeTimeSeconds.ToString("F2", CultureInfo.InvariantCulture)}s delay={delaySeconds.ToString("F2", CultureInfo.InvariantCulture)}s; {message}");
@@ -1856,6 +1928,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             Server.PrintToConsole(
                 $"dtr: freeze pre-roll scheduled {label}: mp_freezetime={freezeTimeSeconds.ToString("F2", CultureInfo.InvariantCulture)}s delay={delaySeconds.ToString("F2", CultureInfo.InvariantCulture)}s");
         }
+        return true;
     }
 
     private void InvalidateFreezePreroll()

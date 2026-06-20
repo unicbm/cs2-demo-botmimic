@@ -190,7 +190,7 @@ public sealed partial class DemoTracerPlugin
             Server.NextFrame(() =>
             {
                 ApplyMomentToHuman(human, target, targetCandidate.Tick.Pre, targetCandidate.Tick.WeaponDefIndex);
-                PreloadLoadedReplays();
+                PreloadLoadedReplays(ReplayStartAnchor.Live, null, secondsAfterLive);
                 var start = StartLoaded(loop, ReplayStartAnchor.Live, null, secondsAfterLive);
                 reply($"[DTR OK] moment player={target.PlayerName} round={round} start=+{F(secondsAfterLive)}s bots={loaded.Count} skipped T={skippedT}/CT={skippedCt}: {start}");
                 reply("[DTR WARN] moment v1 uses round loadout and 100 HP; exact used utility/ammo/anchor HP need converter snapshot support.");

@@ -503,7 +503,7 @@ public sealed partial class DemoTracerPlugin
             return false;
         }
 
-        PreloadLoadedReplays();
+        PreloadLoadedReplays(applyStartPosition: false);
         _sequencePrepared = true;
         _sequencePreparedRound = round;
         Server.PrintToConsole($"dtr: prepared sequence round {round} on {reason}: {load.Message}");
@@ -549,7 +549,7 @@ public sealed partial class DemoTracerPlugin
         _armedLoop = loop;
         _armedStartSecondsAfterLive = startSecondsAfterLive;
         _armedLabel = label;
-        PreloadLoadedReplays();
+        PreloadLoadedReplays(applyStartPosition: false);
         Server.PrintToConsole($"[DTR OK] round_start: loaded SINGLE source_round={sourceRound} on {reason}: {load.Message}");
         return true;
     }
