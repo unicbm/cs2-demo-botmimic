@@ -53,19 +53,6 @@ armed plan，再执行 `mp_restartgame 1`，确保接住新的 `round_start`。
 校验并 armed pool plan，然后执行 `mp_restartgame 1`。`server_round` 是本地服务器
 round hint，用于经济/手枪局匹配，不是 manifest source round。
 
-## 聊天快捷入口
-
-### `.replay "<manifest.json>" <source_round> [loop:0|1]`
-
-玩家可以直接在聊天框输入，方便本地快速测试。不传 anchor 时，它会从回合开始播放并
-自动 `mp_restartgame 1`：
-
-```text
-.replay "<输出目录>\<demo-id>\manifest.json" 33
-```
-
-用 `.replay stop` 停止 DemoTracer replay 状态。
-
 ## 顺序播放
 
 ### `dtr_arm seq <manifest.json> [from_source_round]`

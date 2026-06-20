@@ -366,12 +366,6 @@ To play only one source round:
 dtr_go round "<output-dir>\<demo-id>\manifest.json" 12
 ```
 
-Players can use the chat shortcut for the same round-start flow:
-
-```text
-.replay "<output-dir>\<demo-id>\manifest.json" 33
-```
-
 Round-start replay is the supported playback path. Even with `--full-round`,
 server playback starts from `round_start` / freeze time and lets CS2 simulate
 the round forward normally. `--full-round` only controls whether exported

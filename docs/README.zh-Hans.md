@@ -212,12 +212,6 @@ dtr_go seq "<输出目录>\<demo-id>\manifest.json" 0
 dtr_go round "<输出目录>\<demo-id>\manifest.json" 12
 ```
 
-玩家也可以直接在聊天框用快捷入口，从回合开始播放：
-
-```text
-.replay "<输出目录>\<demo-id>\manifest.json" 33
-```
-
 回合开始 replay 是当前支持边界。即使转换时使用 `--full-round`，服务器回放也仍然
 从 `round_start` / freeze time 开始，让 CS2 正常模拟后续回合状态。`--full-round`
 只表示导出的 `.dtr` 数据会保留开局路线之后的 tick。

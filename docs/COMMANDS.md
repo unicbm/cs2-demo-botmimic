@@ -57,19 +57,6 @@ Validates and arms a pool plan, then issues `mp_restartgame 1`. `server_round`
 is a local server round hint for economy/pistol matching, not a manifest source
 round.
 
-## Chat Shortcut
-
-### `.replay "<manifest.json>" <source_round> [loop:0|1]`
-
-Players can type this in chat for quick local testing. Without an anchor it
-restarts and plays the requested source round from round start:
-
-```text
-.replay "<output-dir>\<demo-id>\manifest.json" 33
-```
-
-Use `.replay stop` to stop DemoTracer replay state.
-
 ## Sequence Playback
 
 ### `dtr_arm seq <manifest.json> [from_source_round]`

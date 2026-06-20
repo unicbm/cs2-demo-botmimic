@@ -3,7 +3,6 @@ using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Modules.Commands;
 using CounterStrikeSharp.API.Modules.Utils;
 using CounterStrikeSharp.API;
-using System.Text;
 
 namespace DemoTracer;
 
@@ -211,115 +210,6 @@ public sealed partial class DemoTracerPlugin
                 : $"[DTR OK] Armed SINGLE ROUND. manifest=\"{manifestPath}\"; source_round={round}; waiting for next round_start.");
         reply("[DTR OK] This plan will not advance to later manifest rounds.");
         IssueRestartIfRequested(restart, reply);
-    }
-
-    private HookResult OnChatCommand(CCSPlayerController? player, CommandInfo command)
-    {
-        var tokens = ReplayChatTokens(command);
-        if (tokens.Count == 0)
-            return HookResult.Continue;
-
-        if (tokens[0].Equals(".replay", StringComparison.OrdinalIgnoreCase))
-        {
-            RunReplayChatCommand(player, tokens);
-            return HookResult.Handled;
-        }
-
-        return HookResult.Continue;
-    }
-
-    private void RunReplayChatCommand(CCSPlayerController? player, IReadOnlyList<string> tokens)
-    {
-        void Reply(string message) => ReplyToReplayChat(player, message);
-
-        if (tokens.Count == 1 || tokens[1].Equals("help", StringComparison.OrdinalIgnoreCase))
-        {
-            Reply("usage: .replay \"<manifest.json>\" <source_round> [loop:0|1]");
-            Reply("usage: .replay stop");
-            return;
-        }
-
-        if (tokens[1].Equals("stop", StringComparison.OrdinalIgnoreCase))
-        {
-            StopAllState("chat_replay_stop");
-            Reply("[DTR OK] replay stopped");
-            return;
-        }
-
-        if (tokens.Count < 3)
-        {
-            Reply("usage: .replay \"<manifest.json>\" <source_round> [loop:0|1]");
-            return;
-        }
-
-        var manifestPath = tokens[1];
-        if (!int.TryParse(tokens[2], out var round) || round < 0)
-        {
-            Reply("dtr: source_round must be a non-negative integer");
-            return;
-        }
-
-        var roundStartLoop = tokens.Count > 3 && ParseLoopArgument(tokens[3]);
-        PlanSingleRound(".replay", manifestPath, round, roundStartLoop, restart: true, Reply);
-    }
-
-    private static void ReplyToReplayChat(CCSPlayerController? player, string message)
-    {
-        if (player is { IsValid: true })
-        {
-            player.PrintToChat(message);
-            return;
-        }
-
-        Server.PrintToConsole(message);
-    }
-
-    private static List<string> ReplayChatTokens(CommandInfo command)
-    {
-        if (command.ArgCount <= 1)
-            return [];
-
-        var args = new List<string>(command.ArgCount - 1);
-        for (var i = 1; i < command.ArgCount; i++)
-            args.Add(StripOuterQuotes(command.GetArg(i)));
-
-        if (args.Count > 1 &&
-            args[0].Equals(".replay", StringComparison.OrdinalIgnoreCase))
-            return args;
-
-        return SplitChatCommandText(StripOuterQuotes(string.Join(" ", args)));
-    }
-
-    private static List<string> SplitChatCommandText(string text)
-    {
-        var tokens = new List<string>();
-        var token = new StringBuilder();
-        var inQuotes = false;
-        foreach (var c in text)
-        {
-            if (c == '"')
-            {
-                inQuotes = !inQuotes;
-                continue;
-            }
-
-            if (char.IsWhiteSpace(c) && !inQuotes)
-            {
-                if (token.Length > 0)
-                {
-                    tokens.Add(token.ToString());
-                    token.Clear();
-                }
-                continue;
-            }
-
-            token.Append(c);
-        }
-
-        if (token.Length > 0)
-            tokens.Add(token.ToString());
-
-        return tokens;
     }
 
     private static string StripOuterQuotes(string value)

@@ -117,8 +117,6 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         RegisterListener<Listeners.OnTick>(OnTick);
         RegisterListener<Listeners.OnEntitySpawned>(OnEntitySpawned);
         RegisterListener<Listeners.OnEntityDeleted>(OnEntityDeleted);
-        AddCommandListener("say", OnChatCommand, HookMode.Pre);
-        AddCommandListener("say_team", OnChatCommand, HookMode.Pre);
         Capabilities.RegisterPluginCapability(ApiCapability, () => (IDemoTracerApi)_apiFacade);
         ConfigureNativeSafetyOffsets();
         Server.PrintToConsole("dtr: CSS control plugin loaded");
@@ -126,8 +124,6 @@ public sealed partial class DemoTracerPlugin : BasePlugin
 
     public override void Unload(bool hotReload)
     {
-        RemoveCommandListener("say", OnChatCommand, HookMode.Pre);
-        RemoveCommandListener("say_team", OnChatCommand, HookMode.Pre);
         StopAndUnloadLoaded();
         StopUtilityTrace();
         BotControllerNative.ClearAllBuyPlans();
