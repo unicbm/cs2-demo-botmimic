@@ -536,6 +536,9 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     [GameEventHandler]
     public HookResult OnRoundStart(EventRoundStart @event, GameEventInfo info)
     {
+        if (StopReplayStateForRoundBoundary("round_start"))
+            Server.PrintToConsole("[DTR WARN] round_start stopped stale DTR replay state");
+
         if ((_sequenceActive || _armed) && IsWarmupPeriod())
         {
             Server.PrintToConsole("[DTR ERR] 热身阶段无法进行回放");
@@ -2305,7 +2308,11 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     }
 
     private void StopAndUnloadLoaded()
+        => StopAndUnloadLoaded(clearArmedPlan: true);
+
+    private void StopAndUnloadLoaded(bool clearArmedPlan)
     {
+        var trackedSlots = _loadedSlots.ToHashSet();
         StopNadeCycle("unload_all", stopCurrent: false);
         foreach (var slot in _loadedSlots.ToArray())
         {
@@ -2313,6 +2320,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             ReleaseReplaySlot(slot, "unload_all");
             BotControllerNative.UnloadReplay(slot);
         }
+        StopUntrackedNativeReplaySlots(trackedSlots, "unload_all");
         _loadedSlots.Clear();
         _loadedReplays.Clear();
         _lastEnsuredWeaponDef.Clear();
@@ -2330,10 +2338,17 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         _pendingBulletHits.Clear();
         _pendingBulletDamages.Clear();
         _pendingThreat360.Clear();
-        _armed = false;
-        _armedPrepared = false;
-        _armedManifestPath = string.Empty;
-        _armedSourceRound = -1;
+        if (clearArmedPlan)
+        {
+            _armed = false;
+            _armedPrepared = false;
+            _armedManifestPath = string.Empty;
+            _armedSourceRound = -1;
+        }
+        else
+        {
+            _armedPrepared = false;
+        }
         _sequencePrepared = false;
         _sequencePreparedRound = -1;
         SetReplayPovMask(0);
@@ -2373,6 +2388,40 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         _armedSourceRound = -1;
         StopSequenceState();
         StopPoolState();
+    }
+
+    private bool StopReplayStateForRoundBoundary(string reason)
+    {
+        if (_loadedSlots.Count == 0 &&
+            _lastPlayingSlots.Count == 0 &&
+            _queuedNadeStartTokens.Count == 0 &&
+            !HasAnyNativeActiveReplaySlot())
+            return false;
+
+        StopAndUnloadLoaded(clearArmedPlan: false);
+        return true;
+    }
+
+    private static IEnumerable<int> NativeReplaySlots()
+    {
+        for (var slot = 0; slot < MaxPlayerSlots; slot++)
+            yield return slot;
+    }
+
+    private void StopUntrackedNativeReplaySlots(IReadOnlySet<int> trackedSlots, string reason)
+    {
+        foreach (var slot in NativeReplaySlots())
+        {
+            if (trackedSlots.Contains(slot) || !BotControllerNative.GetReplayState(slot).Playing)
+                continue;
+
+            BotControllerNative.StopReplay(slot);
+            BotControllerNative.UnloadReplay(slot);
+            BotControllerNative.ClearBuyPlan(slot);
+            BotControllerNative.UnlockWeaponSlot(slot);
+            ClearReplayPovSlot(slot);
+            Server.PrintToConsole($"dtr: stopped native replay slot={slot} reason={reason}");
+        }
     }
 
     private void StopOneSlot(CommandInfo command, int slot, string reason)
@@ -2456,9 +2505,9 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         if (HasActiveReplaySlots())
             return true;
 
-        foreach (var player in FindPlayerControllers())
+        foreach (var slot in NativeReplaySlots())
         {
-            if (BotControllerNative.GetReplayState(player.Slot).Playing)
+            if (BotControllerNative.GetReplayState(slot).Playing)
                 return true;
         }
         return false;
@@ -2476,19 +2525,9 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             return true;
 
         reply("[DTR WARN] 会STOP当前所有DTR并override");
-        var loadedSlots = _loadedSlots.ToHashSet();
         StopAndUnloadLoaded();
         StopSequenceState();
         StopPoolState();
-        foreach (var player in FindPlayerControllers())
-        {
-            var slot = player.Slot;
-            if (loadedSlots.Contains(slot) || !BotControllerNative.GetReplayState(slot).Playing)
-                continue;
-            BotControllerNative.StopReplay(slot);
-            BotControllerNative.UnloadReplay(slot);
-            Server.PrintToConsole($"dtr: stopped native replay slot={slot} reason=override");
-        }
         return true;
     }
 
