@@ -771,7 +771,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                 lastDef == weaponDefIndex)
                 continue;
 
-            ApplyReplayWeaponPreset(slot, weaponDefIndex, allowSlotReplacement: true, force: false);
+            ApplyReplayWeaponPreset(slot, weaponDefIndex, allowSlotReplacement: false, force: false);
         }
     }
 
@@ -2683,9 +2683,17 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         }
 
         if (BotControllerNative.SwitchBotWeapon(slot, normalized))
+        {
             _lastReplayWeaponDef[slot] = normalized;
+        }
+        else if (!allowSlotReplacement)
+        {
+            _lastReplayWeaponDef[slot] = normalized;
+        }
         else
+        {
             _lastReplayWeaponDef.Remove(slot);
+        }
     }
 
     private static int ChooseStartWeaponDef(LoadedReplay replay)
