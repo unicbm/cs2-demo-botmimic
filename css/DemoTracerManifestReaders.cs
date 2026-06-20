@@ -206,7 +206,7 @@ public sealed partial class DemoTracerPlugin
                 fullPath,
                 ReadMaybeBrotliText(fullPath),
                 "nade manifest");
-            ValidateNadeManifest(manifest);
+            ValidateNadeManifest(fullPath, manifest);
             var clipsById = new Dictionary<string, NadeClip>(manifest.Clips.Count, StringComparer.OrdinalIgnoreCase);
             foreach (var clip in manifest.Clips)
             {
@@ -239,25 +239,43 @@ public sealed partial class DemoTracerPlugin
         }
     }
 
-    private static string ResolveManifestPath(string manifestPath, string childPath)
+    private static string ResolveNadeClipPath(string manifestPath, string childPath)
     {
-        if (TryResolveManifestChildPath(manifestPath, childPath, out var fullPath, out var error))
+        if (TryResolveNadeClipPath(manifestPath, childPath, out var fullPath, out var error))
             return fullPath;
         throw new InvalidDataException(error);
     }
 
-    private static bool TryResolveManifestChildPath(
+    private static bool TryResolveNadeClipPath(
         string manifestPath,
         string childPath,
         out string fullPath,
         out string error)
     {
         var manifestDir = Path.GetDirectoryName(Path.GetFullPath(manifestPath)) ?? ".";
-        return TryResolveChildPathUnderRoot(manifestDir, childPath, out fullPath, out error);
+        if (TryResolveRelativePathUnderRoot(manifestDir, manifestDir, childPath, out fullPath, out error))
+            return true;
+
+        if (TryGetNadeLibraryRoot(manifestDir, out var libraryRoot) &&
+            TryResolveRelativePathUnderRoot(libraryRoot, manifestDir, childPath, out fullPath, out _))
+        {
+            error = string.Empty;
+            return true;
+        }
+
+        return false;
     }
 
     private static bool TryResolveChildPathUnderRoot(
         string rootDir,
+        string childPath,
+        out string fullPath,
+        out string error)
+        => TryResolveRelativePathUnderRoot(rootDir, rootDir, childPath, out fullPath, out error);
+
+    private static bool TryResolveRelativePathUnderRoot(
+        string rootDir,
+        string baseDir,
         string childPath,
         out string fullPath,
         out string error)
@@ -277,7 +295,8 @@ public sealed partial class DemoTracerPlugin
         }
 
         var root = Path.GetFullPath(rootDir);
-        fullPath = Path.GetFullPath(Path.Combine(root, childPath.Replace('/', Path.DirectorySeparatorChar)));
+        var basePath = Path.GetFullPath(baseDir);
+        fullPath = Path.GetFullPath(Path.Combine(basePath, childPath.Replace('/', Path.DirectorySeparatorChar)));
         var relative = Path.GetRelativePath(root, fullPath);
         if (Path.IsPathRooted(relative) ||
             relative == ".." ||
@@ -290,6 +309,21 @@ public sealed partial class DemoTracerPlugin
         }
 
         return true;
+    }
+
+    private static bool TryGetNadeLibraryRoot(string manifestDir, out string libraryRoot)
+    {
+        libraryRoot = string.Empty;
+        var mapDir = Path.GetFullPath(manifestDir);
+        var mapsDir = Path.GetDirectoryName(mapDir);
+        if (mapsDir == null ||
+            !string.Equals(Path.GetFileName(mapsDir), "maps", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        libraryRoot = Path.GetDirectoryName(mapsDir) ?? string.Empty;
+        return !string.IsNullOrWhiteSpace(libraryRoot);
     }
 
     private static bool TryReadPoolManifest(
@@ -327,7 +361,7 @@ public sealed partial class DemoTracerPlugin
         }
     }
 
-    private static void ValidateNadeManifest(NadeManifest manifest)
+    private static void ValidateNadeManifest(string manifestPath, NadeManifest manifest)
     {
         if (manifest.FormatVersion != NadeManifestFormatVersion)
         {
@@ -340,10 +374,14 @@ public sealed partial class DemoTracerPlugin
         manifest.Clips ??= new List<NadeClip>();
         var clipIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         for (var i = 0; i < manifest.Clips.Count; i++)
-            ValidateNadeClip(manifest.Clips[i], i, clipIds);
+            ValidateNadeClip(manifestPath, manifest.Clips[i], i, clipIds);
     }
 
-    private static void ValidateNadeClip(NadeClip? clip, int index, HashSet<string> clipIds)
+    private static void ValidateNadeClip(
+        string manifestPath,
+        NadeClip? clip,
+        int index,
+        HashSet<string> clipIds)
     {
         if (clip == null)
             throw new InvalidDataException($"nade clip {index} is null");
@@ -361,6 +399,8 @@ public sealed partial class DemoTracerPlugin
             throw new InvalidDataException($"nade clip {clip.ClipId} phase is unsupported: {clip.Phase}");
         if (!IsManifestValueOneOf(clip.Kind, "unknown", "smoke", "flash", "he", "molotov", "decoy"))
             throw new InvalidDataException($"nade clip {clip.ClipId} kind is unsupported: {clip.Kind}");
+        if (!TryResolveNadeClipPath(manifestPath, clip.Path, out _, out var pathError))
+            throw new InvalidDataException($"nade clip {clip.ClipId} {pathError}");
     }
 
     private static bool IsManifestValueOneOf(string? value, params string[] allowed)

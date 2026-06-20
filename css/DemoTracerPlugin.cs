@@ -1139,7 +1139,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             if (!IsReplaySlotStillSafe(slot))
                 return LoadRoundResult.Fail($"dtr: refused to run nade on slot {slot}: not a safe bot target");
 
-            var recPath = ResolveManifestPath(manifestPath, clip.Path);
+            var recPath = ResolveNadeClipPath(manifestPath, clip.Path);
             if (!File.Exists(recPath))
                 return LoadRoundResult.Fail($"dtr: nade clip file missing: {recPath}");
             var utilityWeaponDefIndex = ChooseNadeClipUtilityWeaponDefIndex(clip);
