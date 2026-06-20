@@ -179,6 +179,7 @@ fn synthesize_player_rec_with_projectile_iter<'a>(
             },
             ticks,
             projectiles: replay_projectiles,
+            high_fidelity: crate::model::HighFidelityMetadata::default(),
             subticks,
         },
         stats,

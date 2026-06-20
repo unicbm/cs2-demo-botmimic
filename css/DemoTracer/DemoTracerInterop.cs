@@ -1,13 +1,16 @@
 using System.IO.Compression;
 using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace DemoTracer;
 
 internal static class BotControllerNative
 {
     public const int ExpectedAbiVersion = 15;
-    public const uint RecFormatVersion = 5;
+    public const uint RecFormatVersion = 6;
     public const uint MinRecFormatVersion = 3;
     public const int MovementSnapshotByteSize = 92;
     public const int ReplayTickByteSize = 192;
@@ -27,6 +30,10 @@ internal static class BotControllerNative
         (byte)'C', (byte)'S', (byte)'D', (byte)'T',
         (byte)'R', (byte)'R', (byte)'E', (byte)'C'
     ];
+    private static readonly JsonSerializerOptions HifiJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
 
     [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
     private static extern int BotController_Lock(int slot, int kind, int arg);
@@ -418,6 +425,9 @@ internal static class BotControllerNative
         var playStartTickIndex = version >= 5
             ? CheckedCount(reader.ReadUInt32(), "play_start_tick_index")
             : 0;
+        var metadataJsonLength = version >= 6
+            ? CheckedCount(reader.ReadUInt32(), "metadata_json_len")
+            : 0;
         ValidatePlayStartTickIndex(tickCount, playStartTickIndex);
         _ = ReadRecString(reader); // map
         _ = ReadRecString(reader); // player name
@@ -428,7 +438,7 @@ internal static class BotControllerNative
 
         var bodyUncompressedLength = CheckedLength(reader.ReadUInt64(), "body_uncompressed_len");
         var bodyCompressedLength = CheckedLength(reader.ReadUInt64(), "body_compressed_len");
-        var expectedBodyLength = ExpectedBodyLength(tickCount, subtickCount, projectileCount);
+        var expectedBodyLength = ExpectedBodyLength(tickCount, subtickCount, projectileCount, metadataJsonLength);
         if (bodyUncompressedLength != expectedBodyLength)
             throw new InvalidDataException($"body length {bodyUncompressedLength} != expected {expectedBodyLength}");
 
@@ -466,6 +476,15 @@ internal static class BotControllerNative
         for (var i = 0; i < projectileCount; i++)
             projectiles[i] = ReadProjectileEvent(bodyReader);
 
+        var highFidelity = ReplayHighFidelityMetadata.Empty;
+        if (metadataJsonLength > 0)
+        {
+            var metadataJson = bodyReader.ReadBytes(metadataJsonLength);
+            if (metadataJson.Length != metadataJsonLength)
+                throw new EndOfStreamException("truncated high_fidelity metadata in .dtr");
+            highFidelity = ReadHighFidelityMetadata(metadataJson);
+        }
+
         var subticks = new NativeSubtickMove[subtickCount];
         for (var i = 0; i < subtickCount; i++)
         {
@@ -484,7 +503,7 @@ internal static class BotControllerNative
         if (bodyStream.Position != bodyStream.Length)
             throw new InvalidDataException("trailing bytes in .dtr body");
 
-        return new ReplayFile(ticks, projectiles, subticks, tickRate, (uint)playStartTickIndex);
+        return new ReplayFile(ticks, projectiles, highFidelity, subticks, tickRate, (uint)playStartTickIndex);
     }
 
     private static ReplayFileMetadata BuildReplayMetadata(ReplayFile replay)
@@ -497,6 +516,7 @@ internal static class BotControllerNative
             replay.PlayStartTickIndex,
             replay.Ticks.Length,
             replay.Projectiles,
+            replay.HighFidelity,
             weaponDefIndices);
     }
 
@@ -528,13 +548,14 @@ internal static class BotControllerNative
         return (int)value;
     }
 
-    private static int ExpectedBodyLength(int tickCount, int subtickCount, int projectileCount)
+    private static int ExpectedBodyLength(int tickCount, int subtickCount, int projectileCount, int metadataJsonLength)
     {
         var snapshotCount = tickCount == 0 ? 0 : checked(tickCount + 1);
         return checked(
             snapshotCount * MovementSnapshotByteSize +
             tickCount * TickMetadataByteSize +
             projectileCount * ProjectileEventByteSize +
+            metadataJsonLength +
             subtickCount * SubtickMoveByteSize);
     }
 
@@ -611,13 +632,22 @@ internal static class BotControllerNative
             detonationPosition);
     }
 
+    private static ReplayHighFidelityMetadata ReadHighFidelityMetadata(byte[] metadataJson)
+    {
+        var metadata = JsonSerializer.Deserialize<ReplayHighFidelityMetadata>(metadataJson, HifiJsonOptions)
+            ?? ReplayHighFidelityMetadata.Empty;
+        metadata.Events ??= [];
+        metadata.InventorySnapshots ??= [];
+        return metadata;
+    }
+
     private static string ReadRecString(BinaryReader reader)
     {
         var len = reader.ReadUInt16();
         var bytes = reader.ReadBytes(len);
         if (bytes.Length != len)
             throw new EndOfStreamException("truncated string in .dtr");
-        return System.Text.Encoding.UTF8.GetString(bytes);
+        return Encoding.UTF8.GetString(bytes);
     }
 
     private static void EnsureNativeLayout()
@@ -634,6 +664,7 @@ internal static class BotControllerNative
     private readonly record struct ReplayFile(
         NativeReplayTick[] Ticks,
         ReplayProjectileEvent[] Projectiles,
+        ReplayHighFidelityMetadata HighFidelity,
         NativeSubtickMove[] Subticks,
         float TickRate,
         uint PlayStartTickIndex);
@@ -644,9 +675,10 @@ internal readonly record struct ReplayFileMetadata(
     uint PlayStartTickIndex,
     int TickCount,
     ReplayProjectileEvent[] Projectiles,
+    ReplayHighFidelityMetadata HighFidelity,
     int[] WeaponDefIndices)
 {
-    public static ReplayFileMetadata Empty { get; } = new(0.0f, 0, 0, [], []);
+    public static ReplayFileMetadata Empty { get; } = new(0.0f, 0, 0, [], ReplayHighFidelityMetadata.Empty, []);
 }
 
 internal readonly record struct ReplayState(
@@ -690,6 +722,95 @@ internal readonly record struct ReplayProjectileEvent(
     ReplayVector3 InitialPosition,
     ReplayVector3 InitialVelocity,
     ReplayVector3 DetonationPosition);
+
+internal sealed class ReplayHighFidelityMetadata
+{
+    public static ReplayHighFidelityMetadata Empty { get; } = new();
+
+    [JsonPropertyName("schema_version")]
+    public int SchemaVersion { get; set; } = 1;
+
+    [JsonPropertyName("events")]
+    public ReplayHifiEvent[] Events { get; set; } = [];
+
+    [JsonPropertyName("inventory_snapshots")]
+    public ReplayInventorySnapshot[] InventorySnapshots { get; set; } = [];
+}
+
+internal sealed class ReplayHifiEvent
+{
+    [JsonPropertyName("tick_index")]
+    public uint TickIndex { get; set; }
+
+    [JsonPropertyName("tick")]
+    public int Tick { get; set; }
+
+    [JsonPropertyName("kind")]
+    public string Kind { get; set; } = string.Empty;
+
+    [JsonPropertyName("actor_steam_id")]
+    public ulong? ActorSteamId { get; set; }
+
+    [JsonPropertyName("target_steam_id")]
+    public ulong? TargetSteamId { get; set; }
+
+    [JsonPropertyName("weapon_def_index")]
+    public int? WeaponDefIndex { get; set; }
+
+    [JsonPropertyName("item_name")]
+    public string? ItemName { get; set; }
+
+    [JsonPropertyName("entity_id")]
+    public int? EntityId { get; set; }
+
+    [JsonPropertyName("actor_count_after")]
+    public int? ActorCountAfter { get; set; }
+
+    [JsonPropertyName("target_count_after")]
+    public int? TargetCountAfter { get; set; }
+
+    [JsonPropertyName("damage")]
+    public int? Damage { get; set; }
+
+    [JsonPropertyName("health")]
+    public int? Health { get; set; }
+}
+
+internal sealed class ReplayInventorySnapshot
+{
+    [JsonPropertyName("tick_index")]
+    public uint TickIndex { get; set; }
+
+    [JsonPropertyName("tick")]
+    public int Tick { get; set; }
+
+    [JsonPropertyName("steam_id")]
+    public ulong SteamId { get; set; }
+
+    [JsonPropertyName("weapon_def_counts")]
+    public ReplayInventoryItemCount[] WeaponDefCounts { get; set; } = [];
+
+    [JsonPropertyName("active_weapon_def_index")]
+    public int ActiveWeaponDefIndex { get; set; }
+
+    [JsonPropertyName("armor_value")]
+    public int ArmorValue { get; set; }
+
+    [JsonPropertyName("has_helmet")]
+    public bool HasHelmet { get; set; }
+
+    [JsonPropertyName("has_defuser")]
+    public bool HasDefuser { get; set; }
+}
+
+internal sealed class ReplayInventoryItemCount
+{
+    [JsonPropertyName("weapon_def_index")]
+    public int WeaponDefIndex { get; set; }
+
+    [JsonPropertyName("count")]
+    public int Count { get; set; }
+}
 
 [StructLayout(LayoutKind.Sequential, Pack = 4)]
 internal struct NativeMovementSnapshot

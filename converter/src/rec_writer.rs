@@ -1,6 +1,6 @@
 use crate::model::{
-    Cs2Rec, Cs2RecHeader, MovementSnapshot, ProjectileKind, ReplayProjectile, ReplayTick,
-    SubtickMove, DTR_FORMAT_VERSION,
+    Cs2Rec, Cs2RecHeader, HighFidelityMetadata, MovementSnapshot, ProjectileKind, ReplayProjectile,
+    ReplayTick, SubtickMove, DTR_FORMAT_VERSION,
 };
 use crate::{io_error, Error, Result};
 use std::fs::File;
@@ -36,7 +36,9 @@ pub fn write_rec<W: Write>(writer: &mut W, rec: &Cs2Rec) -> Result<()> {
     let tick_count = checked_u32_count("tick count", rec.ticks.len())?;
     let subtick_count = checked_u32_count("subtick count", rec.subticks.len())?;
     let projectile_count = checked_u32_count("projectile count", rec.projectiles.len())?;
-    let body = build_body(rec)?;
+    let metadata_json = metadata_json_bytes(&rec.high_fidelity)?;
+    let metadata_json_len = checked_u32_count("metadata json length", metadata_json.len())?;
+    let body = build_body(rec, &metadata_json)?;
     let compressed = compress_body(&body)?;
 
     writer
@@ -52,6 +54,7 @@ pub fn write_rec<W: Write>(writer: &mut W, rec: &Cs2Rec) -> Result<()> {
     write_u32(writer, subtick_count)?;
     write_u32(writer, projectile_count)?;
     write_u32(writer, rec.header.play_start_tick_index)?;
+    write_u32(writer, metadata_json_len)?;
     write_string(writer, &rec.header.map)?;
     write_string(writer, &rec.header.player_name)?;
     write_u8(writer, CODEC_BROTLI)?;
@@ -91,6 +94,11 @@ pub fn read_rec<R: Read>(reader: &mut R) -> Result<Cs2Rec> {
         0
     };
     let play_start_tick_index = if version >= 5 { read_u32(reader)? } else { 0 };
+    let metadata_json_len = if version >= 6 {
+        read_u32(reader)? as usize
+    } else {
+        0
+    };
     validate_play_start_tick(tick_count, play_start_tick_index)?;
     let map = read_string(reader)?;
     let player_name = read_string(reader)?;
@@ -101,7 +109,12 @@ pub fn read_rec<R: Read>(reader: &mut R) -> Result<Cs2Rec> {
 
     let body_uncompressed_len = checked_len(read_u64(reader)?, "body_uncompressed_len")?;
     let body_compressed_len = checked_len(read_u64(reader)?, "body_compressed_len")?;
-    let expected_body_len = expected_body_len(tick_count, subtick_count, projectile_count)?;
+    let expected_body_len = expected_body_len(
+        tick_count,
+        subtick_count,
+        projectile_count,
+        metadata_json_len,
+    )?;
     if body_uncompressed_len != expected_body_len {
         return Err(Error::InvalidRec(format!(
             "body length {body_uncompressed_len} != expected {expected_body_len}"
@@ -113,8 +126,13 @@ pub fn read_rec<R: Read>(reader: &mut R) -> Result<Cs2Rec> {
         .read_exact(&mut compressed)
         .map_err(|e| Error::InvalidRec(e.to_string()))?;
     let body = decompress_body(&compressed, body_uncompressed_len)?;
-    let (ticks, projectiles, subticks) =
-        read_body(&body, tick_count, projectile_count, subtick_count)?;
+    let (ticks, projectiles, high_fidelity, subticks) = read_body(
+        &body,
+        tick_count,
+        projectile_count,
+        metadata_json_len,
+        subtick_count,
+    )?;
 
     Ok(Cs2Rec {
         header: Cs2RecHeader {
@@ -130,6 +148,7 @@ pub fn read_rec<R: Read>(reader: &mut R) -> Result<Cs2Rec> {
         },
         ticks,
         projectiles,
+        high_fidelity,
         subticks,
     })
 }
@@ -174,11 +193,12 @@ fn validate_snapshot_chain(rec: &Cs2Rec) -> Result<()> {
     Ok(())
 }
 
-fn build_body(rec: &Cs2Rec) -> Result<Vec<u8>> {
+fn build_body(rec: &Cs2Rec, metadata_json: &[u8]) -> Result<Vec<u8>> {
     let mut body = Vec::with_capacity(expected_body_len(
         rec.ticks.len(),
         rec.subticks.len(),
         rec.projectiles.len(),
+        metadata_json.len(),
     )?);
     if let Some(first) = rec.ticks.first() {
         write_snapshot(&mut body, &first.pre)?;
@@ -193,6 +213,8 @@ fn build_body(rec: &Cs2Rec) -> Result<Vec<u8>> {
     for projectile in &rec.projectiles {
         write_projectile(&mut body, projectile)?;
     }
+    body.write_all(metadata_json)
+        .map_err(|e| Error::InvalidRec(e.to_string()))?;
     for subtick in &rec.subticks {
         write_subtick(&mut body, subtick)?;
     }
@@ -203,8 +225,14 @@ fn read_body(
     body: &[u8],
     tick_count: usize,
     projectile_count: usize,
+    metadata_json_len: usize,
     subtick_count: usize,
-) -> Result<(Vec<ReplayTick>, Vec<ReplayProjectile>, Vec<SubtickMove>)> {
+) -> Result<(
+    Vec<ReplayTick>,
+    Vec<ReplayProjectile>,
+    HighFidelityMetadata,
+    Vec<SubtickMove>,
+)> {
     let mut reader = Cursor::new(body);
     let snapshot_count = if tick_count == 0 { 0 } else { tick_count + 1 };
     let mut snapshots = Vec::with_capacity(snapshot_count);
@@ -237,6 +265,17 @@ fn read_body(
         projectiles.push(read_projectile(&mut reader)?);
     }
 
+    let high_fidelity = if metadata_json_len > 0 {
+        let mut metadata_json = vec![0_u8; metadata_json_len];
+        reader
+            .read_exact(&mut metadata_json)
+            .map_err(|e| Error::InvalidRec(e.to_string()))?;
+        serde_json::from_slice(&metadata_json)
+            .map_err(|e| Error::InvalidRec(format!("invalid high_fidelity metadata JSON: {e}")))?
+    } else {
+        HighFidelityMetadata::default()
+    };
+
     let mut subticks = Vec::with_capacity(subtick_count);
     for _ in 0..subtick_count {
         subticks.push(read_subtick(&mut reader)?);
@@ -244,7 +283,12 @@ fn read_body(
     if reader.position() != body.len() as u64 {
         return Err(Error::InvalidRec("trailing bytes in .dtr body".to_string()));
     }
-    Ok((ticks, projectiles, subticks))
+    Ok((ticks, projectiles, high_fidelity, subticks))
+}
+
+fn metadata_json_bytes(metadata: &HighFidelityMetadata) -> Result<Vec<u8>> {
+    serde_json::to_vec(metadata)
+        .map_err(|e| Error::InvalidRec(format!("invalid high_fidelity metadata: {e}")))
 }
 
 fn compress_body(body: &[u8]) -> Result<Vec<u8>> {
@@ -285,6 +329,7 @@ fn expected_body_len(
     tick_count: usize,
     subtick_count: usize,
     projectile_count: usize,
+    metadata_json_len: usize,
 ) -> Result<usize> {
     let snapshot_count = if tick_count == 0 { 0 } else { tick_count + 1 };
     let snapshot_bytes = snapshot_count
@@ -302,6 +347,7 @@ fn expected_body_len(
     snapshot_bytes
         .checked_add(tick_bytes)
         .and_then(|value| value.checked_add(projectile_bytes))
+        .and_then(|value| value.checked_add(metadata_json_len))
         .and_then(|value| value.checked_add(subtick_bytes))
         .ok_or_else(|| Error::InvalidRec("body too large".to_string()))
 }
@@ -602,7 +648,8 @@ fn read_f32<R: Read>(reader: &mut R) -> Result<f32> {
 mod tests {
     use super::*;
     use crate::model::{
-        Cs2RecHeader, MovementSnapshot, ProjectileKind, ReplayProjectile, ReplayTick, SubtickMove,
+        Cs2RecHeader, HighFidelityMetadata, MovementSnapshot, ProjectileKind, ReplayProjectile,
+        ReplayTick, SubtickMove,
     };
 
     #[test]
@@ -619,7 +666,8 @@ mod tests {
     #[test]
     fn rec_reader_rejects_mismatched_subtick_count() {
         let rec = sample_rec();
-        let mut body = build_body(&rec).unwrap();
+        let metadata_json = metadata_json_bytes(&rec.high_fidelity).unwrap();
+        let mut body = build_body(&rec, &metadata_json).unwrap();
         let metadata_offset = SNAPSHOT_BYTE_SIZE * (rec.ticks.len() + 1);
         body[metadata_offset + 4..metadata_offset + 8].copy_from_slice(&2_u32.to_le_bytes());
         let bytes = test_file_bytes(
@@ -627,6 +675,7 @@ mod tests {
             rec.ticks.len(),
             rec.subticks.len(),
             rec.projectiles.len(),
+            metadata_json.len(),
             CODEC_BROTLI,
             None,
         );
@@ -652,6 +701,7 @@ mod tests {
         assert_eq!(parsed.header, rec.header);
         assert_eq!(parsed.ticks.len(), rec.ticks.len());
         assert_eq!(parsed.projectiles, rec.projectiles);
+        assert_eq!(parsed.high_fidelity, rec.high_fidelity);
         assert_eq!(parsed.subticks.len(), rec.subticks.len());
         for (parsed_tick, tick) in parsed.ticks.iter().zip(rec.ticks.iter()) {
             assert!(snapshot_bit_eq(&parsed_tick.pre, &tick.pre));
@@ -673,7 +723,7 @@ mod tests {
     #[test]
     fn rec_reader_defaults_v4_play_start_to_zero() {
         let rec = sample_rec();
-        let body = build_body(&rec).unwrap();
+        let body = build_body(&rec, &[]).unwrap();
         let bytes = test_file_bytes_for_version(
             &body,
             4,
@@ -681,6 +731,7 @@ mod tests {
             rec.ticks.len(),
             rec.subticks.len(),
             rec.projectiles.len(),
+            0,
             CODEC_BROTLI,
             None,
         );
@@ -708,7 +759,7 @@ mod tests {
     #[test]
     fn rec_v5_header_does_not_change_body_length() {
         let rec = sample_rec();
-        let body = build_body(&rec).unwrap();
+        let body = build_body(&rec, &metadata_json_bytes(&rec.high_fidelity).unwrap()).unwrap();
         let bytes = encoded_sample_rec();
         let (_, body_len_offset, _) = rec_header_offsets(&bytes);
         let body_uncompressed_len = u64::from_le_bytes(
@@ -720,7 +771,13 @@ mod tests {
         assert_eq!(body_uncompressed_len, body.len() as u64);
         assert_eq!(
             body.len(),
-            expected_body_len(rec.ticks.len(), rec.subticks.len(), rec.projectiles.len()).unwrap()
+            expected_body_len(
+                rec.ticks.len(),
+                rec.subticks.len(),
+                rec.projectiles.len(),
+                metadata_json_bytes(&rec.high_fidelity).unwrap().len(),
+            )
+            .unwrap()
         );
     }
 
@@ -854,6 +911,23 @@ mod tests {
                 initial_velocity: [100.0, 200.0, 300.0],
                 detonation_position: [40.0, 50.0, 60.0],
             }],
+            high_fidelity: HighFidelityMetadata::new(
+                vec![crate::model::ReplayHifiEvent {
+                    tick_index: 1,
+                    tick: 101,
+                    kind: crate::model::ReplayHifiEventKind::ItemPickup,
+                    actor_steam_id: Some(76561198000000000),
+                    target_steam_id: None,
+                    weapon_def_index: Some(45),
+                    item_name: Some("smokegrenade".to_string()),
+                    entity_id: None,
+                    actor_count_after: None,
+                    target_count_after: Some(2),
+                    damage: None,
+                    health: None,
+                }],
+                Vec::new(),
+            ),
             subticks: vec![SubtickMove {
                 when: 0.5,
                 button: 1,
@@ -877,6 +951,7 @@ mod tests {
         tick_count: usize,
         subtick_count: usize,
         projectile_count: usize,
+        metadata_json_len: usize,
         codec: u8,
         body_len: Option<u64>,
     ) -> Vec<u8> {
@@ -887,6 +962,7 @@ mod tests {
             tick_count,
             subtick_count,
             projectile_count,
+            metadata_json_len,
             codec,
             body_len,
         )
@@ -899,6 +975,7 @@ mod tests {
         tick_count: usize,
         subtick_count: usize,
         projectile_count: usize,
+        metadata_json_len: usize,
         codec: u8,
         body_len: Option<u64>,
     ) -> Vec<u8> {
@@ -918,6 +995,9 @@ mod tests {
         }
         if version >= 5 {
             write_u32(&mut bytes, play_start_tick_index).unwrap();
+        }
+        if version >= 6 {
+            write_u32(&mut bytes, metadata_json_len as u32).unwrap();
         }
         write_string(&mut bytes, "de_mirage").unwrap();
         write_string(&mut bytes, "player").unwrap();
@@ -939,6 +1019,9 @@ mod tests {
             offset += 4;
         }
         if version >= 5 {
+            offset += 4;
+        }
+        if version >= 6 {
             offset += 4;
         }
         let map_len = u16::from_le_bytes(bytes[offset..offset + 2].try_into().unwrap()) as usize;

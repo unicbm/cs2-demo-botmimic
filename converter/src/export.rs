@@ -1,8 +1,9 @@
 use crate::demo_id::output_demo_id;
 use crate::model::{
-    public_demo_path, ConversionManifest, ConvertedFile, ConvertedRound, EconomyClass, ParsedDemo,
-    ParsedPlayerTick, ParsedProjectile, ReplayLoadout, Side, SubtickMode, TeamEconomy,
-    DEMOTRACER_ABI, DTR_FORMAT_VERSION,
+    public_demo_path, ConversionManifest, ConvertedFile, ConvertedRound, EconomyClass,
+    HighFidelityMetadata, ParsedDemo, ParsedGameEvent, ParsedPlayerTick, ParsedProjectile,
+    ReplayHifiEvent, ReplayHifiEventKind, ReplayInventoryItemCount, ReplayInventorySnapshot,
+    ReplayLoadout, Side, SubtickMode, TeamEconomy, DEMOTRACER_ABI, DTR_FORMAT_VERSION,
 };
 use crate::quality::{analyze_demo, AnalysisOptions};
 use crate::rec_writer::write_rec;
@@ -203,7 +204,7 @@ pub fn export_demo_to_memory(
                 .get(&steam_id)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
-            let (rec, stats) = synthesize_player_rec_with_row_refs(
+            let (mut rec, stats) = synthesize_player_rec_with_row_refs(
                 &player_rows,
                 player_projectiles,
                 &parsed.map,
@@ -214,6 +215,14 @@ pub fn export_demo_to_memory(
                     play_start_tick_index,
                 },
             )?;
+            rec.high_fidelity = build_player_high_fidelity_metadata(
+                parsed,
+                round.round,
+                recording_start_tick,
+                end_tick,
+                &player_rows,
+                round_rows,
+            );
             subtick_stats.add_assign(&stats);
             let team_dir = Side::team_dir(player_rows[0].team_num);
             let player_name = if player_rows[0].name.is_empty() {
@@ -241,6 +250,8 @@ pub fn export_demo_to_memory(
                     &player_rows,
                     &rec,
                 ),
+                hifi_event_count: rec.high_fidelity.events.len(),
+                inventory_snapshot_count: rec.high_fidelity.inventory_snapshots.len(),
                 loadout: replay_loadout(player_rows[0]),
             });
             artifacts.push(ConversionArtifact {
@@ -366,6 +377,475 @@ fn bomb_planted_tick_for_round(parsed: &ParsedDemo, start_tick: i32, end_tick: i
         .copied()
         .filter(|tick| *tick >= start_tick && *tick <= end_tick)
         .min()
+}
+
+#[derive(Clone, Debug)]
+struct AbsoluteHifiEvent {
+    tick: i32,
+    kind: ReplayHifiEventKind,
+    actor_steam_id: Option<u64>,
+    target_steam_id: Option<u64>,
+    weapon_def_index: Option<i32>,
+    item_name: Option<String>,
+    entity_id: Option<i32>,
+    actor_count_after: Option<u32>,
+    target_count_after: Option<u32>,
+    damage: Option<i32>,
+    health: Option<i32>,
+}
+
+#[derive(Clone, Debug)]
+struct InventoryChange {
+    tick: i32,
+    steam_id: u64,
+    weapon_def_index: i32,
+    count_after: u32,
+    item_name: Option<String>,
+    paired_steam_id: Option<u64>,
+}
+
+impl AbsoluteHifiEvent {
+    fn with_tick_index(self, player_rows: &[&ParsedPlayerTick]) -> Option<ReplayHifiEvent> {
+        let tick_index = tick_index_for_event(player_rows, self.tick)?;
+        Some(ReplayHifiEvent {
+            tick_index,
+            tick: self.tick,
+            kind: self.kind,
+            actor_steam_id: self.actor_steam_id,
+            target_steam_id: self.target_steam_id,
+            weapon_def_index: self.weapon_def_index,
+            item_name: self.item_name,
+            entity_id: self.entity_id,
+            actor_count_after: self.actor_count_after,
+            target_count_after: self.target_count_after,
+            damage: self.damage,
+            health: self.health,
+        })
+    }
+}
+
+fn build_player_high_fidelity_metadata(
+    parsed: &ParsedDemo,
+    _round: u32,
+    start_tick: i32,
+    end_tick: i32,
+    player_rows: &[&ParsedPlayerTick],
+    round_rows: &[&ParsedPlayerTick],
+) -> HighFidelityMetadata {
+    let steam_id = player_rows
+        .first()
+        .map(|row| row.steam_id)
+        .unwrap_or_default();
+    if steam_id == 0 {
+        return HighFidelityMetadata::default();
+    }
+
+    let mut events = player_scoped_hifi_events(parsed, steam_id, start_tick, end_tick, round_rows)
+        .into_iter()
+        .filter_map(|event| event.with_tick_index(player_rows))
+        .collect::<Vec<_>>();
+    events.sort_by_key(|event| (event.tick_index, event.tick, hifi_event_rank(event.kind)));
+    events.dedup_by(|lhs, rhs| {
+        lhs.tick_index == rhs.tick_index
+            && lhs.tick == rhs.tick
+            && lhs.kind == rhs.kind
+            && lhs.actor_steam_id == rhs.actor_steam_id
+            && lhs.target_steam_id == rhs.target_steam_id
+            && lhs.weapon_def_index == rhs.weapon_def_index
+            && lhs.entity_id == rhs.entity_id
+    });
+
+    HighFidelityMetadata::new(events, inventory_snapshots_for_player(player_rows))
+}
+
+fn player_scoped_hifi_events(
+    parsed: &ParsedDemo,
+    steam_id: u64,
+    start_tick: i32,
+    end_tick: i32,
+    round_rows: &[&ParsedPlayerTick],
+) -> Vec<AbsoluteHifiEvent> {
+    let mut drops = inferred_inventory_drops(parsed, start_tick, end_tick, round_rows);
+    let mut pickups = inferred_inventory_pickups(start_tick, end_tick, round_rows, &parsed.events);
+    pair_inventory_transfers(&mut drops, &mut pickups);
+
+    let mut events = Vec::new();
+    for drop in drops.into_iter().filter(|drop| drop.steam_id == steam_id) {
+        events.push(AbsoluteHifiEvent {
+            tick: drop.tick,
+            kind: ReplayHifiEventKind::ItemDrop,
+            actor_steam_id: Some(drop.steam_id),
+            target_steam_id: drop.paired_steam_id,
+            weapon_def_index: Some(drop.weapon_def_index),
+            item_name: drop.item_name,
+            entity_id: None,
+            actor_count_after: Some(drop.count_after),
+            target_count_after: None,
+            damage: None,
+            health: None,
+        });
+    }
+    for pickup in pickups
+        .into_iter()
+        .filter(|pickup| pickup.steam_id == steam_id)
+    {
+        events.push(AbsoluteHifiEvent {
+            tick: pickup.tick,
+            kind: if pickup.paired_steam_id.is_some() {
+                ReplayHifiEventKind::ItemTransfer
+            } else {
+                ReplayHifiEventKind::ItemPickup
+            },
+            actor_steam_id: pickup.paired_steam_id,
+            target_steam_id: Some(pickup.steam_id),
+            weapon_def_index: Some(pickup.weapon_def_index),
+            item_name: pickup.item_name,
+            entity_id: None,
+            actor_count_after: None,
+            target_count_after: Some(pickup.count_after),
+            damage: None,
+            health: None,
+        });
+    }
+
+    for event in &parsed.events {
+        if event.tick < start_tick || event.tick > end_tick {
+            continue;
+        }
+        if let Some(mapped) = map_recorded_game_event(event, steam_id) {
+            events.push(mapped);
+        }
+    }
+
+    events
+}
+
+fn map_recorded_game_event(event: &ParsedGameEvent, steam_id: u64) -> Option<AbsoluteHifiEvent> {
+    let kind = match event.name.as_str() {
+        "bomb_dropped" => ReplayHifiEventKind::BombDrop,
+        "bomb_pickup" => ReplayHifiEventKind::BombPickup,
+        "bomb_beginplant" => ReplayHifiEventKind::BombBeginplant,
+        "bomb_planted" => ReplayHifiEventKind::BombPlanted,
+        "weapon_fire" => ReplayHifiEventKind::WeaponFire,
+        "player_hurt" => ReplayHifiEventKind::PlayerHurt,
+        "player_death" => ReplayHifiEventKind::PlayerDeath,
+        _ => return None,
+    };
+    let actor_steam_id = match kind {
+        ReplayHifiEventKind::PlayerHurt | ReplayHifiEventKind::PlayerDeath => {
+            event.attacker_steam_id.or(event.user_steam_id)
+        }
+        _ => event.user_steam_id.or(event.attacker_steam_id),
+    };
+    let target_steam_id = match kind {
+        ReplayHifiEventKind::BombPickup => event.user_steam_id,
+        _ => event.victim_steam_id,
+    };
+    if actor_steam_id != Some(steam_id) && target_steam_id != Some(steam_id) {
+        return None;
+    }
+
+    let weapon_def_index = event
+        .weapon_def_index
+        .map(normalize_weapon_def_index)
+        .or_else(|| {
+            event
+                .item_name
+                .as_deref()
+                .and_then(weapon_def_index_from_item_name)
+        })
+        .or(match kind {
+            ReplayHifiEventKind::BombDrop
+            | ReplayHifiEventKind::BombPickup
+            | ReplayHifiEventKind::BombBeginplant
+            | ReplayHifiEventKind::BombPlanted => Some(49),
+            _ => None,
+        });
+
+    Some(AbsoluteHifiEvent {
+        tick: event.tick,
+        kind,
+        actor_steam_id,
+        target_steam_id,
+        weapon_def_index,
+        item_name: weapon_def_index
+            .and_then(weapon_item_name)
+            .map(str::to_string)
+            .or_else(|| event.item_name.clone()),
+        entity_id: event.entity_id,
+        actor_count_after: None,
+        target_count_after: None,
+        damage: event.damage,
+        health: event.health,
+    })
+}
+
+fn inferred_inventory_drops(
+    parsed: &ParsedDemo,
+    start_tick: i32,
+    end_tick: i32,
+    round_rows: &[&ParsedPlayerTick],
+) -> Vec<InventoryChange> {
+    let mut changes = Vec::new();
+    for rows in live_rows_by_player(round_rows).into_values() {
+        for pair in rows.windows(2) {
+            let prev = pair[0];
+            let current = pair[1];
+            if current.tick < start_tick || current.tick > end_tick {
+                continue;
+            }
+            let prev_counts = inventory_counts(prev);
+            let current_counts = inventory_counts(current);
+            for (def, prev_count) in prev_counts {
+                if !is_replay_equipment_event_def(def) {
+                    continue;
+                }
+                let current_count = current_counts.get(&def).copied().unwrap_or(0);
+                if current_count >= prev_count {
+                    continue;
+                }
+                if projectile_consumed_inventory(parsed, current.steam_id, def, current.tick) {
+                    continue;
+                }
+                changes.push(InventoryChange {
+                    tick: current.tick,
+                    steam_id: current.steam_id,
+                    weapon_def_index: def,
+                    count_after: current_count,
+                    item_name: weapon_item_name(def).map(str::to_string),
+                    paired_steam_id: None,
+                });
+            }
+        }
+    }
+    changes.sort_by_key(|change| (change.tick, change.steam_id, change.weapon_def_index));
+    changes
+}
+
+fn inferred_inventory_pickups(
+    start_tick: i32,
+    end_tick: i32,
+    round_rows: &[&ParsedPlayerTick],
+    game_events: &[ParsedGameEvent],
+) -> Vec<InventoryChange> {
+    let by_player = live_rows_by_player(round_rows);
+    let mut changes = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    for event in game_events {
+        if event.tick < start_tick || event.tick > end_tick || event.name != "item_pickup" {
+            continue;
+        }
+        let Some(steam_id) = event.user_steam_id else {
+            continue;
+        };
+        let Some(def) = event
+            .weapon_def_index
+            .map(normalize_weapon_def_index)
+            .or_else(|| {
+                event
+                    .item_name
+                    .as_deref()
+                    .and_then(weapon_def_index_from_item_name)
+            })
+        else {
+            continue;
+        };
+        if !is_replay_equipment_event_def(def) {
+            continue;
+        }
+        if !seen.insert((event.tick, steam_id, def)) {
+            continue;
+        }
+        let count_after = by_player
+            .get(&steam_id)
+            .and_then(|rows| inventory_count_at_or_after(rows, event.tick, def))
+            .unwrap_or(1);
+        changes.push(InventoryChange {
+            tick: event.tick,
+            steam_id,
+            weapon_def_index: def,
+            count_after,
+            item_name: weapon_item_name(def)
+                .map(str::to_string)
+                .or_else(|| event.item_name.clone()),
+            paired_steam_id: None,
+        });
+    }
+
+    for rows in by_player.into_values() {
+        for pair in rows.windows(2) {
+            let prev = pair[0];
+            let current = pair[1];
+            if current.tick < start_tick || current.tick > end_tick {
+                continue;
+            }
+            let prev_counts = inventory_counts(prev);
+            let current_counts = inventory_counts(current);
+            for (def, current_count) in current_counts {
+                if !is_replay_equipment_event_def(def) {
+                    continue;
+                }
+                let prev_count = prev_counts.get(&def).copied().unwrap_or(0);
+                if current_count <= prev_count {
+                    continue;
+                }
+                if !seen.insert((current.tick, current.steam_id, def)) {
+                    continue;
+                }
+                changes.push(InventoryChange {
+                    tick: current.tick,
+                    steam_id: current.steam_id,
+                    weapon_def_index: def,
+                    count_after: current_count,
+                    item_name: weapon_item_name(def).map(str::to_string),
+                    paired_steam_id: None,
+                });
+            }
+        }
+    }
+
+    changes.sort_by_key(|change| (change.tick, change.steam_id, change.weapon_def_index));
+    changes
+}
+
+fn pair_inventory_transfers(drops: &mut [InventoryChange], pickups: &mut [InventoryChange]) {
+    const TRANSFER_PAIR_TICKS: i32 = 128;
+    for drop in drops.iter_mut() {
+        let mut best_pickup = None;
+        let mut best_delta = i32::MAX;
+        for (index, pickup) in pickups.iter().enumerate() {
+            if pickup.paired_steam_id.is_some()
+                || pickup.steam_id == drop.steam_id
+                || pickup.weapon_def_index != drop.weapon_def_index
+                || pickup.tick < drop.tick
+            {
+                continue;
+            }
+            let delta = pickup.tick - drop.tick;
+            if delta <= TRANSFER_PAIR_TICKS && delta < best_delta {
+                best_pickup = Some(index);
+                best_delta = delta;
+            }
+        }
+        if let Some(index) = best_pickup {
+            drop.paired_steam_id = Some(pickups[index].steam_id);
+            pickups[index].paired_steam_id = Some(drop.steam_id);
+        }
+    }
+}
+
+fn inventory_snapshots_for_player(
+    player_rows: &[&ParsedPlayerTick],
+) -> Vec<ReplayInventorySnapshot> {
+    let mut snapshots = Vec::new();
+    let mut previous_counts: Option<Vec<ReplayInventoryItemCount>> = None;
+    for (row_index, row) in player_rows.iter().enumerate() {
+        let counts = inventory_counts(row)
+            .into_iter()
+            .map(|(weapon_def_index, count)| ReplayInventoryItemCount {
+                weapon_def_index,
+                count,
+            })
+            .collect::<Vec<_>>();
+        if previous_counts.as_ref() == Some(&counts) && row_index != 0 {
+            continue;
+        }
+        previous_counts = Some(counts.clone());
+        let Some(tick_index) = tick_index_for_event(player_rows, row.tick) else {
+            continue;
+        };
+        snapshots.push(ReplayInventorySnapshot {
+            tick_index,
+            tick: row.tick,
+            steam_id: row.steam_id,
+            weapon_def_counts: counts,
+            active_weapon_def_index: normalize_weapon_def_index(row.item_def_idx),
+            armor_value: row.armor_value,
+            has_helmet: row.has_helmet,
+            has_defuser: row.has_defuser,
+        });
+    }
+    snapshots
+}
+
+fn live_rows_by_player<'a>(
+    round_rows: &[&'a ParsedPlayerTick],
+) -> BTreeMap<u64, Vec<&'a ParsedPlayerTick>> {
+    let mut by_player: BTreeMap<u64, Vec<&ParsedPlayerTick>> = BTreeMap::new();
+    for &row in round_rows {
+        if row.steam_id == 0 || !row.is_alive {
+            continue;
+        }
+        by_player.entry(row.steam_id).or_default().push(row);
+    }
+    for rows in by_player.values_mut() {
+        rows.sort_by_key(|row| row.tick);
+        rows.dedup_by_key(|row| row.tick);
+    }
+    by_player
+}
+
+fn inventory_counts(row: &ParsedPlayerTick) -> BTreeMap<i32, u32> {
+    let mut counts = BTreeMap::new();
+    for raw_def in &row.inventory_as_ids {
+        let def = normalize_weapon_def_index(*raw_def);
+        if !is_known_weapon_def_index(def) {
+            continue;
+        }
+        *counts.entry(def).or_insert(0) += 1;
+    }
+    counts
+}
+
+fn inventory_count_at_or_after(rows: &[&ParsedPlayerTick], tick: i32, def: i32) -> Option<u32> {
+    rows.iter()
+        .find(|row| row.tick >= tick)
+        .map(|row| inventory_counts(row).get(&def).copied().unwrap_or(0))
+}
+
+fn projectile_consumed_inventory(
+    parsed: &ParsedDemo,
+    steam_id: u64,
+    weapon_def_index: i32,
+    tick: i32,
+) -> bool {
+    parsed.projectiles.iter().any(|projectile| {
+        projectile.steam_id == steam_id
+            && normalize_weapon_def_index(projectile.weapon_def_index) == weapon_def_index
+            && (projectile.tick - tick).abs() <= 16
+    })
+}
+
+fn tick_index_for_event(player_rows: &[&ParsedPlayerTick], tick: i32) -> Option<u32> {
+    if player_rows.len() < 2 {
+        return None;
+    }
+    let max_index = player_rows.len().saturating_sub(2);
+    let index = player_rows
+        .iter()
+        .take(player_rows.len().saturating_sub(1))
+        .position(|row| row.tick >= tick)
+        .unwrap_or(max_index)
+        .min(max_index);
+    Some(index as u32)
+}
+
+fn hifi_event_rank(kind: ReplayHifiEventKind) -> u8 {
+    match kind {
+        ReplayHifiEventKind::RoundStart => 0,
+        ReplayHifiEventKind::RoundFreezeEnd => 1,
+        ReplayHifiEventKind::BombDrop => 2,
+        ReplayHifiEventKind::ItemDrop => 3,
+        ReplayHifiEventKind::BombPickup => 4,
+        ReplayHifiEventKind::ItemPickup => 5,
+        ReplayHifiEventKind::ItemTransfer => 6,
+        ReplayHifiEventKind::BombBeginplant => 7,
+        ReplayHifiEventKind::BombPlanted => 8,
+        ReplayHifiEventKind::WeaponFire => 9,
+        ReplayHifiEventKind::PlayerHurt => 10,
+        ReplayHifiEventKind::PlayerDeath => 11,
+    }
 }
 
 fn ticks_to_seconds(ticks: i32, tick_rate: f32) -> f32 {
@@ -683,12 +1163,124 @@ fn is_known_weapon_def_index(def: i32) -> bool {
     )
 }
 
+fn is_replay_equipment_event_def(def: i32) -> bool {
+    is_known_weapon_def_index(def) && !matches!(def, 42 | 49)
+}
+
 fn is_preload_weapon_def_index(def: i32) -> bool {
     is_known_weapon_def_index(def) && !matches!(def, 31 | 42 | 49)
 }
 
 fn is_loadout_weapon_def_index(def: i32) -> bool {
     is_known_weapon_def_index(def) && !matches!(def, 42 | 49)
+}
+
+fn weapon_def_index_from_item_name(item_name: &str) -> Option<i32> {
+    match normalize_item_event_name(item_name).as_str() {
+        "weapon_deagle" => Some(1),
+        "weapon_elite" => Some(2),
+        "weapon_fiveseven" => Some(3),
+        "weapon_glock" => Some(4),
+        "weapon_ak47" => Some(7),
+        "weapon_aug" => Some(8),
+        "weapon_awp" => Some(9),
+        "weapon_famas" => Some(10),
+        "weapon_g3sg1" => Some(11),
+        "weapon_galilar" => Some(13),
+        "weapon_m249" => Some(14),
+        "weapon_m4a1" => Some(16),
+        "weapon_mac10" => Some(17),
+        "weapon_p90" => Some(19),
+        "weapon_mp5sd" => Some(23),
+        "weapon_ump45" => Some(24),
+        "weapon_xm1014" => Some(25),
+        "weapon_bizon" => Some(26),
+        "weapon_mag7" => Some(27),
+        "weapon_negev" => Some(28),
+        "weapon_sawedoff" => Some(29),
+        "weapon_tec9" => Some(30),
+        "weapon_taser" => Some(31),
+        "weapon_hkp2000" => Some(32),
+        "weapon_mp7" => Some(33),
+        "weapon_mp9" => Some(34),
+        "weapon_nova" => Some(35),
+        "weapon_p250" => Some(36),
+        "weapon_scar20" => Some(38),
+        "weapon_sg556" => Some(39),
+        "weapon_ssg08" => Some(40),
+        "weapon_knife" => Some(42),
+        "weapon_flashbang" => Some(43),
+        "weapon_hegrenade" => Some(44),
+        "weapon_smokegrenade" => Some(45),
+        "weapon_molotov" => Some(46),
+        "weapon_decoy" => Some(47),
+        "weapon_incgrenade" => Some(48),
+        "weapon_c4" => Some(49),
+        "weapon_m4a1_silencer" => Some(60),
+        "weapon_usp_silencer" => Some(61),
+        "weapon_cz75a" => Some(63),
+        "weapon_revolver" => Some(64),
+        _ => None,
+    }
+}
+
+fn weapon_item_name(def: i32) -> Option<&'static str> {
+    match normalize_weapon_def_index(def) {
+        1 => Some("weapon_deagle"),
+        2 => Some("weapon_elite"),
+        3 => Some("weapon_fiveseven"),
+        4 => Some("weapon_glock"),
+        7 => Some("weapon_ak47"),
+        8 => Some("weapon_aug"),
+        9 => Some("weapon_awp"),
+        10 => Some("weapon_famas"),
+        11 => Some("weapon_g3sg1"),
+        13 => Some("weapon_galilar"),
+        14 => Some("weapon_m249"),
+        16 => Some("weapon_m4a1"),
+        17 => Some("weapon_mac10"),
+        19 => Some("weapon_p90"),
+        23 => Some("weapon_mp5sd"),
+        24 => Some("weapon_ump45"),
+        25 => Some("weapon_xm1014"),
+        26 => Some("weapon_bizon"),
+        27 => Some("weapon_mag7"),
+        28 => Some("weapon_negev"),
+        29 => Some("weapon_sawedoff"),
+        30 => Some("weapon_tec9"),
+        31 => Some("weapon_taser"),
+        32 => Some("weapon_hkp2000"),
+        33 => Some("weapon_mp7"),
+        34 => Some("weapon_mp9"),
+        35 => Some("weapon_nova"),
+        36 => Some("weapon_p250"),
+        38 => Some("weapon_scar20"),
+        39 => Some("weapon_sg556"),
+        40 => Some("weapon_ssg08"),
+        42 => Some("weapon_knife"),
+        43 => Some("weapon_flashbang"),
+        44 => Some("weapon_hegrenade"),
+        45 => Some("weapon_smokegrenade"),
+        46 => Some("weapon_molotov"),
+        47 => Some("weapon_decoy"),
+        48 => Some("weapon_incgrenade"),
+        49 => Some("weapon_c4"),
+        60 => Some("weapon_m4a1_silencer"),
+        61 => Some("weapon_usp_silencer"),
+        63 => Some("weapon_cz75a"),
+        64 => Some("weapon_revolver"),
+        _ => None,
+    }
+}
+
+fn normalize_item_event_name(item_name: &str) -> String {
+    let lower = item_name.trim().to_ascii_lowercase();
+    match lower.as_str() {
+        "decoy_grenade" | "weapon_decoy_grenade" => "weapon_decoy".to_string(),
+        "c4" | "weapon_c4_explosive" => "weapon_c4".to_string(),
+        value if value.starts_with("weapon_") => value.to_string(),
+        value => format!("weapon_{value}"),
+    }
 }
 
 fn slugify(value: &str) -> String {
@@ -986,6 +1578,183 @@ mod tests {
         assert_eq!(rec.ticks[0].pre.origin[0], 60.0);
     }
 
+    #[test]
+    fn grenade_throw_inventory_loss_is_not_item_drop() {
+        let mut parsed = sample_demo();
+        parsed.rows = vec![
+            row_with_inventory(100, 76561198000000001, "alpha", vec![7, 45]),
+            row_with_inventory(116, 76561198000000001, "alpha", vec![7]),
+        ];
+        parsed.projectiles = vec![crate::model::ParsedProjectile {
+            tick: 116,
+            steam_id: 76561198000000001,
+            name: "alpha".to_string(),
+            grenade_type: "smokegrenade_projectile".to_string(),
+            kind: crate::model::ProjectileKind::Smoke,
+            weapon_def_index: 45,
+            initial_position: [1.0, 2.0, 3.0],
+            initial_velocity: [4.0, 5.0, 6.0],
+            detonation_position: [7.0, 8.0, 9.0],
+            effect_position: [0.0; 3],
+            effect_tick: None,
+            effect_source: crate::model::ProjectileEffectSource::Unknown,
+            effect_confidence: 0.0,
+        }];
+
+        let rec = rec_for_steam(&export_memory(parsed), 76561198000000001);
+
+        assert!(rec.high_fidelity.events.iter().all(|event| {
+            !matches!(
+                event.kind,
+                ReplayHifiEventKind::ItemDrop
+                    | ReplayHifiEventKind::ItemPickup
+                    | ReplayHifiEventKind::ItemTransfer
+            )
+        }));
+    }
+
+    #[test]
+    fn smoke_transfer_generates_source_drop_and_target_transfer() {
+        let source = 76561198000000001;
+        let target = 76561198000000002;
+        let mut parsed = sample_demo();
+        parsed.rows = vec![
+            row_with_inventory(100, source, "magixx", vec![45]),
+            row_with_inventory(112, source, "magixx", vec![]),
+            row_with_inventory(100, target, "sh1ro", vec![]),
+            row_with_inventory(120, target, "sh1ro", vec![45]),
+        ];
+        parsed.events = vec![ParsedGameEvent {
+            tick: 120,
+            name: "item_pickup".to_string(),
+            user_steam_id: Some(target),
+            weapon_def_index: Some(45),
+            item_name: Some("smokegrenade".to_string()),
+            ..ParsedGameEvent::default()
+        }];
+
+        let memory = export_memory(parsed);
+        let source_rec = rec_for_steam(&memory, source);
+        let target_rec = rec_for_steam(&memory, target);
+
+        let drop = source_rec
+            .high_fidelity
+            .events
+            .iter()
+            .find(|event| event.kind == ReplayHifiEventKind::ItemDrop)
+            .unwrap();
+        assert_eq!(drop.actor_steam_id, Some(source));
+        assert_eq!(drop.target_steam_id, Some(target));
+        assert_eq!(drop.weapon_def_index, Some(45));
+        assert_eq!(drop.actor_count_after, Some(0));
+
+        let transfer = target_rec
+            .high_fidelity
+            .events
+            .iter()
+            .find(|event| event.kind == ReplayHifiEventKind::ItemTransfer)
+            .unwrap();
+        assert_eq!(transfer.actor_steam_id, Some(source));
+        assert_eq!(transfer.target_steam_id, Some(target));
+        assert_eq!(transfer.weapon_def_index, Some(45));
+        assert_eq!(transfer.target_count_after, Some(1));
+    }
+
+    #[test]
+    fn bomb_events_are_recorded_from_game_events() {
+        let steam_id = 76561198000000001;
+        let mut parsed = sample_demo();
+        parsed.rows = vec![
+            row_with_inventory(100, steam_id, "alpha", vec![7, 49]),
+            row_with_inventory(128, steam_id, "alpha", vec![7, 49]),
+        ];
+        parsed.events = vec![
+            ParsedGameEvent {
+                tick: 110,
+                name: "bomb_beginplant".to_string(),
+                user_steam_id: Some(steam_id),
+                ..ParsedGameEvent::default()
+            },
+            ParsedGameEvent {
+                tick: 124,
+                name: "bomb_planted".to_string(),
+                user_steam_id: Some(steam_id),
+                ..ParsedGameEvent::default()
+            },
+        ];
+
+        let rec = rec_for_steam(&export_memory(parsed), steam_id);
+
+        assert!(rec
+            .high_fidelity
+            .events
+            .iter()
+            .any(|event| event.kind == ReplayHifiEventKind::BombBeginplant
+                && event.weapon_def_index == Some(49)));
+        assert!(rec
+            .high_fidelity
+            .events
+            .iter()
+            .any(|event| event.kind == ReplayHifiEventKind::BombPlanted
+                && event.weapon_def_index == Some(49)));
+    }
+
+    #[test]
+    fn inventory_snapshots_are_written_only_when_inventory_changes() {
+        let steam_id = 76561198000000001;
+        let mut parsed = sample_demo();
+        parsed.rows = vec![
+            row_with_inventory(100, steam_id, "alpha", vec![7]),
+            row_with_inventory(110, steam_id, "alpha", vec![7]),
+            row_with_inventory(120, steam_id, "alpha", vec![7, 45]),
+        ];
+
+        let rec = rec_for_steam(&export_memory(parsed), steam_id);
+
+        assert_eq!(rec.high_fidelity.inventory_snapshots.len(), 2);
+        assert_eq!(rec.high_fidelity.inventory_snapshots[0].tick, 100);
+        assert_eq!(rec.high_fidelity.inventory_snapshots[1].tick, 120);
+        assert_eq!(
+            rec.high_fidelity.inventory_snapshots[1].weapon_def_counts,
+            vec![
+                ReplayInventoryItemCount {
+                    weapon_def_index: 7,
+                    count: 1,
+                },
+                ReplayInventoryItemCount {
+                    weapon_def_index: 45,
+                    count: 1,
+                },
+            ]
+        );
+    }
+
+    fn export_memory(parsed: ParsedDemo) -> MemoryConversionReport {
+        export_demo_to_memory(
+            &parsed,
+            &ConvertMemoryOptions {
+                output_stem: Some("hifi-demo".to_string()),
+                side: Side::Both,
+                selected_rounds: Some(BTreeSet::from([1])),
+                include_suspicious: true,
+                cut_before_bomb_plant: false,
+                subtick_mode: SubtickMode::Auto,
+                freeze_preroll_seconds: DEFAULT_FREEZE_PREROLL_SECONDS,
+                analysis: AnalysisOptions::default(),
+            },
+        )
+        .unwrap()
+    }
+
+    fn rec_for_steam(memory: &MemoryConversionReport, steam_id: u64) -> Cs2Rec {
+        let dtr = memory
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.steam_id == Some(steam_id))
+            .unwrap();
+        read_rec(&mut &dtr.bytes[..]).unwrap()
+    }
+
     fn sample_demo() -> ParsedDemo {
         ParsedDemo {
             path: "<demo.dem>".to_string(),
@@ -998,6 +1767,22 @@ mod tests {
             bomb_planted_ticks: Vec::new(),
             rows: vec![sample_row(100), sample_row(164)],
             projectiles: Vec::new(),
+            events: Vec::new(),
+        }
+    }
+
+    fn row_with_inventory(
+        tick: i32,
+        steam_id: u64,
+        name: &str,
+        inventory_as_ids: Vec<i32>,
+    ) -> ParsedPlayerTick {
+        ParsedPlayerTick {
+            steam_id,
+            name: name.to_string(),
+            inventory_as_ids,
+            item_def_idx: 7,
+            ..sample_row(tick)
         }
     }
 

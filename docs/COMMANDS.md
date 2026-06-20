@@ -214,6 +214,9 @@ Implementation when enabled:
   grenades, primary/secondary candidates, and start weapon.
 - During replay ticks, the plugin follows `.dtr` weapon def indices and asks the
   native runtime to switch active weapon and lock the matching inventory slot.
+- For `.dtr` v6 files, player-scoped equipment/C4 events are processed once by
+  replay cursor. Combat events are loaded as record-only metadata and do not
+  force health or death.
 - For missing weapons, the plugin uses CS2 item giving and cautious slot
   replacement instead of trying to fake a buy menu purchase.
 

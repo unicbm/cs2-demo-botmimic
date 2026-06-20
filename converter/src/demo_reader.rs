@@ -7,7 +7,8 @@ mod demoparser_impl {
     use super::*;
     use crate::io_error;
     use crate::model::{
-        ParsedPlayerTick, ParsedProjectile, ProjectileEffectSource, ProjectileKind, SubtickMove,
+        ParsedGameEvent, ParsedPlayerTick, ParsedProjectile, ProjectileEffectSource,
+        ProjectileKind, SubtickMove,
     };
     use ahash::AHashMap;
     use parser::first_pass::parser_settings::{rm_user_friendly_names, ParserInputs};
@@ -98,8 +99,15 @@ mod demoparser_impl {
             wanted_ticks: vec![],
             wanted_events: vec![
                 "round_freeze_end".to_string(),
+                "round_start".to_string(),
                 "bomb_beginplant".to_string(),
                 "bomb_planted".to_string(),
+                "bomb_dropped".to_string(),
+                "bomb_pickup".to_string(),
+                "item_pickup".to_string(),
+                "weapon_fire".to_string(),
+                "player_hurt".to_string(),
+                "player_death".to_string(),
                 "smokegrenade_detonate".to_string(),
                 "flashbang_detonate".to_string(),
                 "hegrenade_detonate".to_string(),
@@ -234,6 +242,7 @@ mod demoparser_impl {
         bomb_beginplant_ticks.dedup();
         bomb_planted_ticks.sort_unstable();
         bomb_planted_ticks.dedup();
+        let events = parse_game_events(&output.game_events);
         let projectiles = parse_projectiles(bytes, tick_rate, &output.game_events)?;
 
         Ok(ParsedDemo {
@@ -247,6 +256,7 @@ mod demoparser_impl {
             bomb_planted_ticks,
             rows,
             projectiles,
+            events,
         })
     }
 
@@ -600,12 +610,69 @@ mod demoparser_impl {
         }
     }
 
+    fn event_field_string(event: &GameEvent, name: &str) -> Option<String> {
+        match event_field(event, name)? {
+            Variant::String(value) => Some(value.clone()),
+            Variant::U64(value) => Some(value.to_string()),
+            Variant::U32(value) => Some(value.to_string()),
+            Variant::I32(value) => Some(value.to_string()),
+            _ => None,
+        }
+    }
+
     fn event_field<'a>(event: &'a GameEvent, name: &str) -> Option<&'a Variant> {
         event
             .fields
             .iter()
             .find(|field| field.name == name)
             .and_then(|field| field.data.as_ref())
+    }
+
+    fn parse_game_events(events: &[GameEvent]) -> Vec<ParsedGameEvent> {
+        events
+            .iter()
+            .filter_map(parsed_game_event)
+            .collect::<Vec<_>>()
+    }
+
+    fn parsed_game_event(event: &GameEvent) -> Option<ParsedGameEvent> {
+        let supported = matches!(
+            event.name.as_str(),
+            "round_start"
+                | "round_freeze_end"
+                | "bomb_beginplant"
+                | "bomb_planted"
+                | "bomb_dropped"
+                | "bomb_pickup"
+                | "item_pickup"
+                | "weapon_fire"
+                | "player_hurt"
+                | "player_death"
+        );
+        if !supported {
+            return None;
+        }
+
+        Some(ParsedGameEvent {
+            tick: event.tick,
+            name: event.name.clone(),
+            user_steam_id: event_steam_id(event),
+            attacker_steam_id: event_field_u64(event, "attacker_steamid")
+                .or_else(|| event_field_u64(event, "attacker")),
+            victim_steam_id: event_field_u64(event, "victim_steamid")
+                .or_else(|| event_field_u64(event, "userid")),
+            weapon_def_index: event_field_i32(event, "defindex")
+                .or_else(|| event_field_i32(event, "item_def_index"))
+                .or_else(|| event_field_i32(event, "weapon_id")),
+            item_name: event_field_string(event, "item")
+                .or_else(|| event_field_string(event, "weapon"))
+                .or_else(|| event_field_string(event, "weapon_name")),
+            entity_id: event_field_i32(event, "entindex")
+                .or_else(|| event_field_i32(event, "entityid")),
+            damage: event_field_i32(event, "dmg_health")
+                .or_else(|| event_field_i32(event, "damage")),
+            health: event_field_i32(event, "health"),
+        })
     }
 
     fn output_columns<'a>(

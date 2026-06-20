@@ -3,7 +3,7 @@ use std::fmt;
 use std::str::FromStr;
 
 pub const DEMOTRACER_ABI: i32 = 15;
-pub const DTR_FORMAT_VERSION: u32 = 5;
+pub const DTR_FORMAT_VERSION: u32 = 6;
 
 pub fn public_demo_path(path: &str) -> String {
     let normalized = path.replace('\\', "/");
@@ -236,6 +236,100 @@ pub struct ReplayProjectile {
     pub detonation_position: [f32; 3],
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct HighFidelityMetadata {
+    pub schema_version: u32,
+    pub events: Vec<ReplayHifiEvent>,
+    pub inventory_snapshots: Vec<ReplayInventorySnapshot>,
+}
+
+impl Default for HighFidelityMetadata {
+    fn default() -> Self {
+        Self {
+            schema_version: 1,
+            events: Vec::new(),
+            inventory_snapshots: Vec::new(),
+        }
+    }
+}
+
+impl HighFidelityMetadata {
+    pub fn new(
+        events: Vec<ReplayHifiEvent>,
+        inventory_snapshots: Vec<ReplayInventorySnapshot>,
+    ) -> Self {
+        Self {
+            schema_version: 1,
+            events,
+            inventory_snapshots,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty() && self.inventory_snapshots.is_empty()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplayHifiEventKind {
+    ItemDrop,
+    ItemPickup,
+    ItemTransfer,
+    BombDrop,
+    BombPickup,
+    BombBeginplant,
+    BombPlanted,
+    WeaponFire,
+    PlayerHurt,
+    PlayerDeath,
+    RoundStart,
+    RoundFreezeEnd,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ReplayHifiEvent {
+    pub tick_index: u32,
+    pub tick: i32,
+    pub kind: ReplayHifiEventKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor_steam_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_steam_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub weapon_def_index: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entity_id: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actor_count_after: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_count_after: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub damage: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub health: Option<i32>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ReplayInventorySnapshot {
+    pub tick_index: u32,
+    pub tick: i32,
+    pub steam_id: u64,
+    pub weapon_def_counts: Vec<ReplayInventoryItemCount>,
+    pub active_weapon_def_index: i32,
+    pub armor_value: u32,
+    pub has_helmet: bool,
+    pub has_defuser: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ReplayInventoryItemCount {
+    pub weapon_def_index: i32,
+    pub count: u32,
+}
+
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct SubtickMove {
     pub when: f32,
@@ -281,6 +375,7 @@ pub struct Cs2Rec {
     pub header: Cs2RecHeader,
     pub ticks: Vec<ReplayTick>,
     pub projectiles: Vec<ReplayProjectile>,
+    pub high_fidelity: HighFidelityMetadata,
     pub subticks: Vec<SubtickMove>,
 }
 
@@ -296,6 +391,7 @@ pub struct ParsedDemo {
     pub bomb_planted_ticks: Vec<i32>,
     pub rows: Vec<ParsedPlayerTick>,
     pub projectiles: Vec<ParsedProjectile>,
+    pub events: Vec<ParsedGameEvent>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -313,6 +409,20 @@ pub struct ParsedProjectile {
     pub effect_tick: Option<i32>,
     pub effect_source: ProjectileEffectSource,
     pub effect_confidence: f32,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ParsedGameEvent {
+    pub tick: i32,
+    pub name: String,
+    pub user_steam_id: Option<u64>,
+    pub attacker_steam_id: Option<u64>,
+    pub victim_steam_id: Option<u64>,
+    pub weapon_def_index: Option<i32>,
+    pub item_name: Option<String>,
+    pub entity_id: Option<i32>,
+    pub damage: Option<i32>,
+    pub health: Option<i32>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -570,6 +680,10 @@ pub struct ConvertedFile {
     pub play_start_tick_index: u32,
     pub first_weapon_def_index: i32,
     pub preload_weapon_def_indices: Vec<i32>,
+    #[serde(default)]
+    pub hifi_event_count: usize,
+    #[serde(default)]
+    pub inventory_snapshot_count: usize,
     #[serde(default)]
     pub loadout: ReplayLoadout,
 }

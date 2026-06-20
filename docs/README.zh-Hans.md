@@ -257,7 +257,7 @@ dtr_stop_all
 - 目前主要面向 Windows x64 本地 CS2 环境。Linux 可以尝试从源码构建，
   但 converter/runtime 的 Linux 发布包目前不是维护目标。
 - 需要同一张地图，并且服务器里要有足够的 bot。
-- `.dtr` 是无损压缩的 BotController 兼容 replay 格式，并包含用于运行时道具对齐的 demo 原始投掷物元数据；离线 subtick 和完整 usercmd 还会继续补。
+- `.dtr` 是无损压缩的 BotController 兼容 replay 格式，并包含 demo 原始投掷物元数据、按玩家记录的高保真事件和库存快照；离线完整 usercmd 还会继续补。
 - 某些武器和默认手枪配置在 CS2 里比较麻烦，目前优先保证不崩服和基本行为正确。
 - CS2 demo 可能暴露饰品/econ 元数据，但 DemoTracer 有意不提取或应用皮肤、刀、手套、贴纸、挂件/charms 或探员。Valve 的 [Game Server Operation Guidelines](https://blog.counter-strike.net/server_guidelines/) 禁止社区服务器伪造玩家库存或授予玩家未拥有的物品；Valve 曾经禁用提供这类服务的服务器运营者的 GSLT（Game Server Login Token）。第三方饰品覆写不属于本项目范围，风险由使用者自行承担。
 - 这个工具不是作弊工具，也不会接入匹配服务器；它面向本地服务器、研究和内容制作。

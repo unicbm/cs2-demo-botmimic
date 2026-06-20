@@ -56,20 +56,22 @@ details are documented in [`docs/COMMANDS.md`](docs/COMMANDS.md).
 loader and BotController runtime. This section is the public binary contract;
 format changes should update this section in the same commit.
 
-All values are little-endian. v5 is the current writer format. The runtime
-reader also accepts v3 and v4 files for backward compatibility. v3 does not
-contain projectile metadata; v3/v4 files have `play_start_tick_index = 0`.
+All values are little-endian. v6 is the current writer format. The runtime
+reader also accepts v3-v5 files for backward compatibility. v3 does not contain
+projectile metadata; v3/v4 files have `play_start_tick_index = 0`; v3-v5 files
+have no high-fidelity metadata JSON blob.
 
-The format is lossless: movement snapshots, projectile events, and subtick
-records are written with their original `f32` and integer bit patterns. The body
-removes duplicated adjacent tick snapshots and is then compressed with Brotli.
+The format is lossless: movement snapshots, projectile events, high-fidelity
+metadata, and subtick records are written with their original `f32`, integer, or
+UTF-8 JSON values. The body removes duplicated adjacent tick snapshots and is
+then compressed with Brotli.
 
 ### Header
 
 | Field | Type | Notes |
 | --- | --- | --- |
 | magic | 8 bytes | `CSDTRREC` |
-| version | `u32` | `5` |
+| version | `u32` | `6` |
 | tick_rate | `f32` | Demo tickrate estimate |
 | round | `u32` | `total_rounds_played` window |
 | side | `u8` | `2=T`, `3=CT`, `0=unknown` |
@@ -79,6 +81,7 @@ removes duplicated adjacent tick snapshots and is then compressed with Brotli.
 | subtick_count | `u32` | Number of subtick moves |
 | projectile_count | `u32` | Number of replay projectile events |
 | play_start_tick_index | `u32` | First tick to simulate when playback starts; v5+ only |
+| metadata_json_len | `u32` | Byte length of high-fidelity metadata JSON; v6+ only |
 | map | `u16 len + utf8` | Map name |
 | player_name | `u16 len + utf8` | Demo player name |
 | codec | `u8` | `1 = Brotli` |
@@ -87,7 +90,7 @@ removes duplicated adjacent tick snapshots and is then compressed with Brotli.
 
 The next `body_compressed_len` bytes are a Brotli stream.
 
-Round replay v5 files may store up to 10 seconds of same-round freeze-time
+Round replay v6 files may store up to 10 seconds of same-round freeze-time
 context before `play_start_tick_index`. Playback still begins at
 `round_freeze_end`; the pre-start context is used to preserve held grenade
 button state without replaying arbitrarily long paused freeze time.
@@ -101,6 +104,7 @@ After decompression, the body layout is:
 | `MovementSnapshotV3` | `0 if tick_count == 0, else tick_count + 1` | 92 |
 | tick metadata | `tick_count` | 8 |
 | `ProjectileEventV4` | `projectile_count` | 48 |
+| `HighFidelityMetadataV6` | `metadata_json_len` | UTF-8 JSON |
 | `SubtickMoveV3` | `subtick_count` | 28 |
 
 Tick metadata is:
@@ -135,6 +139,35 @@ projectile data. Older v3 files have no projectile event section.
 | initial_position | `f32[3]` | |
 | initial_velocity | `f32[3]` | |
 | detonation_position | `f32[3]` | |
+
+### HighFidelityMetadataV6
+
+v6 adds a Brotli-body UTF-8 JSON blob after projectile events and before
+subtick moves. The top-level object is:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| schema_version | `u32` | Current metadata schema is `1` |
+| events | array | Player-scoped high-fidelity events |
+| inventory_snapshots | array | Inventory state after inventory changes |
+
+`events` are stored in the `.dtr` file for the player they affect, so
+equipment/C4 events are not blindly executed ten times. Event `kind` values are:
+`item_drop`, `item_pickup`, `item_transfer`, `bomb_drop`, `bomb_pickup`,
+`bomb_beginplant`, `bomb_planted`, `weapon_fire`, `player_hurt`, and
+`player_death`.
+
+Equipment events include `tick_index`, absolute demo `tick`, actor/target
+SteamID64 where known, normalized `weapon_def_index`, optional `item_name`, and
+post-event item counts when the converter can infer them. Bomb events use
+`weapon_def_index = 49`. Combat events are record-only for now: the CSS plugin
+loads them for diagnostics/future behavior, but does not force damage or death.
+
+`inventory_snapshots` are also player-scoped and are written only when the
+player inventory changes. Each snapshot contains normalized weapon def counts,
+the active weapon def, armor value, helmet state, and defuser state. The CSS
+plugin does not use snapshots to repair inventory every replay tick; they are a
+contract for validation, diagnostics, and future higher-fidelity playback.
 
 ### MovementSnapshotV3
 
@@ -174,19 +207,21 @@ This layout is `92` bytes with `Pack=4`.
 ### Parser Checklist
 
 1. Read and validate magic `CSDTRREC`.
-2. Require `version == 5` for current writer output, or accept `version == 3`
-   and `version == 4` for backward compatibility.
+2. Require `version == 6` for current writer output, or accept `version == 3`,
+   `4`, and `5` for backward compatibility.
 3. Read `tick_count`, `subtick_count`, `projectile_count`,
-   `play_start_tick_index`, `map`, and `player_name`. For v3, treat
-   `projectile_count` as `0`; for v3/v4, treat `play_start_tick_index` as `0`.
+   `play_start_tick_index`, `metadata_json_len`, `map`, and `player_name`. For
+   v3, treat `projectile_count` as `0`; for v3/v4, treat
+   `play_start_tick_index` as `0`; for v3-v5, treat `metadata_json_len` as `0`.
 4. Require `codec == 1`.
 5. Check `body_uncompressed_len == snapshot_count * 92 + tick_count * 8 +
-   projectile_count * 48 + subtick_count * 28`, where `snapshot_count` is `0`
-   for empty replays and `tick_count + 1` otherwise.
+   projectile_count * 48 + metadata_json_len + subtick_count * 28`, where
+   `snapshot_count` is `0` for empty replays and `tick_count + 1` otherwise.
 6. Read and Brotli-decompress exactly `body_compressed_len` bytes.
 7. Rebuild ticks from the snapshot chain and metadata.
 8. Sum all tick `num_subtick` values and verify it equals `subtick_count`.
-9. For non-empty replays, require `play_start_tick_index < tick_count`.
+9. If `metadata_json_len > 0`, parse exactly that many bytes as UTF-8 JSON.
+10. For non-empty replays, require `play_start_tick_index < tick_count`.
 
 ## Who This Is For
 
@@ -416,7 +451,7 @@ For normal use, export the recommended rounds only.
 - Windows x64 local CS2 is the primary target. Linux may work from source, but
   Linux converter/runtime packages are not currently maintained release targets.
 - The server should run the same map and have enough bots.
-- `.dtr` uses a lossless compressed BotController-compatible replay format with demo-derived projectile metadata for runtime utility alignment. Full offline subtick/usercmd reconstruction is future work.
+- `.dtr` uses a lossless compressed BotController-compatible replay format with demo-derived projectile metadata, player-scoped high-fidelity events, and inventory snapshots. Full offline usercmd reconstruction is future work.
 - Some weapon/loadout details are still limited by CS2 slot behavior, especially default pistols.
 - CS2 demos can expose cosmetic/econ metadata, but DemoTracer intentionally does not extract or apply skins, knives, gloves, stickers, charms, or agents. Valve's [Game Server Operation Guidelines](https://blog.counter-strike.net/server_guidelines/) prohibit falsifying inventories or granting items players do not own, and Valve has previously disabled Game Server Login Tokens (GSLTs) for operators that offered those services. Third-party cosmetic overrides are outside this project and are at your own risk.
 - This is for local servers, research, content creation, and plugin development. It is not intended for matchmaking or cheating.
