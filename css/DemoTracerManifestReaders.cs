@@ -169,10 +169,10 @@ public sealed partial class DemoTracerPlugin
                 return cached;
             }
 
-            var manifest = JsonSerializer.Deserialize<NadeManifest>(
-                               ReadMaybeBrotliText(fullPath),
-                               ManifestJsonOptions)
-                           ?? throw new InvalidOperationException("nade manifest JSON is empty");
+            var manifest = DeserializeManifestJson<NadeManifest>(
+                fullPath,
+                ReadMaybeBrotliText(fullPath),
+                "nade manifest");
             var clipsById = new Dictionary<string, NadeClip>(manifest.Clips.Count, StringComparer.OrdinalIgnoreCase);
             foreach (var clip in manifest.Clips)
             {
@@ -192,9 +192,18 @@ public sealed partial class DemoTracerPlugin
             return File.ReadAllText(path);
 
         using var input = File.OpenRead(path);
-        using var brotli = new BrotliStream(input, CompressionMode.Decompress);
-        using var reader = new StreamReader(brotli);
-        return reader.ReadToEnd();
+        try
+        {
+            using var brotli = new BrotliStream(input, CompressionMode.Decompress);
+            using var reader = new StreamReader(brotli);
+            return reader.ReadToEnd();
+        }
+        catch (InvalidDataException ex)
+        {
+            throw new InvalidDataException(
+                $"manifest Brotli payload is invalid: {path} ({ex.Message})",
+                ex);
+        }
     }
 
     private static string ResolveManifestPath(string manifestPath, string childPath)
@@ -261,13 +270,10 @@ public sealed partial class DemoTracerPlugin
         try
         {
             var json = File.ReadAllText(manifestPath);
-            manifest = JsonSerializer.Deserialize<RoundPoolManifest>(
-                           json,
-                           new JsonSerializerOptions
-                           {
-                               PropertyNameCaseInsensitive = true
-                           })
-                       ?? throw new InvalidOperationException("pool manifest JSON is empty");
+            manifest = DeserializeManifestJson<RoundPoolManifest>(
+                manifestPath,
+                json,
+                "pool manifest");
             ValidateRoundPoolManifest(manifest);
             return true;
         }
@@ -342,12 +348,24 @@ public sealed partial class DemoTracerPlugin
     private static ConversionManifest ReadManifest(string manifestPath)
     {
         var json = File.ReadAllText(manifestPath);
-        return JsonSerializer.Deserialize<ConversionManifest>(
-                   json,
-                   new JsonSerializerOptions
-                   {
-                       PropertyNameCaseInsensitive = true
-                   })
-               ?? throw new InvalidOperationException("manifest JSON is empty");
+        return DeserializeManifestJson<ConversionManifest>(
+            manifestPath,
+            json,
+            "manifest");
+    }
+
+    private static T DeserializeManifestJson<T>(string path, string json, string manifestKind)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<T>(json, ManifestJsonOptions)
+                   ?? throw new InvalidDataException($"{manifestKind} JSON is empty: {path}");
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidDataException(
+                $"{manifestKind} contains invalid JSON: {path} ({ex.Message})",
+                ex);
+        }
     }
 }
