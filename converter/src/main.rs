@@ -870,6 +870,13 @@ fn validate_manifest_artifact_path(
             value
         )));
     }
+    if !full.exists() {
+        return Err(cs2_demotracer::Error::InvalidDemo(format!(
+            "{} contains missing {key} target {:?}",
+            manifest_path.display(),
+            value
+        )));
+    }
     Ok(())
 }
 
@@ -958,21 +965,46 @@ mod tests {
 
     #[test]
     fn manifest_hygiene_allows_artifact_paths_inside_pack() {
-        let manifest = json!({
+        let temp = tempfile::tempdir().unwrap();
+        let pack = temp.path();
+        let map_manifest_path = pack.join("maps/de_mirage/nade_manifest.json");
+        let clip_path = pack.join("demos/demo-a/nades/t/opening/smoke/a.dtr");
+        fs::create_dir_all(map_manifest_path.parent().unwrap()).unwrap();
+        fs::create_dir_all(clip_path.parent().unwrap()).unwrap();
+        fs::write(&map_manifest_path, "{}").unwrap();
+        fs::write(&clip_path, b"dtr").unwrap();
+
+        let map_manifest = json!({
             "clips": [
                 { "path": "../../demos/demo-a/nades/t/opening/smoke/a.dtr" }
-            ],
+            ]
+        });
+        validate_manifest_artifact_paths(pack, &map_manifest_path, &map_manifest).unwrap();
+
+        let library_manifest = json!({
             "maps": [
                 { "manifest": "maps/de_mirage/nade_manifest.json" }
             ]
         });
 
-        validate_manifest_artifact_paths(
-            Path::new("pack"),
-            Path::new("pack/maps/de_mirage/nade_manifest.json"),
-            &manifest,
-        )
-        .unwrap();
+        validate_manifest_artifact_paths(pack, &pack.join("nade_library.json"), &library_manifest)
+            .unwrap();
+    }
+
+    #[test]
+    fn manifest_hygiene_rejects_missing_artifact_targets() {
+        let temp = tempfile::tempdir().unwrap();
+        let pack = temp.path();
+        let manifest_path = pack.join("manifest.json");
+        let manifest = json!({
+            "files": [
+                { "path": "round01/t/missing.dtr" }
+            ]
+        });
+
+        let err = validate_manifest_artifact_paths(pack, &manifest_path, &manifest).unwrap_err();
+
+        assert!(err.to_string().contains("missing path target"));
     }
 
     #[test]
