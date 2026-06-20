@@ -1603,9 +1603,11 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                 return false;
             }
 
-            var recPath = Path.IsPathRooted(file.Path)
-                ? file.Path
-                : Path.GetFullPath(Path.Combine(manifestDir, file.Path.Replace('/', Path.DirectorySeparatorChar)));
+            if (!TryResolveChildPathUnderRoot(manifestDir, file.Path, out var recPath, out var pathError))
+            {
+                error = $"{file.Side}:slot{slot}:{file.PlayerName} {pathError}";
+                return false;
+            }
 
             if (!BotControllerNative.LoadReplayFromFile(slot, recPath, out var replayMetadata))
             {

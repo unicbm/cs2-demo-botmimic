@@ -105,9 +105,13 @@ public sealed partial class DemoTracerPlugin
         }
 
         var poolDir = Path.GetDirectoryName(Path.GetFullPath(_poolManifestPath)) ?? ".";
-        var manifestPath = Path.IsPathRooted(candidate.Manifest)
-            ? candidate.Manifest
-            : Path.GetFullPath(Path.Combine(poolDir, candidate.Manifest.Replace('/', Path.DirectorySeparatorChar)));
+        if (!TryResolveChildPathUnderRoot(poolDir, candidate.Manifest, out var manifestPath, out var pathError))
+        {
+            Server.PrintToConsole($"dtr: pool skipped round {_poolRoundIndex}: {pathError}");
+            _poolRoundIndex++;
+            return;
+        }
+
         var load = LoadRound(manifestPath, candidate.SourceRound);
         if (!load.Ok)
         {

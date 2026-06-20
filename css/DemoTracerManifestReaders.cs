@@ -199,10 +199,55 @@ public sealed partial class DemoTracerPlugin
 
     private static string ResolveManifestPath(string manifestPath, string childPath)
     {
-        if (Path.IsPathRooted(childPath))
-            return childPath;
+        if (TryResolveManifestChildPath(manifestPath, childPath, out var fullPath, out var error))
+            return fullPath;
+        throw new InvalidDataException(error);
+    }
+
+    private static bool TryResolveManifestChildPath(
+        string manifestPath,
+        string childPath,
+        out string fullPath,
+        out string error)
+    {
         var manifestDir = Path.GetDirectoryName(Path.GetFullPath(manifestPath)) ?? ".";
-        return Path.GetFullPath(Path.Combine(manifestDir, childPath.Replace('/', Path.DirectorySeparatorChar)));
+        return TryResolveChildPathUnderRoot(manifestDir, childPath, out fullPath, out error);
+    }
+
+    private static bool TryResolveChildPathUnderRoot(
+        string rootDir,
+        string childPath,
+        out string fullPath,
+        out string error)
+    {
+        fullPath = string.Empty;
+        error = string.Empty;
+
+        if (string.IsNullOrWhiteSpace(childPath))
+        {
+            error = "manifest child path is empty";
+            return false;
+        }
+        if (Path.IsPathRooted(childPath))
+        {
+            error = $"manifest child path must be relative: {childPath}";
+            return false;
+        }
+
+        var root = Path.GetFullPath(rootDir);
+        fullPath = Path.GetFullPath(Path.Combine(root, childPath.Replace('/', Path.DirectorySeparatorChar)));
+        var relative = Path.GetRelativePath(root, fullPath);
+        if (Path.IsPathRooted(relative) ||
+            relative == ".." ||
+            relative.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal) ||
+            relative.StartsWith("../", StringComparison.Ordinal))
+        {
+            error = $"manifest child path escapes manifest directory: {childPath}";
+            fullPath = string.Empty;
+            return false;
+        }
+
+        return true;
     }
 
     private static bool TryReadPoolManifest(
