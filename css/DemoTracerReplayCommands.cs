@@ -37,6 +37,12 @@ public sealed partial class DemoTracerPlugin
         }
 
         var path = command.GetArg(slotArg + 1);
+        if (!IsReplaySlotStillSafe(slot))
+        {
+            command.ReplyToCommand($"dtr: refused to load slot {slot}: not a safe bot target");
+            return;
+        }
+
         var ok = BotControllerNative.LoadReplayFromFile(slot, path, out var replayMetadata);
         if (ok)
         {
