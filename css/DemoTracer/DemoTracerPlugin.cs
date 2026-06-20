@@ -594,6 +594,15 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     [GameEventHandler]
     public HookResult OnPlayerDeath(EventPlayerDeath @event, GameEventInfo info)
     {
+        if (@event.Userid is { IsValid: true } victim &&
+            IsReplaySlotPlaying(victim.Slot))
+        {
+            BotControllerNative.StopReplay(victim.Slot);
+            ReleaseReplaySlot(victim.Slot, "replay_target_death");
+            if (IsNadeCycleSlot(victim.Slot))
+                StopNadeCycle("replay_target_death", stopCurrent: false);
+        }
+
         if (HandoffIncludesDeath(_handoffMode) && HasActiveReplaySlots())
         {
             var triggerSlot = GetDeathHandoffSlot(@event);
@@ -721,6 +730,15 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                 ReleaseReplaySlot(slot, "unsafe_replay_target");
                 if (IsNadeCycleSlot(slot))
                     StopNadeCycle("unsafe_replay_target", stopCurrent: false);
+                continue;
+            }
+            if (playerSnapshot.TryGetSlot(slot, out var replayPlayer) &&
+                replayPlayer is { IsValid: true, PawnIsAlive: false })
+            {
+                BotControllerNative.StopReplay(slot);
+                ReleaseReplaySlot(slot, "dead_replay_target");
+                if (IsNadeCycleSlot(slot))
+                    StopNadeCycle("dead_replay_target", stopCurrent: false);
                 continue;
             }
 
@@ -2433,7 +2451,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         string fallbackItem,
         ReplayWeaponSlot slot)
     {
-        if (!player.IsValid)
+        if (player is not { IsValid: true, PawnIsAlive: true })
             return;
 
         var pawn = player.PlayerPawn.Value;
@@ -2453,7 +2471,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         string fallbackItem,
         ReplayWeaponSlot slot)
     {
-        if (!player.IsValid)
+        if (player is not { IsValid: true, PawnIsAlive: true })
             return;
 
         var pawn = player.PlayerPawn.Value;
@@ -2545,6 +2563,9 @@ public sealed partial class DemoTracerPlugin : BasePlugin
 
     private static bool TryGiveNamedItem(CCSPlayerController player, string itemName)
     {
+        if (player is not { IsValid: true, PawnIsAlive: true })
+            return false;
+
         try
         {
             player.GiveNamedItem(itemName);
@@ -2619,6 +2640,10 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         bool allowSlotReplacement,
         bool force)
     {
+        var player = Utilities.GetPlayerFromSlot(slot);
+        if (player is not { IsValid: true, PawnIsAlive: true })
+            return;
+
         var normalized = NormalizeWeaponDefIndex(weaponDefIndex);
         if (!IsKnownWeaponDefIndex(normalized))
             return;
@@ -2729,7 +2754,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             return true;
 
         var player = Utilities.GetPlayerFromSlot(slot);
-        if (player is not { IsValid: true } ||
+        if (player is not { IsValid: true, PawnIsAlive: true } ||
             player.PlayerPawn is not { IsValid: true, Value.IsValid: true })
             return false;
 
@@ -2767,7 +2792,8 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             return false;
 
         var pawn = player.PlayerPawn.Value;
-        if (pawn is not { IsValid: true })
+        if (player is not { IsValid: true, PawnIsAlive: true } ||
+            pawn is not { IsValid: true })
             return false;
 
         if (HasReplayWeapon(pawn, className))
