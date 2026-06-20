@@ -218,10 +218,9 @@ dtr_go round "<输出目录>\<demo-id>\manifest.json" 12
 .replay "<输出目录>\<demo-id>\manifest.json" 33
 ```
 
-回合开始 replay 是当前支持边界。`dtr_go_at ... bomb` 和 `.moment` 这类中途
-tick 起点只作为实验/诊断入口：它们可能缺少前半回合模拟出来的物理、动画和已安装
-C4 状态。plant 后诊断需要转换时加 `--full-round`；普通转换默认会在 C4 开始安放前
-截断，用于开局路线 replay。
+回合开始 replay 是当前支持边界。即使转换时使用 `--full-round`，服务器回放也仍然
+从 `round_start` / freeze time 开始，让 CS2 正常模拟后续回合状态。`--full-round`
+只表示导出的 `.dtr` 数据会保留开局路线之后的 tick。
 
 如果使用 Mirage 回合池：
 

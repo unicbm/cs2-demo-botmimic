@@ -28,11 +28,9 @@ By default, round replay export cuts before the C4 plant starts. Use
 Round replay exports keep at most 10 seconds of same-round freeze-time context
 by default so pre-freeze grenade holds can release correctly after
 `round_freeze_end`. Tune this with `--freeze-preroll-seconds`.
-When a round has a completed C4 plant, `manifest.json` records the plant anchor
-for experimental diagnostics such as `dtr_go_at ... bomb`. Round-start playback
-is the supported server replay path; post-plant starts can miss physics,
-animation, and planted-C4 state. Those diagnostics need `--full-round`,
-otherwise the `.dtr` files stop before the plant.
+`--full-round` controls exported replay coverage only. The CSS plugin still
+starts playback from `round_start` / freeze time and relies on normal CS2
+simulation to create later round state.
 
 Useful options:
 

@@ -80,7 +80,6 @@ public sealed partial class DemoTracerPlugin : BasePlugin
 
     private bool _armed;
     private bool _armedLoop;
-    private float? _armedStartSecondsAfterLive;
     private string _armedLabel = string.Empty;
     private string _armedManifestPath = string.Empty;
     private int _armedSourceRound = -1;
@@ -456,7 +455,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                     ? $"sequence from_source_round={_sequenceRounds[_sequenceIndex]} prepared={_sequencePrepared}:{_sequencePreparedRound}"
                     : "sequence complete"
                 : _armed
-                    ? $"single source_round={_armedSourceRound} prepared={_armedPrepared}{FormatStartOffsetStatus(_armedStartSecondsAfterLive)}"
+                    ? $"single source_round={_armedSourceRound} prepared={_armedPrepared}"
                     : _poolActive
                         ? $"pool server_round={_poolRoundIndex} candidates={_poolManifest?.Candidates.Count ?? 0}"
                         : "none";
@@ -580,12 +579,11 @@ public sealed partial class DemoTracerPlugin : BasePlugin
 
         var loop = _armedLoop;
         var label = _armedLabel;
-        var startSecondsAfterLive = _armedStartSecondsAfterLive;
         _armed = false;
         _armedPrepared = false;
         Server.NextFrame(() =>
         {
-            var message = StartLoaded(loop, ReplayStartAnchor.Live, null, startSecondsAfterLive);
+            var message = StartLoaded(loop, ReplayStartAnchor.Live, null);
             Server.PrintToConsole($"dtr: auto-start {label}: {message}");
         });
         return HookResult.Continue;
@@ -1737,13 +1735,12 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     }
 
     private string StartLoaded(bool loop)
-        => StartLoaded(loop, ReplayStartAnchor.Live, null, null);
+        => StartLoaded(loop, ReplayStartAnchor.Live, null);
 
     private string StartLoaded(
         bool loop,
         ReplayStartAnchor anchor,
-        float? freezeTimeSeconds,
-        float? secondsAfterLive = null)
+        float? freezeTimeSeconds)
     {
         var respawned = RespawnDeadLoadedReplayBots();
         if (respawned > 0)
@@ -1752,19 +1749,18 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             {
                 PreloadLoadedReplays();
                 Server.PrintToConsole(
-                    $"dtr: queued start after respawn: {StartLoadedReady(loop, anchor, freezeTimeSeconds, secondsAfterLive)}");
+                    $"dtr: queued start after respawn: {StartLoadedReady(loop, anchor, freezeTimeSeconds)}");
             });
             return $"dtr: respawned {respawned} replay bot(s), start queued";
         }
 
-        return StartLoadedReady(loop, anchor, freezeTimeSeconds, secondsAfterLive);
+        return StartLoadedReady(loop, anchor, freezeTimeSeconds);
     }
 
     private string StartLoadedReady(
         bool loop,
         ReplayStartAnchor anchor,
-        float? freezeTimeSeconds,
-        float? secondsAfterLive = null)
+        float? freezeTimeSeconds)
     {
         var ok = 0;
         foreach (var slot in _loadedSlots)
@@ -1788,24 +1784,23 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                 }
             }
 
-            if (StartReplayForSlot(slot, loop, anchor, freezeTimeSeconds, secondsAfterLive))
+            if (StartReplayForSlot(slot, loop, anchor, freezeTimeSeconds))
             {
                 MarkReplayStarted(slot);
                 ok++;
             }
         }
-        return $"dtr: started {ok}/{_loadedSlots.Count} loaded slots, loop={loop}{FormatStartOffsetStatus(secondsAfterLive)}";
+        return $"dtr: started {ok}/{_loadedSlots.Count} loaded slots, loop={loop}";
     }
 
     private bool StartReplayForSlot(int slot, bool loop)
-        => StartReplayForSlot(slot, loop, ReplayStartAnchor.Live, null, null);
+        => StartReplayForSlot(slot, loop, ReplayStartAnchor.Live, null);
 
     private bool StartReplayForSlot(
         int slot,
         bool loop,
         ReplayStartAnchor anchor,
-        float? freezeTimeSeconds,
-        float? secondsAfterLive = null)
+        float? freezeTimeSeconds)
     {
         var startIndex = 0u;
         if (_loadedReplays.TryGetValue(slot, out var replay))
@@ -1829,16 +1824,6 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                 ReplayStartAnchor.Live => replay.PlayStartTickIndex,
                 _ => 0,
             };
-            if (anchor == ReplayStartAnchor.Live && secondsAfterLive is > 0.0f)
-            {
-                if (replay.TickRate <= 0.0f || replay.TickCount <= 0)
-                    return false;
-
-                var offsetTicks = (uint)MathF.Round(secondsAfterLive.Value * replay.TickRate);
-                startIndex = replay.PlayStartTickIndex + offsetTicks;
-                if (startIndex >= replay.TickCount)
-                    return false;
-            }
         }
         return BotControllerNative.StartReplayAt(slot, loop, startIndex);
     }
@@ -2089,7 +2074,6 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         _pendingThreat360.Clear();
         _armed = false;
         _armedPrepared = false;
-        _armedStartSecondsAfterLive = null;
         _armedManifestPath = string.Empty;
         _armedSourceRound = -1;
         _sequencePrepared = false;
@@ -2127,7 +2111,6 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         StopLoadedReplaySlots(reason);
         _armed = false;
         _armedPrepared = false;
-        _armedStartSecondsAfterLive = null;
         _armedManifestPath = string.Empty;
         _armedSourceRound = -1;
         StopSequenceState();
@@ -2891,7 +2874,6 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     private enum ReplayStartAnchor
     {
         Live,
-        RecordingStart,
         FreezePreroll,
     }
 
@@ -3141,11 +3123,6 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             return string.Join(",", rounds);
         return $"{string.Join(",", rounds.Take(16))},... ({rounds.Count})";
     }
-
-    private static string FormatStartOffsetStatus(float? secondsAfterLive)
-        => secondsAfterLive.HasValue
-            ? $" start=+{secondsAfterLive.Value.ToString("0.###", CultureInfo.InvariantCulture)}s"
-            : string.Empty;
 
     private static bool CheckAbi(CommandInfo command)
     {

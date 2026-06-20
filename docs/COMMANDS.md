@@ -51,24 +51,6 @@ source round", not "play only this round".
 Validates and arms exactly one demo source round, then issues
 `mp_restartgame 1`. This does not advance to later manifest rounds.
 
-### `dtr_go_at <manifest.json> <source_round> <seconds_after_live|bomb|bomb+seconds> [loop:0|1]`
-
-Experimental diagnostic command. It validates and arms exactly one demo source
-round, starts it from the requested live-round offset, then issues
-`mp_restartgame 1`.
-
-Use `bomb` to start at the completed C4 plant event recorded in `manifest.json`,
-or `bomb+2.5` to start a few seconds after the plant. Numeric values are seconds
-after live round start. Post-plant playback requires full-round converter output:
-convert with `--full-round`.
-
-Round-start playback is the supported path. Mid-round starts can miss physics,
-animation, and planted-C4 state that normally exists only after the game
-simulates the earlier part of the round.
-
-`dtr_arm_at` has the same arguments but waits for the next natural
-`round_start`.
-
 ### `dtr_go pool <pool_manifest.json> [server_round]`
 
 Validates and arms a pool plan, then issues `mp_restartgame 1`. `server_round`
@@ -86,36 +68,7 @@ restarts and plays the requested source round from round start:
 .replay "<output-dir>\<demo-id>\manifest.json" 33
 ```
 
-For experimental mid-round diagnostics, pass an explicit anchor:
-`.replay "<manifest.json>" <source_round> <seconds_after_live|bomb|bomb+seconds>`.
-
 Use `.replay stop` to stop DemoTracer replay state.
-
-## Moment Playback
-
-### `dtr_moment <manifest.json> <source_round> <bomb|seconds|bomb+seconds> <player_name|steamid> [human_slot] [loop:0|1]`
-
-Experimental interactive moment. The selected human player is placed at the
-chosen demo player's replay snapshot, while other players still alive at that
-anchor are loaded onto replay bots and started from the same point. Like other
-mid-round starts, this is not a supported fidelity path yet.
-
-When run by a player, `human_slot` is omitted. When run from the server console,
-pass the human slot after the demo player selector.
-
-```text
-dtr_moment "<output-dir>\<demo-id>\manifest.json" 33 bomb magixx
-```
-
-Chat shortcut:
-
-```text
-.moment "<output-dir>\<demo-id>\manifest.json" 33 magixx
-```
-
-Moment v1 uses replay position/view/velocity, round loadout, armor/helmet/kit,
-and active weapon def. Exact anchor HP, used utility, ammo, physics continuity,
-and planted C4 state are not yet full game-state snapshots.
 
 ## Sequence Playback
 

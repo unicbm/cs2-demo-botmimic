@@ -3,7 +3,6 @@ using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Modules.Commands;
 using CounterStrikeSharp.API.Modules.Utils;
 using CounterStrikeSharp.API;
-using System.Globalization;
 using System.Text;
 
 namespace DemoTracer;
@@ -25,14 +24,6 @@ public sealed partial class DemoTracerPlugin
     [ConsoleCommand("dtr_round_restart", "dtr_round_restart <manifest.json> <source_round>")]
     public void RoundRestartCommand(CCSPlayerController? player, CommandInfo command)
         => ArmSingleRound(command, "dtr_round_restart", restart: true);
-
-    [ConsoleCommand("dtr_go_at", "experimental mid-round start: dtr_go_at <manifest.json> <source_round> <seconds_after_live|bomb|bomb+seconds> [loop:0|1]")]
-    public void GoAtCommand(CCSPlayerController? player, CommandInfo command)
-        => ArmSingleRoundAt(command, "dtr_go_at", restart: true);
-
-    [ConsoleCommand("dtr_arm_at", "experimental mid-round start: dtr_arm_at <manifest.json> <source_round> <seconds_after_live|bomb|bomb+seconds> [loop:0|1]")]
-    public void ArmAtCommand(CCSPlayerController? player, CommandInfo command)
-        => ArmSingleRoundAt(command, "dtr_arm_at", restart: false);
 
     [ConsoleCommand("dtr_run_manifest", "dtr_run_manifest <manifest.json> [from_source_round]")]
     public void RunManifestCommand(CCSPlayerController? player, CommandInfo command)
@@ -141,7 +132,6 @@ public sealed partial class DemoTracerPlugin
         InvalidateFreezePreroll();
         _armed = false;
         _armedPrepared = false;
-        _armedStartSecondsAfterLive = null;
         _armedManifestPath = string.Empty;
         _armedSourceRound = -1;
         _poolActive = false;
@@ -214,155 +204,12 @@ public sealed partial class DemoTracerPlugin
         _armedPrepared = false;
         _armedManifestPath = manifestPath;
         _armedSourceRound = round;
-        _armedStartSecondsAfterLive = null;
         _armedLabel = $"source_round={round} manifest={manifestPath}";
         reply(
             restart
                 ? $"[DTR OK] Planned SINGLE ROUND. manifest=\"{manifestPath}\"; source_round={round}; restart=now."
                 : $"[DTR OK] Armed SINGLE ROUND. manifest=\"{manifestPath}\"; source_round={round}; waiting for next round_start.");
         reply("[DTR OK] This plan will not advance to later manifest rounds.");
-        IssueRestartIfRequested(restart, reply);
-    }
-
-    private void ArmSingleRoundAt(
-        CommandInfo command,
-        string commandName,
-        bool restart)
-    {
-        if (!CheckAbi(command))
-            return;
-        if (!TryParseRoundArgs(command, commandName, out var manifestPath, out var round))
-            return;
-        if (command.ArgCount <= 3)
-        {
-            command.ReplyToCommand($"usage: {commandName} <manifest.json> <source_round> <seconds_after_live|bomb|bomb+seconds> [loop:0|1]");
-            return;
-        }
-
-        var anchor = command.GetArg(3);
-        var loop = command.ArgCount > 4 && ParseLoopArgument(command.GetArg(4));
-        PlanSingleRoundAt(
-            commandName,
-            manifestPath,
-            round,
-            anchor,
-            loop,
-            restart,
-            message => command.ReplyToCommand(message));
-    }
-
-    private static bool TryResolveReplayStartAnchor(
-        string anchor,
-        Action<string> reply,
-        string commandName,
-        ConversionManifest manifest,
-        int round,
-        out float secondsAfterLive)
-    {
-        secondsAfterLive = 0.0f;
-        anchor = anchor.Trim();
-        if (string.IsNullOrWhiteSpace(anchor))
-        {
-            reply($"usage: {commandName} <manifest.json> <source_round> <seconds_after_live|bomb|bomb+seconds> [loop:0|1]");
-            return false;
-        }
-
-        if (float.TryParse(anchor, NumberStyles.Float, CultureInfo.InvariantCulture, out secondsAfterLive) &&
-            float.IsFinite(secondsAfterLive) &&
-            secondsAfterLive >= 0.0f)
-            return true;
-
-        if (anchor.Equals("bomb", StringComparison.OrdinalIgnoreCase) ||
-            anchor.StartsWith("bomb+", StringComparison.OrdinalIgnoreCase))
-        {
-            var roundInfo = manifest.Rounds.FirstOrDefault(entry => entry.Round == round);
-            if (roundInfo?.BombPlantedSecondsAfterLive == null)
-            {
-                reply($"[DTR ERR] source_round={round} has no bomb_planted_tick in manifest.");
-                reply("[DTR HINT] Re-convert the demo with the updated converter, and use --full-round for post-plant playback.");
-                return false;
-            }
-
-            secondsAfterLive = roundInfo.BombPlantedSecondsAfterLive.Value;
-            if (anchor.StartsWith("bomb+", StringComparison.OrdinalIgnoreCase))
-            {
-                var deltaText = anchor["bomb+".Length..];
-                if (!float.TryParse(deltaText, NumberStyles.Float, CultureInfo.InvariantCulture, out var delta) ||
-                    !float.IsFinite(delta))
-                {
-                    reply("dtr: bomb+seconds must use a finite numeric seconds value");
-                    return false;
-                }
-                secondsAfterLive += delta;
-            }
-
-            if (roundInfo.DurationSeconds > 0.0f && secondsAfterLive >= roundInfo.DurationSeconds)
-            {
-                reply($"[DTR ERR] start anchor +{secondsAfterLive.ToString("0.###", CultureInfo.InvariantCulture)}s is outside this replay window ({roundInfo.DurationSeconds.ToString("0.###", CultureInfo.InvariantCulture)}s).");
-                reply("[DTR HINT] Re-convert this round with --full-round for post-plant playback.");
-                return false;
-            }
-
-            if (float.IsFinite(secondsAfterLive) && secondsAfterLive >= 0.0f)
-                return true;
-        }
-
-        reply("dtr: start anchor must be seconds_after_live, bomb, or bomb+seconds");
-        return false;
-    }
-
-    private void PlanSingleRoundAt(
-        string commandName,
-        string manifestPath,
-        int round,
-        string anchor,
-        bool loop,
-        bool restart,
-        Action<string> reply)
-    {
-        if (!BotControllerNative.IsCompatible)
-        {
-            reply($"dtr: ABI mismatch, runtime={BotControllerNative.AbiVersion}, expected={BotControllerNative.ExpectedAbiVersion}");
-            return;
-        }
-        if (!TryReadManifest(manifestPath, out var manifest, out var readError))
-        {
-            reply($"[DTR ERR] failed to read manifest: {readError}");
-            return;
-        }
-        if (!CurrentMapMatchesManifest(manifest.Map, out var currentMap))
-        {
-            reply($"[DTR ERR] map mismatch: server=\"{currentMap}\" manifest=\"{manifest.Map}\" path=\"{manifestPath}\"");
-            return;
-        }
-        if (!ManifestContainsSourceRound(manifest, round, out var validateError))
-        {
-            reply(validateError);
-            return;
-        }
-        if (!TryResolveReplayStartAnchor(anchor, reply, commandName, manifest, round, out var secondsAfterLive))
-            return;
-
-        StopAndUnloadLoaded();
-        _sequenceActive = false;
-        _sequencePrepared = false;
-        _sequencePreparedRound = -1;
-        _poolActive = false;
-        InvalidateFreezePreroll();
-        _armed = true;
-        _armedLoop = loop;
-        _armedPrepared = false;
-        _armedManifestPath = manifestPath;
-        _armedSourceRound = round;
-        _armedStartSecondsAfterLive = secondsAfterLive;
-        _armedLabel =
-            $"source_round={round} start=+{secondsAfterLive.ToString("0.###", CultureInfo.InvariantCulture)}s manifest={manifestPath}";
-        reply(
-            restart
-                ? $"[DTR OK] replay round={round} start=+{secondsAfterLive.ToString("0.###", CultureInfo.InvariantCulture)}s restart=now"
-                : $"[DTR OK] replay armed round={round} start=+{secondsAfterLive.ToString("0.###", CultureInfo.InvariantCulture)}s");
-        reply("[DTR WARN] Mid-round starts are experimental diagnostics. Round-start replay is the supported path; physics, animation, and C4 state may diverge.");
-        reply("[DTR HINT] Use dtr_round_restart or .replay without an anchor for stable round-start replay.");
         IssueRestartIfRequested(restart, reply);
     }
 
@@ -378,12 +225,6 @@ public sealed partial class DemoTracerPlugin
             return HookResult.Handled;
         }
 
-        if (tokens[0].Equals(".moment", StringComparison.OrdinalIgnoreCase))
-        {
-            RunMomentChatCommand(player, tokens);
-            return HookResult.Handled;
-        }
-
         return HookResult.Continue;
     }
 
@@ -394,7 +235,6 @@ public sealed partial class DemoTracerPlugin
         if (tokens.Count == 1 || tokens[1].Equals("help", StringComparison.OrdinalIgnoreCase))
         {
             Reply("usage: .replay \"<manifest.json>\" <source_round> [loop:0|1]");
-            Reply("experimental: .replay \"<manifest.json>\" <source_round> <seconds_after_live|bomb|bomb+seconds> [loop:0|1]");
             Reply("usage: .replay stop");
             return;
         }
@@ -416,14 +256,6 @@ public sealed partial class DemoTracerPlugin
         if (!int.TryParse(tokens[2], out var round) || round < 0)
         {
             Reply("dtr: source_round must be a non-negative integer");
-            return;
-        }
-
-        if (tokens.Count > 3 && !IsLoopArgumentToken(tokens[3]))
-        {
-            var anchor = tokens[3];
-            var loop = tokens.Count > 4 && ParseLoopArgument(tokens[4]);
-            PlanSingleRoundAt(".replay", manifestPath, round, anchor, loop, restart: true, Reply);
             return;
         }
 
@@ -452,8 +284,7 @@ public sealed partial class DemoTracerPlugin
             args.Add(StripOuterQuotes(command.GetArg(i)));
 
         if (args.Count > 1 &&
-            (args[0].Equals(".replay", StringComparison.OrdinalIgnoreCase) ||
-             args[0].Equals(".moment", StringComparison.OrdinalIgnoreCase)))
+            args[0].Equals(".replay", StringComparison.OrdinalIgnoreCase))
             return args;
 
         return SplitChatCommandText(StripOuterQuotes(string.Join(" ", args)));
@@ -511,9 +342,6 @@ public sealed partial class DemoTracerPlugin
                !normalized.Equals("no", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool IsLoopArgumentToken(string value)
-        => value.Trim().StartsWith("loop:", StringComparison.OrdinalIgnoreCase);
-
     private bool PrepareNextSequenceRound(string reason)
     {
         if (_sequenceIndex < 0 || _sequenceIndex >= _sequenceRounds.Length)
@@ -554,7 +382,6 @@ public sealed partial class DemoTracerPlugin
         {
             _armed = false;
             _armedPrepared = false;
-            _armedStartSecondsAfterLive = null;
             Server.PrintToConsole("[DTR ERR] single-round plan is missing manifest/source_round");
             return false;
         }
@@ -562,14 +389,12 @@ public sealed partial class DemoTracerPlugin
         var manifestPath = _armedManifestPath;
         var sourceRound = _armedSourceRound;
         var loop = _armedLoop;
-        var startSecondsAfterLive = _armedStartSecondsAfterLive;
         var label = _armedLabel;
         var load = LoadRound(manifestPath, sourceRound);
         if (!load.Ok)
         {
             _armed = false;
             _armedPrepared = false;
-            _armedStartSecondsAfterLive = null;
             _armedManifestPath = string.Empty;
             _armedSourceRound = -1;
             Server.PrintToConsole($"[DTR ERR] single source_round={sourceRound} failed while preparing on {reason}: {load.Message}");
@@ -581,7 +406,6 @@ public sealed partial class DemoTracerPlugin
         _armedManifestPath = manifestPath;
         _armedSourceRound = sourceRound;
         _armedLoop = loop;
-        _armedStartSecondsAfterLive = startSecondsAfterLive;
         _armedLabel = label;
         PreloadLoadedReplays();
         Server.PrintToConsole($"[DTR OK] round_start: loaded SINGLE source_round={sourceRound} on {reason}: {load.Message}");
@@ -672,7 +496,6 @@ public sealed partial class DemoTracerPlugin
         _sequencePreparedRound = -1;
         _armed = false;
         _armedPrepared = false;
-        _armedStartSecondsAfterLive = null;
         _armedManifestPath = string.Empty;
         _armedSourceRound = -1;
         InvalidateFreezePreroll();
