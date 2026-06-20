@@ -823,9 +823,14 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                 break;
 
             case "item_pickup":
+                // Record-only for stability. Unpaired pickups may represent world state we cannot
+                // safely prove yet.
+                break;
+
             case "item_transfer":
-                // Record-only for stability; GiveNamedItem during replay ticks can race CS2
-                // weapon/projectile state and crash without a managed exception.
+                if (!ReplayEventBelongsToSlot(replayEvent.TargetSteamId, replay.SteamId))
+                    return;
+                QueueReplayUtilityTransferGrant(slot, replayEvent);
                 break;
 
             case "bomb_pickup":
@@ -840,6 +845,45 @@ public sealed partial class DemoTracerPlugin : BasePlugin
 
     private static bool ShouldExecuteReplayEquipmentEvent(int weaponDefIndex, bool isBomb)
         => isBomb || IsUtilityWeaponDefIndex(weaponDefIndex);
+
+    private void QueueReplayUtilityTransferGrant(int slot, ReplayHifiEvent replayEvent)
+    {
+        var weaponDefIndex = ReplayEventWeaponDefIndex(replayEvent);
+        if (!IsUtilityWeaponDefIndex(weaponDefIndex) ||
+            !TryGetWeaponClassByDefIndex(weaponDefIndex, out var className))
+            return;
+
+        var targetCount = Math.Max(1, replayEvent.TargetCountAfter ?? 1);
+        Server.NextFrame(() => EnsureReplayUtilityTransferGrant(slot, className, targetCount, replayEvent.Tick));
+    }
+
+    private void EnsureReplayUtilityTransferGrant(int slot, string className, int targetCount, int sourceTick)
+    {
+        if (!IsReplaySlotStillSafe(slot))
+            return;
+
+        var player = Utilities.GetPlayerFromSlot(slot);
+        if (player is not { IsValid: true, PawnIsAlive: true })
+            return;
+
+        var currentCount = CountCurrentReplayItems(player, className);
+        if (currentCount >= targetCount)
+            return;
+
+        var missing = targetCount - currentCount;
+        for (var i = 0; i < missing; i++)
+        {
+            if (!TryGiveNamedItem(player, className))
+            {
+                Server.PrintToConsole(
+                    $"dtr: hifi transfer grant failed slot={slot} item={className} tick={sourceTick}");
+                return;
+            }
+        }
+
+        _lastEnsuredWeaponDef.Remove(slot);
+        _lastReplayWeaponDef.Remove(slot);
+    }
 
     private void DropReplayItemToWorld(int slot, ReplayHifiEvent replayEvent, bool isBomb)
     {
