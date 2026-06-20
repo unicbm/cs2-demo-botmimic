@@ -51,11 +51,38 @@ source round", not "play only this round".
 Validates and arms exactly one demo source round, then issues
 `mp_restartgame 1`. This does not advance to later manifest rounds.
 
+### `dtr_go_at <manifest.json> <source_round> <seconds_after_live|bomb|bomb+seconds> [loop:0|1]`
+
+Validates and arms exactly one demo source round, starts it from the requested
+live-round offset, then issues `mp_restartgame 1`.
+
+Use `bomb` to start at the completed C4 plant event recorded in `manifest.json`,
+or `bomb+2.5` to start a few seconds after the plant. Numeric values are seconds
+after live round start. Post-plant playback requires full-round converter output:
+convert with `--full-round`.
+
+`dtr_arm_at` has the same arguments but waits for the next natural
+`round_start`.
+
 ### `dtr_go pool <pool_manifest.json> [server_round]`
 
 Validates and arms a pool plan, then issues `mp_restartgame 1`. `server_round`
 is a local server round hint for economy/pistol matching, not a manifest source
 round.
+
+## Chat Shortcut
+
+### `.replay "<manifest.json>" <source_round> [bomb|seconds|bomb+seconds] [loop:0|1]`
+
+Players can type this in chat for quick local testing. It behaves like
+`dtr_go_at` and restarts the round. The start anchor defaults to `bomb`, so the
+short form is:
+
+```text
+.replay "<output-dir>\<demo-id>\manifest.json" 33
+```
+
+Use `.replay stop` to stop DemoTracer replay state.
 
 ## Sequence Playback
 

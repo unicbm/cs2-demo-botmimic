@@ -495,6 +495,7 @@ internal static class BotControllerNative
         return new ReplayFileMetadata(
             replay.TickRate,
             replay.PlayStartTickIndex,
+            replay.Ticks.Length,
             replay.Projectiles,
             weaponDefIndices);
     }
@@ -641,10 +642,11 @@ internal static class BotControllerNative
 internal readonly record struct ReplayFileMetadata(
     float TickRate,
     uint PlayStartTickIndex,
+    int TickCount,
     ReplayProjectileEvent[] Projectiles,
     int[] WeaponDefIndices)
 {
-    public static ReplayFileMetadata Empty { get; } = new(0.0f, 0, [], []);
+    public static ReplayFileMetadata Empty { get; } = new(0.0f, 0, 0, [], []);
 }
 
 internal readonly record struct ReplayState(

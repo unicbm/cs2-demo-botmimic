@@ -48,10 +48,34 @@ armed plan，再执行 `mp_restartgame 1`，确保接住新的 `round_start`。
 校验并 armed 单个 demo source round，然后执行 `mp_restartgame 1`。这个命令不会
 推进到后续 source rounds。
 
+### `dtr_go_at <manifest.json> <source_round> <seconds_after_live|bomb|bomb+seconds> [loop:0|1]`
+
+校验并 armed 单个 demo source round，从指定 live-round 时间点开始播放，然后执行
+`mp_restartgame 1`。
+
+`bomb` 表示使用 `manifest.json` 里记录的 C4 安装完成事件；`bomb+2.5` 表示从安装
+完成后 2.5 秒开始。纯数字表示 live round 开始后的秒数。plant 后回放需要 `.dtr`
+本身包含 plant 后 tick，所以转换时要加 `--full-round`。
+
+`dtr_arm_at` 参数相同，但不主动 restart，只等待下一个自然 `round_start`。
+
 ### `dtr_go pool <pool_manifest.json> [server_round]`
 
 校验并 armed pool plan，然后执行 `mp_restartgame 1`。`server_round` 是本地服务器
 round hint，用于经济/手枪局匹配，不是 manifest source round。
+
+## 聊天快捷入口
+
+### `.replay "<manifest.json>" <source_round> [bomb|seconds|bomb+seconds] [loop:0|1]`
+
+玩家可以直接在聊天框输入，方便本地快速测试。它等价于 `dtr_go_at`，会自动
+`mp_restartgame 1`。start anchor 默认是 `bomb`，所以最短形式是：
+
+```text
+.replay "<输出目录>\<demo-id>\manifest.json" 33
+```
+
+用 `.replay stop` 停止 DemoTracer replay 状态。
 
 ## 顺序播放
 

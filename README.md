@@ -366,6 +366,21 @@ To play only one source round:
 dtr_go round "<output-dir>\<demo-id>\manifest.json" 12
 ```
 
+To reset the local round and start one source round from the completed C4 plant:
+
+```text
+dtr_go_at "<output-dir>\<demo-id>\manifest.json" 33 bomb
+```
+
+Players can use the chat shortcut for the same flow:
+
+```text
+.replay "<output-dir>\<demo-id>\manifest.json" 33
+```
+
+Post-plant anchors require full-round conversion with `--full-round`; the normal
+converter output stops before the C4 plant for opening-route replay.
+
 For a Mirage pool:
 
 ```text

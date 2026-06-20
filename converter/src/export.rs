@@ -145,6 +145,10 @@ pub fn export_demo_to_memory(
         } else {
             (round.end_tick, None)
         };
+        let bomb_planted_tick =
+            bomb_planted_tick_for_round(parsed, round.start_tick, round.end_tick);
+        let bomb_planted_seconds_after_live = bomb_planted_tick
+            .map(|tick| ticks_to_seconds(tick - round.start_tick, parsed.tick_rate));
         if end_tick <= round.start_tick {
             log.push(format!(
                 "skip round {}: cut window empty after {:?}",
@@ -261,6 +265,8 @@ pub fn export_demo_to_memory(
                 start_tick: round.start_tick,
                 end_tick,
                 original_end_tick: round.end_tick,
+                bomb_planted_tick,
+                bomb_planted_seconds_after_live,
                 freeze_preroll_ticks,
                 duration_seconds,
                 pistol_round,
@@ -350,6 +356,23 @@ fn cut_before_bomb_plant(
             Some(format!("before_bomb_plant_tick_{tick}")),
         ),
         None => (end_tick, None),
+    }
+}
+
+fn bomb_planted_tick_for_round(parsed: &ParsedDemo, start_tick: i32, end_tick: i32) -> Option<i32> {
+    parsed
+        .bomb_planted_ticks
+        .iter()
+        .copied()
+        .filter(|tick| *tick >= start_tick && *tick <= end_tick)
+        .min()
+}
+
+fn ticks_to_seconds(ticks: i32, tick_rate: f32) -> f32 {
+    if tick_rate > 0.0 {
+        ticks as f32 / tick_rate
+    } else {
+        0.0
     }
 }
 

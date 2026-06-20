@@ -23,7 +23,25 @@ public sealed partial class DemoTracerPlugin
         [JsonPropertyName("files")]
         public List<ManifestFile> Files { get; set; } = new();
 
+        [JsonPropertyName("rounds")]
+        public List<ManifestRound> Rounds { get; set; } = new();
+
         public int EffectiveDtrFormatVersion => DtrFormatVersion != 0 ? DtrFormatVersion : FormatVersion;
+    }
+
+    private sealed class ManifestRound
+    {
+        [JsonPropertyName("round")]
+        public int Round { get; set; }
+
+        [JsonPropertyName("bomb_planted_tick")]
+        public int? BombPlantedTick { get; set; }
+
+        [JsonPropertyName("bomb_planted_seconds_after_live")]
+        public float? BombPlantedSecondsAfterLive { get; set; }
+
+        [JsonPropertyName("duration_seconds")]
+        public float DurationSeconds { get; set; }
     }
 
     private sealed class NadeManifest

@@ -27,6 +27,9 @@ cs2-demotracer.exe validate --input <输出目录>
 回合 replay 默认最多保留同一回合内 10 秒 freeze-time 上下文，用来让
 `round_freeze_end` 后的道具松开动作能接上开局前的按住状态；可用
 `--freeze-preroll-seconds` 调整。
+如果某个 round 有 C4 安装完成事件，`manifest.json` 会记录这个 anchor，供服务器
+命令 `dtr_go_at ... bomb` 和聊天快捷入口 `.replay` 使用。plant 后开始播放需要
+`--full-round`，否则 `.dtr` 文件本身会在 plant 前结束。
 
 常用选项：
 

@@ -525,6 +525,8 @@ pub struct ConvertedRound {
     pub start_tick: i32,
     pub end_tick: i32,
     pub original_end_tick: i32,
+    pub bomb_planted_tick: Option<i32>,
+    pub bomb_planted_seconds_after_live: Option<f32>,
     pub freeze_preroll_ticks: i32,
     pub duration_seconds: f32,
     pub pistol_round: bool,

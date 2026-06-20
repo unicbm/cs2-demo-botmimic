@@ -28,6 +28,10 @@ By default, round replay export cuts before the C4 plant starts. Use
 Round replay exports keep at most 10 seconds of same-round freeze-time context
 by default so pre-freeze grenade holds can release correctly after
 `round_freeze_end`. Tune this with `--freeze-preroll-seconds`.
+When a round has a completed C4 plant, `manifest.json` records the plant anchor
+for server commands such as `dtr_go_at ... bomb` and the `.replay` chat
+shortcut. Those post-plant starts need `--full-round`, otherwise the `.dtr`
+files stop before the plant.
 
 Useful options:
 

@@ -212,6 +212,21 @@ dtr_go seq "<输出目录>\<demo-id>\manifest.json" 0
 dtr_go round "<输出目录>\<demo-id>\manifest.json" 12
 ```
 
+如果要重置本地 round，并从某个 source round 的 C4 安装完成后开始：
+
+```text
+dtr_go_at "<输出目录>\<demo-id>\manifest.json" 33 bomb
+```
+
+玩家也可以直接在聊天框用快捷入口：
+
+```text
+.replay "<输出目录>\<demo-id>\manifest.json" 33
+```
+
+plant 后锚点需要转换时加 `--full-round`；普通转换默认会在 C4 开始安放前截断，
+用于开局路线 replay。
+
 如果使用 Mirage 回合池：
 
 ```text
