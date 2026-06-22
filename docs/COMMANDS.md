@@ -300,12 +300,19 @@ Contact implementation:
 
 ## Diagnostics
 
+### `dtr_runtime`
+
+Prints the runtime version matrix: expected and loaded native ABI, capability
+bitset, missing required capability bits, native build id, supported `.dtr`
+reader range, platform, and `DemoTracerApi` version.
+
 ### `dtr_doctor [manifest.json|pool_manifest.json]`
 
-Prints a compact health check: native ABI compatibility, current map/time,
-freeze-time ConVar, bot counts, BotHider-managed slots, safe replay targets,
-loaded/playing replay counts, alignment settings, handoff mode, RayTrace status,
-and optional manifest or pool-manifest summary.
+Prints a compact health check: native ABI compatibility, capability bitset,
+native build id, supported `.dtr` reader range, platform, `DemoTracerApi`
+version, current map/time, freeze-time ConVar, bot counts, BotHider-managed
+slots, safe replay targets, loaded/playing replay counts, alignment settings,
+handoff mode, RayTrace status, and optional manifest or pool-manifest summary.
 
 Use this first when playback does not start, starts with fewer slots than
 expected, or a sample pack is being checked on a new server.

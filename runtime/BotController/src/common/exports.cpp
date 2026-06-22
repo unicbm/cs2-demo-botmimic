@@ -6,8 +6,54 @@
 #include "BuyControllerState.h"
 
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <vector>
+
+#ifndef BOTCONTROLLER_BUILD_ID
+#define BOTCONTROLLER_BUILD_ID "local"
+#endif
+
+namespace
+{
+    constexpr int kBotControllerAbiMajor = 15;
+    constexpr int kBotControllerAbiMinor = 1;
+    constexpr uint64_t kCapabilityReplaySlotState = 1ULL << 0;
+    constexpr uint64_t kCapabilityStartReplayAt = 1ULL << 1;
+    constexpr uint64_t kCapabilityStartReplayUntil = 1ULL << 2;
+    constexpr uint64_t kCapabilityReplayTick = 1ULL << 3;
+    constexpr uint64_t kCapabilityWeaponSwitchRead = 1ULL << 4;
+    constexpr uint64_t kCapabilityPovMask = 1ULL << 5;
+    constexpr uint64_t kCapabilityBuyPlan = 1ULL << 6;
+    constexpr uint64_t kCapabilityControllerBotOffset = 1ULL << 7;
+    constexpr uint64_t kBotControllerCapabilities =
+        kCapabilityReplaySlotState |
+        kCapabilityStartReplayAt |
+        kCapabilityStartReplayUntil |
+        kCapabilityReplayTick |
+        kCapabilityWeaponSwitchRead |
+        kCapabilityPovMask |
+        kCapabilityBuyPlan |
+        kCapabilityControllerBotOffset;
+
+#pragma pack(push, 4)
+    struct BotControllerAbiInfo
+    {
+        int32_t abiMajor;
+        int32_t abiMinor;
+        int32_t movementSnapshotSize;
+        int32_t replayTickSize;
+        int32_t subtickMoveSize;
+        int32_t replaySlotStateSize;
+        int32_t maxSlots;
+        uint64_t capabilities;
+        int32_t reserved0;
+        int32_t reserved1;
+    };
+#pragma pack(pop)
+
+    static_assert(sizeof(BotControllerAbiInfo) == 44);
+} // namespace
 
 extern "C" __declspec(dllexport) int BotController_Lock(int slot, int kind, int arg)
 {
@@ -35,7 +81,35 @@ extern "C" __declspec(dllexport) int BotController_IsLocked(int slot, int kind)
 
 extern "C" __declspec(dllexport) int BotController_GetVersion()
 {
-    return 15;
+    return kBotControllerAbiMajor;
+}
+
+extern "C" __declspec(dllexport) int BotController_GetAbiInfo(BotControllerAbiInfo *out, int size)
+{
+    if (!out || size < static_cast<int>(sizeof(BotControllerAbiInfo)))
+        return -1;
+
+    BotControllerAbiInfo info{};
+    info.abiMajor = kBotControllerAbiMajor;
+    info.abiMinor = kBotControllerAbiMinor;
+    info.movementSnapshotSize = static_cast<int32_t>(sizeof(BotController::MovementSnapshot));
+    info.replayTickSize = static_cast<int32_t>(sizeof(BotController::ReplayTick));
+    info.subtickMoveSize = static_cast<int32_t>(sizeof(BotController::SubtickMove));
+    info.replaySlotStateSize = static_cast<int32_t>(sizeof(BotController::MotionRecorder::ReplaySlotState));
+    info.maxSlots = BotController::MotionRecorder::kMaxSlots;
+    info.capabilities = kBotControllerCapabilities;
+    std::memcpy(out, &info, sizeof(info));
+    return 0;
+}
+
+extern "C" __declspec(dllexport) uint64_t BotController_GetCapabilities()
+{
+    return kBotControllerCapabilities;
+}
+
+extern "C" __declspec(dllexport) const char *BotController_GetBuildId()
+{
+    return BOTCONTROLLER_BUILD_ID;
 }
 
 extern "C" __declspec(dllexport) int BotController_SetControllerControllingBotOffset(int offset)

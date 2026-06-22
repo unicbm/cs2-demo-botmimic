@@ -61,6 +61,18 @@ bot 会回放从 CS2 demo 转换出的移动、视角、开火和武器状态；
 
 如果你只是想测试插件播放效果，可以从 Release assets 下载这个已经预先转换好的 Mirage 样例包：[`cs2-demotracer-sample-spirit-vs-falcons-m2-mirage-full.zip`](https://github.com/unicbm/cs2-demotracer/releases/download/v0.1.3/cs2-demotracer-sample-spirit-vs-falcons-m2-mirage-full.zip)。解压后直接用里面的 `manifest.json` 播放即可。
 
+## API 边界
+
+`runtime/BotController/scripts/BotController.NativeApi.cs` 是 native
+BotController replay runtime 的低层 C# P/Invoke binding。只有在写低层
+BotController 工具、明确要接触 native replay buffer 和 engine primitive 时，
+才应该直接使用它。
+
+其他 CounterStrikeSharp companion plugin 应该通过 `demotracer:api`
+plugin capability 依赖 `css/DemoTracerApi/IDemoTracerApi.cs`。它们不应该直接调用
+BotController native exports、复制 DemoTracer 内部 interop 层，或依赖 `.dtr`
+replay struct layout。
+
 ## 转换单个 demo
 
 打开 PowerShell：

@@ -481,7 +481,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     public void RuntimeCommand(CCSPlayerController? player, CommandInfo command)
     {
         command.ReplyToCommand(
-            $"[DTR OK] DemoTracer expected_abi={BotControllerNative.ExpectedAbiVersion} runtime_abi={BotControllerNative.AbiVersion} compatible={BotControllerNative.IsCompatible}");
+            $"[DTR OK] DemoTracer {BotControllerNative.RuntimeSummary}");
     }
 
     [ConsoleCommand("dtr_doctor", "dtr_doctor [manifest.json|pool_manifest.json]")]
@@ -497,7 +497,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         var loadedPlaying = _loadedSlots.Count(slot => BotControllerNative.GetReplayState(slot).Playing);
 
         command.ReplyToCommand(
-            $"[DTR DOCTOR] runtime expected_abi={BotControllerNative.ExpectedAbiVersion} runtime_abi={BotControllerNative.AbiVersion} compatible={BotControllerNative.IsCompatible}");
+            $"[DTR DOCTOR] runtime {BotControllerNative.RuntimeSummary}");
         command.ReplyToCommand(
             $"[DTR DOCTOR] server map={CurrentMapName()} time={Server.CurrentTime.ToString("F2", CultureInfo.InvariantCulture)} mp_freezetime={(float.IsFinite(freezeTime) ? freezeTime.ToString("F2", CultureInfo.InvariantCulture) : "unknown")} {(string.IsNullOrEmpty(freezeReason) ? "" : freezeReason)}");
         command.ReplyToCommand(
@@ -3623,7 +3623,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             return true;
 
         command.ReplyToCommand(
-            $"dtr: ABI mismatch, runtime={BotControllerNative.AbiVersion}, expected={BotControllerNative.ExpectedAbiVersion}");
+            $"dtr: ABI mismatch; {BotControllerNative.RuntimeSummary}");
         return false;
     }
 

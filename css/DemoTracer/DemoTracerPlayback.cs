@@ -176,7 +176,7 @@ public sealed partial class DemoTracerPlugin
     {
         if (!BotControllerNative.IsCompatible)
         {
-            reply($"dtr: ABI mismatch, runtime={BotControllerNative.AbiVersion}, expected={BotControllerNative.ExpectedAbiVersion}");
+            reply($"dtr: ABI mismatch; {BotControllerNative.RuntimeSummary}");
             return;
         }
         if (!TryReadManifest(manifestPath, out var manifest, out var readError))

@@ -107,12 +107,22 @@ Record / replay is driven through the C-ABI below, not console commands.
 
 ## CounterStrikeSharp API
 
-Drop `scripts/BotController.NativeApi.cs` into your project.
+Drop `scripts/BotController.NativeApi.cs` into your project when you are
+building a low-level BotController integration. This file is a typed C#
+P/Invoke binding over the native C ABI; it is not the public DemoTracer
+companion-plugin API.
+
+Companion plugins for DemoTracer should use the managed `demotracer:api`
+capability from `css/DemoTracerApi/IDemoTracerApi.cs` instead of depending on
+BotController native exports or replay buffer structs.
 
 ```csharp
 using BotControllerApi;
 
 if (!BotController.IsCompatible()) return;   // requires ABI 15
+BotController.TryGetAbiInfo(out var abiInfo);
+var capabilities = BotController.Capabilities();
+var buildId = BotController.BuildId();
 ```
 
 ### Locks

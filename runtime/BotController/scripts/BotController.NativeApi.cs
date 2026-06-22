@@ -1,6 +1,7 @@
 // P/Invoke wrapper for BotController.dll (ABI 15). Check IsCompatible() before use.
 // Main-thread only.
 
+using System;
 using System.Runtime.InteropServices;
 
 namespace BotControllerApi
@@ -76,10 +77,35 @@ namespace BotControllerApi
         public float YawDelta;
     }
 
+    [StructLayout(LayoutKind.Sequential, Pack = 4)]
+    public struct AbiInfo
+    {
+        public const int ByteSize = 44;
+
+        public int AbiMajor;
+        public int AbiMinor;
+        public int MovementSnapshotSize;
+        public int ReplayTickSize;
+        public int SubtickMoveSize;
+        public int ReplaySlotStateSize;
+        public int MaxSlots;
+        public ulong Capabilities;
+        public int Reserved0;
+        public int Reserved1;
+    }
+
     // Thin static binding over the native exports. No orchestration here.
     public static class BotController
     {
-        private const int ExpectedAbiVersion = 15;
+        public const int ExpectedAbiVersion = 15;
+        public const ulong CapabilityReplaySlotState = 1UL << 0;
+        public const ulong CapabilityStartReplayAt = 1UL << 1;
+        public const ulong CapabilityStartReplayUntil = 1UL << 2;
+        public const ulong CapabilityReplayTick = 1UL << 3;
+        public const ulong CapabilityWeaponSwitchRead = 1UL << 4;
+        public const ulong CapabilityPovMask = 1UL << 5;
+        public const ulong CapabilityBuyPlan = 1UL << 6;
+        public const ulong CapabilityControllerBotOffset = 1UL << 7;
 
         // Sentinel weapon def meaning "any knife"
         public const int KnifeDef = 9001;
@@ -98,6 +124,15 @@ namespace BotControllerApi
 
         [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
         private static extern int BotController_GetVersion();
+
+        [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int BotController_GetAbiInfo(out AbiInfo info, int size);
+
+        [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
+        private static extern ulong BotController_GetCapabilities();
+
+        [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
+        private static extern IntPtr BotController_GetBuildId();
 
         [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
         private static extern int BotController_SetReplayPovMask(ulong mask);
@@ -176,6 +211,46 @@ namespace BotControllerApi
 
         // Native ABI must match what this wrapper expects.
         public static bool IsCompatible() => BotController_GetVersion() == ExpectedAbiVersion;
+
+        public static int AbiVersion() => BotController_GetVersion();
+
+        public static bool TryGetAbiInfo(out AbiInfo info)
+        {
+            try
+            {
+                return BotController_GetAbiInfo(out info, AbiInfo.ByteSize) == 0;
+            }
+            catch
+            {
+                info = default;
+                return false;
+            }
+        }
+
+        public static ulong Capabilities()
+        {
+            try
+            {
+                return BotController_GetCapabilities();
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        public static string BuildId()
+        {
+            try
+            {
+                var buildId = Marshal.PtrToStringAnsi(BotController_GetBuildId());
+                return string.IsNullOrWhiteSpace(buildId) ? "unknown" : buildId;
+            }
+            catch
+            {
+                return "unavailable";
+            }
+        }
 
         // ---- locks ----
 

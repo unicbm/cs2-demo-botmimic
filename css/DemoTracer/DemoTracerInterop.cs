@@ -1,116 +1,9 @@
-using System.IO.Compression;
-using System.IO.MemoryMappedFiles;
 using System.Runtime.InteropServices;
-using System.Text;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 
 namespace DemoTracer;
 
-internal static class BotControllerNative
+internal static partial class BotControllerNative
 {
-    public const int ExpectedAbiVersion = 15;
-    public const uint RecFormatVersion = 6;
-    public const uint MinRecFormatVersion = 3;
-    public const int MovementSnapshotByteSize = 92;
-    public const int ReplayTickByteSize = 192;
-    public const int MaxSlots = 64;
-
-    private const byte RecCodecBrotli = 1;
-    private const int TickMetadataByteSize = 8;
-    private const int ProjectileEventByteSize = 48;
-    private const int SubtickMoveByteSize = 28;
-    private const int LockKindAll = 0;
-    private const int LockKindAim = 1;
-    private const int LockKindWeapon = 2;
-    private const int LockKindJump = 3;
-
-    private static readonly byte[] RecMagic =
-    [
-        (byte)'C', (byte)'S', (byte)'D', (byte)'T',
-        (byte)'R', (byte)'R', (byte)'E', (byte)'C'
-    ];
-    private static readonly JsonSerializerOptions HifiJsonOptions = new()
-    {
-        PropertyNameCaseInsensitive = true
-    };
-
-    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
-    private static extern int BotController_Lock(int slot, int kind, int arg);
-
-    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
-    private static extern int BotController_Unlock(int slot, int kind);
-
-    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
-    private static extern int BotController_GetVersion();
-
-    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
-    private static extern int BotController_SetControllerControllingBotOffset(int offset);
-
-    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
-    private static extern int BotController_SetReplayPovMask(ulong mask);
-
-    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
-    private static extern int BotController_LoadReplay(
-        int slot,
-        [In] NativeReplayTick[] ticks,
-        int tickCount,
-        [In] NativeSubtickMove[] subs,
-        int subCount);
-
-    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
-    private static extern int BotController_StartReplay(int slot, int loop);
-
-    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
-    private static extern int BotController_StartReplayAt(int slot, int loop, int startIndex);
-
-    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
-    private static extern int BotController_StartReplayUntil(
-        int slot,
-        int loop,
-        int startIndex,
-        int holdBeforeIndex);
-
-    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
-    private static extern int BotController_StopReplay(int slot);
-
-    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
-    private static extern int BotController_GetReplayCursor(int slot);
-
-    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
-    private static extern int BotController_GetReplayTotal(int slot);
-
-    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
-    private static extern int BotController_GetReplaySlotState(
-        int slot,
-        out NativeReplaySlotState state);
-
-    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
-    private static extern int BotController_GetReplayTick(int slot, out NativeReplayTick tick);
-
-    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
-    private static extern int BotController_SwitchBotWeapon(int slot, int defIndex);
-
-    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
-    private static extern int BotController_GetBotActiveWeaponDef(int slot);
-
-    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
-    private static extern int BotController_SetBuyPlan(
-        int slot,
-        [MarshalAs(UnmanagedType.LPStr)] string aliases);
-
-    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
-    private static extern int BotController_SetBuySkip(int slot);
-
-    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
-    private static extern int BotController_ClearBuyPlan(int slot);
-
-    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
-    private static extern int BotController_ClearAllBuyPlans();
-
-    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
-    private static extern int BotController_GetBuyPlanItemCount(int slot);
-
     public static string LastLoadError { get; private set; } = string.Empty;
 
     public static int AbiVersion
@@ -128,7 +21,53 @@ internal static class BotControllerNative
         }
     }
 
+    public static BotControllerAbiInfo AbiInfo
+        => TryGetAbiInfo(out var info) ? info : BotControllerAbiInfo.Unavailable;
+
+    public static ulong Capabilities
+    {
+        get
+        {
+            try
+            {
+                return BotController_GetCapabilities();
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+    }
+
+    public static string BuildId
+    {
+        get
+        {
+            try
+            {
+                var buildId = Marshal.PtrToStringAnsi(BotController_GetBuildId());
+                return string.IsNullOrWhiteSpace(buildId) ? "unknown" : buildId;
+            }
+            catch
+            {
+                return "unavailable";
+            }
+        }
+    }
+
     public static bool IsCompatible => AbiVersion == ExpectedAbiVersion;
+
+    public static bool HasRequiredCapabilities
+        => (Capabilities & RequiredCapabilityMask) == RequiredCapabilityMask;
+
+    public static ulong MissingRequiredCapabilities
+        => RequiredCapabilityMask & ~Capabilities;
+
+    public static string RuntimeSummary
+        => $"expected_abi={ExpectedAbiVersion} runtime_abi={AbiVersion} compatible={IsCompatible} " +
+           $"caps=0x{Capabilities:X} missing=0x{MissingRequiredCapabilities:X} build={BuildId} " +
+           $"dtr_reader={MinRecFormatVersion}..{RecFormatVersion} platform={RuntimePlatformName} " +
+           $"api={DemoTracerApiVersion}";
 
     public static bool SetControllerControllingBotOffset(int offset)
     {
@@ -169,8 +108,8 @@ internal static class BotControllerNative
         try
         {
             EnsureNativeLayout();
-            var replay = ReadReplayFile(path);
-            metadata = BuildReplayMetadata(replay);
+            var replay = DtrReplayReader.Read(path);
+            metadata = ReplayNativeMapper.BuildMetadata(replay);
             if (replay.Ticks.Length == 0)
             {
                 LastLoadError = "replay has no ticks";
@@ -200,8 +139,8 @@ internal static class BotControllerNative
     {
         try
         {
-            var replay = ReadReplayFile(path);
-            metadata = BuildReplayMetadata(replay);
+            var replay = DtrReplayReader.Read(path);
+            metadata = ReplayNativeMapper.BuildMetadata(replay);
             return true;
         }
         catch
@@ -395,528 +334,17 @@ internal static class BotControllerNative
     private static bool ValidSlot(int slot)
         => slot is >= 0 and < MaxSlots;
 
-    private static ReplayFile ReadReplayFile(string path)
+    private static bool TryGetAbiInfo(out BotControllerAbiInfo info)
     {
-        if (!string.Equals(Path.GetExtension(path), ".dtr", StringComparison.OrdinalIgnoreCase))
-            throw new InvalidDataException("expected .dtr replay file");
-
-        using var stream = File.OpenRead(path);
-        using var reader = new BinaryReader(stream);
-
-        var magic = reader.ReadBytes(RecMagic.Length);
-        if (!magic.SequenceEqual(RecMagic))
-            throw new InvalidDataException("bad .dtr magic");
-
-        var version = reader.ReadUInt32();
-        if (version is < MinRecFormatVersion or > RecFormatVersion)
-            throw new InvalidDataException(
-                $"unsupported .dtr version {version}; expected {MinRecFormatVersion}..{RecFormatVersion}");
-
-        var tickRate = reader.ReadSingle();
-        _ = reader.ReadUInt32(); // round
-        _ = reader.ReadByte();   // side
-        _ = reader.ReadUInt32(); // flags
-        _ = reader.ReadUInt64(); // steam_id
-        var tickCount = CheckedCount(reader.ReadUInt32(), "tick_count");
-        var subtickCount = CheckedCount(reader.ReadUInt32(), "subtick_count");
-        var projectileCount = version >= 4
-            ? CheckedCount(reader.ReadUInt32(), "projectile_count")
-            : 0;
-        var playStartTickIndex = version >= 5
-            ? CheckedCount(reader.ReadUInt32(), "play_start_tick_index")
-            : 0;
-        var metadataJsonLength = version >= 6
-            ? CheckedCount(reader.ReadUInt32(), "metadata_json_len")
-            : 0;
-        ValidatePlayStartTickIndex(tickCount, playStartTickIndex);
-        _ = ReadRecString(reader); // map
-        _ = ReadRecString(reader); // player name
-
-        var codec = reader.ReadByte();
-        if (codec != RecCodecBrotli)
-            throw new InvalidDataException($"unsupported .dtr codec {codec}");
-
-        var bodyUncompressedLength = CheckedLength(reader.ReadUInt64(), "body_uncompressed_len");
-        var bodyCompressedLength = CheckedLength(reader.ReadUInt64(), "body_compressed_len");
-        var expectedBodyLength = ExpectedBodyLength(tickCount, subtickCount, projectileCount, metadataJsonLength);
-        if (bodyUncompressedLength != expectedBodyLength)
-            throw new InvalidDataException($"body length {bodyUncompressedLength} != expected {expectedBodyLength}");
-
-        var compressed = reader.ReadBytes(bodyCompressedLength);
-        if (compressed.Length != bodyCompressedLength)
-            throw new EndOfStreamException("truncated compressed .dtr body");
-
-        var body = DecompressBrotli(compressed, bodyUncompressedLength);
-        using var bodyStream = new MemoryStream(body, writable: false);
-        using var bodyReader = new BinaryReader(bodyStream);
-
-        var snapshotCount = tickCount == 0 ? 0 : tickCount + 1;
-        var snapshots = new NativeMovementSnapshot[snapshotCount];
-        for (var i = 0; i < snapshotCount; i++)
-            snapshots[i] = ReadCurrentSnapshot(bodyReader);
-
-        var ticks = new NativeReplayTick[tickCount];
-        long expectedSubticks = 0;
-        for (var i = 0; i < tickCount; i++)
+        info = default;
+        try
         {
-            ticks[i] = new NativeReplayTick
-            {
-                Pre = snapshots[i],
-                Post = snapshots[i + 1],
-                WeaponDefIndex = bodyReader.ReadInt32(),
-                NumSubtick = bodyReader.ReadUInt32()
-            };
-            expectedSubticks += ticks[i].NumSubtick;
+            return BotController_GetAbiInfo(out info, BotControllerAbiInfo.ByteSize) == 0;
         }
-
-        if (expectedSubticks != subtickCount)
-            throw new InvalidDataException($"tick subtick sum {expectedSubticks} != header subtick count {subtickCount}");
-
-        var projectiles = new ReplayProjectileEvent[projectileCount];
-        for (var i = 0; i < projectileCount; i++)
-            projectiles[i] = ReadProjectileEvent(bodyReader);
-
-        var highFidelity = ReplayHighFidelityMetadata.Empty;
-        if (metadataJsonLength > 0)
+        catch
         {
-            var metadataJson = bodyReader.ReadBytes(metadataJsonLength);
-            if (metadataJson.Length != metadataJsonLength)
-                throw new EndOfStreamException("truncated high_fidelity metadata in .dtr");
-            highFidelity = ReadHighFidelityMetadata(metadataJson);
-        }
-
-        var subticks = new NativeSubtickMove[subtickCount];
-        for (var i = 0; i < subtickCount; i++)
-        {
-            subticks[i] = new NativeSubtickMove
-            {
-                When = bodyReader.ReadSingle(),
-                Button = bodyReader.ReadUInt32(),
-                Pressed = bodyReader.ReadSingle(),
-                AnalogForward = bodyReader.ReadSingle(),
-                AnalogLeft = bodyReader.ReadSingle(),
-                PitchDelta = bodyReader.ReadSingle(),
-                YawDelta = bodyReader.ReadSingle()
-            };
-        }
-
-        if (bodyStream.Position != bodyStream.Length)
-            throw new InvalidDataException("trailing bytes in .dtr body");
-
-        return new ReplayFile(ticks, projectiles, highFidelity, subticks, tickRate, (uint)playStartTickIndex);
-    }
-
-    private static ReplayFileMetadata BuildReplayMetadata(ReplayFile replay)
-    {
-        var weaponDefIndices = new int[replay.Ticks.Length];
-        for (var i = 0; i < replay.Ticks.Length; i++)
-            weaponDefIndices[i] = replay.Ticks[i].WeaponDefIndex;
-        return new ReplayFileMetadata(
-            replay.TickRate,
-            replay.PlayStartTickIndex,
-            replay.Ticks.Length,
-            replay.Projectiles,
-            replay.HighFidelity,
-            weaponDefIndices);
-    }
-
-    private static void ValidatePlayStartTickIndex(int tickCount, int playStartTickIndex)
-    {
-        if (tickCount == 0)
-        {
-            if (playStartTickIndex == 0)
-                return;
-            throw new InvalidDataException(
-                $"play_start_tick_index {playStartTickIndex} requires at least one tick");
-        }
-        if (playStartTickIndex >= tickCount)
-            throw new InvalidDataException(
-                $"play_start_tick_index {playStartTickIndex} out of range for {tickCount} ticks");
-    }
-
-    private static int CheckedCount(uint value, string fieldName)
-    {
-        if (value > int.MaxValue)
-            throw new InvalidDataException($"{fieldName} too large: {value}");
-        return (int)value;
-    }
-
-    private static int CheckedLength(ulong value, string fieldName)
-    {
-        if (value > int.MaxValue)
-            throw new InvalidDataException($"{fieldName} too large: {value}");
-        return (int)value;
-    }
-
-    private static int ExpectedBodyLength(int tickCount, int subtickCount, int projectileCount, int metadataJsonLength)
-    {
-        var snapshotCount = tickCount == 0 ? 0 : checked(tickCount + 1);
-        return checked(
-            snapshotCount * MovementSnapshotByteSize +
-            tickCount * TickMetadataByteSize +
-            projectileCount * ProjectileEventByteSize +
-            metadataJsonLength +
-            subtickCount * SubtickMoveByteSize);
-    }
-
-    private static byte[] DecompressBrotli(byte[] compressed, int expectedLength)
-    {
-        using var input = new MemoryStream(compressed, writable: false);
-        using var brotli = new BrotliStream(input, CompressionMode.Decompress);
-        using var output = new MemoryStream(expectedLength);
-        brotli.CopyTo(output);
-        if (output.Length != expectedLength)
-            throw new InvalidDataException($"decompressed body length {output.Length} != expected {expectedLength}");
-        return output.ToArray();
-    }
-
-    private static NativeMovementSnapshot ReadCurrentSnapshot(BinaryReader reader)
-    {
-        return new NativeMovementSnapshot
-        {
-            OriginX = reader.ReadSingle(),
-            OriginY = reader.ReadSingle(),
-            OriginZ = reader.ReadSingle(),
-            VelX = reader.ReadSingle(),
-            VelY = reader.ReadSingle(),
-            VelZ = reader.ReadSingle(),
-            Pitch = reader.ReadSingle(),
-            Yaw = reader.ReadSingle(),
-            Roll = reader.ReadSingle(),
-            EntityFlags = reader.ReadUInt32(),
-            MoveType = reader.ReadByte(),
-            Pad0 = reader.ReadByte(),
-            Pad1 = reader.ReadByte(),
-            Pad2 = reader.ReadByte(),
-            Buttons = reader.ReadUInt64(),
-            Buttons1 = reader.ReadUInt64(),
-            Buttons2 = reader.ReadUInt64(),
-            DuckAmount = reader.ReadSingle(),
-            DuckSpeed = reader.ReadSingle(),
-            LadderNormalX = reader.ReadSingle(),
-            LadderNormalY = reader.ReadSingle(),
-            LadderNormalZ = reader.ReadSingle(),
-            Ducked = reader.ReadByte(),
-            Ducking = reader.ReadByte(),
-            DesiresDuck = reader.ReadByte(),
-            ActualMoveType = reader.ReadByte()
-        };
-    }
-
-    private static ReplayProjectileEvent ReadProjectileEvent(BinaryReader reader)
-    {
-        var tickIndex = reader.ReadUInt32();
-        var weaponDefIndex = reader.ReadInt32();
-        var kind = (ReplayProjectileKind)reader.ReadByte();
-        _ = reader.ReadByte();
-        _ = reader.ReadByte();
-        _ = reader.ReadByte();
-        var initialPosition = new ReplayVector3(
-            reader.ReadSingle(),
-            reader.ReadSingle(),
-            reader.ReadSingle());
-        var initialVelocity = new ReplayVector3(
-            reader.ReadSingle(),
-            reader.ReadSingle(),
-            reader.ReadSingle());
-        var detonationPosition = new ReplayVector3(
-            reader.ReadSingle(),
-            reader.ReadSingle(),
-            reader.ReadSingle());
-        return new ReplayProjectileEvent(
-            tickIndex,
-            kind,
-            weaponDefIndex,
-            initialPosition,
-            initialVelocity,
-            detonationPosition);
-    }
-
-    private static ReplayHighFidelityMetadata ReadHighFidelityMetadata(byte[] metadataJson)
-    {
-        var metadata = JsonSerializer.Deserialize<ReplayHighFidelityMetadata>(metadataJson, HifiJsonOptions)
-            ?? ReplayHighFidelityMetadata.Empty;
-        metadata.Events ??= [];
-        metadata.InventorySnapshots ??= [];
-        return metadata;
-    }
-
-    private static string ReadRecString(BinaryReader reader)
-    {
-        var len = reader.ReadUInt16();
-        var bytes = reader.ReadBytes(len);
-        if (bytes.Length != len)
-            throw new EndOfStreamException("truncated string in .dtr");
-        return Encoding.UTF8.GetString(bytes);
-    }
-
-    private static void EnsureNativeLayout()
-    {
-        var snapshotSize = Marshal.SizeOf<NativeMovementSnapshot>();
-        if (snapshotSize != MovementSnapshotByteSize)
-            throw new InvalidOperationException($"MovementSnapshot layout is {snapshotSize}, expected {MovementSnapshotByteSize}");
-
-        var tickSize = Marshal.SizeOf<NativeReplayTick>();
-        if (tickSize != ReplayTickByteSize)
-            throw new InvalidOperationException($"ReplayTick layout is {tickSize}, expected {ReplayTickByteSize}");
-    }
-
-    private readonly record struct ReplayFile(
-        NativeReplayTick[] Ticks,
-        ReplayProjectileEvent[] Projectiles,
-        ReplayHighFidelityMetadata HighFidelity,
-        NativeSubtickMove[] Subticks,
-        float TickRate,
-        uint PlayStartTickIndex);
-}
-
-internal readonly record struct ReplayFileMetadata(
-    float TickRate,
-    uint PlayStartTickIndex,
-    int TickCount,
-    ReplayProjectileEvent[] Projectiles,
-    ReplayHighFidelityMetadata HighFidelity,
-    int[] WeaponDefIndices)
-{
-    public static ReplayFileMetadata Empty { get; } = new(0.0f, 0, 0, [], ReplayHighFidelityMetadata.Empty, []);
-}
-
-internal readonly record struct ReplayState(
-    int Cursor,
-    int Total,
-    bool Playing,
-    int CurrentTickIndex,
-    int WeaponDefIndex,
-    int NumSubtick)
-{
-    public static ReplayState Empty { get; } = new(-1, 0, false, -1, -1, 0);
-}
-
-[StructLayout(LayoutKind.Sequential, Pack = 4)]
-internal struct NativeReplaySlotState
-{
-    public int Playing;
-    public int Cursor;
-    public int Total;
-    public int CurrentTickIndex;
-    public int WeaponDefIndex;
-    public int NumSubtick;
-}
-
-internal enum ReplayProjectileKind : byte
-{
-    Unknown = 0,
-    Smoke = 1,
-    Flash = 2,
-    He = 3,
-    Molotov = 4,
-    Decoy = 5
-}
-
-internal readonly record struct ReplayVector3(float X, float Y, float Z);
-
-internal readonly record struct ReplayProjectileEvent(
-    uint TickIndex,
-    ReplayProjectileKind Kind,
-    int WeaponDefIndex,
-    ReplayVector3 InitialPosition,
-    ReplayVector3 InitialVelocity,
-    ReplayVector3 DetonationPosition);
-
-internal sealed class ReplayHighFidelityMetadata
-{
-    public static ReplayHighFidelityMetadata Empty { get; } = new();
-
-    [JsonPropertyName("schema_version")]
-    public int SchemaVersion { get; set; } = 1;
-
-    [JsonPropertyName("events")]
-    public ReplayHifiEvent[] Events { get; set; } = [];
-
-    [JsonPropertyName("inventory_snapshots")]
-    public ReplayInventorySnapshot[] InventorySnapshots { get; set; } = [];
-}
-
-internal sealed class ReplayHifiEvent
-{
-    [JsonPropertyName("tick_index")]
-    public uint TickIndex { get; set; }
-
-    [JsonPropertyName("tick")]
-    public int Tick { get; set; }
-
-    [JsonPropertyName("kind")]
-    public string Kind { get; set; } = string.Empty;
-
-    [JsonPropertyName("actor_steam_id")]
-    public ulong? ActorSteamId { get; set; }
-
-    [JsonPropertyName("target_steam_id")]
-    public ulong? TargetSteamId { get; set; }
-
-    [JsonPropertyName("weapon_def_index")]
-    public int? WeaponDefIndex { get; set; }
-
-    [JsonPropertyName("item_name")]
-    public string? ItemName { get; set; }
-
-    [JsonPropertyName("entity_id")]
-    public int? EntityId { get; set; }
-
-    [JsonPropertyName("actor_count_after")]
-    public int? ActorCountAfter { get; set; }
-
-    [JsonPropertyName("target_count_after")]
-    public int? TargetCountAfter { get; set; }
-
-    [JsonPropertyName("damage")]
-    public int? Damage { get; set; }
-
-    [JsonPropertyName("health")]
-    public int? Health { get; set; }
-}
-
-internal sealed class ReplayInventorySnapshot
-{
-    [JsonPropertyName("tick_index")]
-    public uint TickIndex { get; set; }
-
-    [JsonPropertyName("tick")]
-    public int Tick { get; set; }
-
-    [JsonPropertyName("steam_id")]
-    public ulong SteamId { get; set; }
-
-    [JsonPropertyName("weapon_def_counts")]
-    public ReplayInventoryItemCount[] WeaponDefCounts { get; set; } = [];
-
-    [JsonPropertyName("active_weapon_def_index")]
-    public int ActiveWeaponDefIndex { get; set; }
-
-    [JsonPropertyName("armor_value")]
-    public int ArmorValue { get; set; }
-
-    [JsonPropertyName("has_helmet")]
-    public bool HasHelmet { get; set; }
-
-    [JsonPropertyName("has_defuser")]
-    public bool HasDefuser { get; set; }
-}
-
-internal sealed class ReplayInventoryItemCount
-{
-    [JsonPropertyName("weapon_def_index")]
-    public int WeaponDefIndex { get; set; }
-
-    [JsonPropertyName("count")]
-    public int Count { get; set; }
-}
-
-[StructLayout(LayoutKind.Sequential, Pack = 4)]
-internal struct NativeMovementSnapshot
-{
-    public float OriginX, OriginY, OriginZ;
-    public float VelX, VelY, VelZ;
-    public float Pitch, Yaw, Roll;
-    public uint EntityFlags;
-    public byte MoveType;
-    public byte Pad0, Pad1, Pad2;
-    public ulong Buttons;
-    public ulong Buttons1;
-    public ulong Buttons2;
-    public float DuckAmount;
-    public float DuckSpeed;
-    public float LadderNormalX;
-    public float LadderNormalY;
-    public float LadderNormalZ;
-    public byte Ducked;
-    public byte Ducking;
-    public byte DesiresDuck;
-    public byte ActualMoveType;
-}
-
-[StructLayout(LayoutKind.Sequential, Pack = 4)]
-internal struct NativeReplayTick
-{
-    public NativeMovementSnapshot Pre;
-    public NativeMovementSnapshot Post;
-    public int WeaponDefIndex;
-    public uint NumSubtick;
-}
-
-[StructLayout(LayoutKind.Sequential, Pack = 4)]
-internal struct NativeSubtickMove
-{
-    public float When;
-    public uint Button;
-    public float Pressed;
-    public float AnalogForward;
-    public float AnalogLeft;
-    public float PitchDelta;
-    public float YawDelta;
-}
-
-public sealed partial class DemoTracerPlugin
-{
-    private sealed class BotHiderMemoryProbe : IDisposable
-    {
-        private const string MappingName = "CS2BotHider_Slots";
-        private const string PosixMappingPath = "/dev/shm/CS2BotHider_Slots";
-        private const uint Magic = 0x44494842;
-        private const int MaxSlots = 64;
-        private const int TotalSize = 16384;
-        private const int OffMagic = 0;
-        private const int OffSlotState = 16;
-
-        private MemoryMappedFile? _memory;
-        private MemoryMappedViewAccessor? _view;
-
-        public bool IsAvailable()
-            => TryConnect();
-
-        public bool IsManagedBot(int slot)
-        {
-            if (slot < 0 || slot >= MaxSlots)
-                return false;
-            if (!TryConnect())
-                return false;
-
-            return _view!.ReadByte(OffSlotState + slot) != 0;
-        }
-
-        private bool TryConnect()
-        {
-            if (_view != null)
-                return true;
-
-            try
-            {
-                _memory = RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-                    ? MemoryMappedFile.OpenExisting(MappingName, MemoryMappedFileRights.Read)
-                    : MemoryMappedFile.CreateFromFile(
-                        PosixMappingPath,
-                        FileMode.Open,
-                        null,
-                        TotalSize,
-                        MemoryMappedFileAccess.Read);
-                _view = _memory.CreateViewAccessor(0, TotalSize, MemoryMappedFileAccess.Read);
-                if (_view.ReadUInt32(OffMagic) == Magic)
-                    return true;
-            }
-            catch
-            {
-            }
-
-            Dispose();
+            info = BotControllerAbiInfo.Unavailable;
             return false;
-        }
-
-        public void Dispose()
-        {
-            _view?.Dispose();
-            _memory?.Dispose();
-            _view = null;
-            _memory = null;
         }
     }
 }

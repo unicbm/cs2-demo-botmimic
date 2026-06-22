@@ -242,6 +242,18 @@ The converter is a standalone CLI executable. The playback plugins are only need
 
 If you only want to test plugin playback, download the pre-converted Mirage sample pack from the release assets: [`cs2-demotracer-sample-spirit-vs-falcons-m2-mirage-full.zip`](https://github.com/unicbm/cs2-demotracer/releases/download/v0.1.3/cs2-demotracer-sample-spirit-vs-falcons-m2-mirage-full.zip). Unzip it and run playback from the included `manifest.json`.
 
+## API Boundaries
+
+`runtime/BotController/scripts/BotController.NativeApi.cs` is the low-level C#
+P/Invoke binding for the native BotController replay runtime. Use it only for
+low-level BotController tools that intentionally work with native replay
+buffers and engine primitives.
+
+Companion CounterStrikeSharp plugins should depend on
+`css/DemoTracerApi/IDemoTracerApi.cs` through the `demotracer:api` plugin
+capability. They should not call BotController native exports, copy
+DemoTracer's internal interop layer, or depend on `.dtr` replay struct layout.
+
 ## Convert One Demo
 
 Open PowerShell:
