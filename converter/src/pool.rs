@@ -21,6 +21,7 @@ pub struct BuildPoolOptions {
     pub cut_before_bomb_plant: bool,
     pub subtick_mode: SubtickMode,
     pub freeze_preroll_seconds: f32,
+    pub export_cosmetics: bool,
     pub analysis: AnalysisOptions,
 }
 
@@ -75,6 +76,7 @@ pub fn build_round_pool(options: &BuildPoolOptions) -> Result<BuildPoolReport> {
                         cut_before_bomb_plant: options.cut_before_bomb_plant,
                         subtick_mode: options.subtick_mode,
                         freeze_preroll_seconds: options.freeze_preroll_seconds,
+                        export_cosmetics: options.export_cosmetics,
                         analysis: options.analysis,
                     },
                 )?;

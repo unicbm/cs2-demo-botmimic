@@ -39,6 +39,15 @@ cs2-demotracer.exe convert --demo <demo.dem> --output <输出目录> --include-s
 cs2-demotracer.exe convert --demo <demo.dem> --output <输出目录> --freeze-preroll-seconds 10
 ```
 
+饰品/econ 元数据默认绝不导出，所以普通 manifest 不包含 `cosmetics` block。若明确要导出
+demo 观测到的武器 paint、刀具和手套元数据，必须同时传入三个 flag：
+
+```powershell
+cs2-demotracer.exe convert --demo <demo.dem> --output <输出目录> --export-cosmetics --acknowledge-cosmetic-gslt-risk --accept-cosmetic-export-disclaimer
+```
+
+`convert-pool` 支持同样三个 flag；不传时每个 replay manifest 都保持无饰品字段。
+
 输出目录里最重要的是：
 
 ```text
@@ -232,4 +241,17 @@ write_rec_file("copy.dtr", &rec)?;
 普通回合 manifest 使用 `dtr_run_manifest` 或 `dtr_run_pool`。道具 manifest 使用
 `dtr_list_nades` 和 `dtr_run_nade`。
 
-DemoTracer 有意不提取或应用皮肤、刀、手套、贴纸、挂件/charms 或探员等饰品库存元数据。
+饰品对齐是可选功能，默认关闭。只有 round manifest 是用 `--export-cosmetics` 和两个
+风险确认 flag 导出，并且里面确实有 `cosmetics` 证据时，它才会生效。生效时
+DemoTracer 也只会把 demo 观测到的武器 paint、刀和手套元数据应用到安全 replay bot。
+它不会随机分配饰品，不会读取 profile/database，也不会应用贴纸、挂件/charms、探员、
+nametag 或 StatTrak。
+
+这个功能面向本地/私有 replay 验证。listen/practice server 未必有专用服那样的 GSLT
+暴露面，但只写 bot 不是规则豁免；如果真人玩家可以观察、接管或使用这些 bot 物品外观，
+仍应按饰品/库存模拟风险处理。专用服、社区服或公网服应按 Valve server guidelines 下的
+运营风险看待，非私有本地环境启用请自行承担风险。
+
+准星对齐默认开启。如果真人观察者正在第一人称观察安全 replay bot，DemoTracer 只会把
+demo 中稳定观测到的 `crosshair_code` 临时应用到这个观察者，并在离开 replay POV 时
+恢复原准星。

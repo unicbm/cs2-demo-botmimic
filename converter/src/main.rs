@@ -17,7 +17,7 @@ use cs2_demotracer::nade_library::print_nade_library_progress;
 use cs2_demotracer::pool::{build_round_pool, BuildPoolOptions};
 use cs2_demotracer::quality::{analyze_demo, AnalysisOptions};
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Display;
 use std::path::PathBuf;
 use validate::validate_dtr_path;
@@ -59,6 +59,21 @@ enum Command {
         subticks: SubtickMode,
         #[arg(long, default_value_t = DEFAULT_FREEZE_PREROLL_SECONDS)]
         freeze_preroll_seconds: f32,
+        #[arg(
+            long,
+            help = "Write demo-observed weapon/knife/glove cosmetic metadata into manifest JSON; default is no cosmetic export."
+        )]
+        export_cosmetics: bool,
+        #[arg(
+            long,
+            help = "Confirm you understand cosmetic export/alignment may carry Valve Game Server Login Token risk."
+        )]
+        acknowledge_cosmetic_gslt_risk: bool,
+        #[arg(
+            long,
+            help = "Confirm you accept responsibility for using exported cosmetic metadata only where appropriate."
+        )]
+        accept_cosmetic_export_disclaimer: bool,
     },
     /// Inspect per-player row coverage for one round.
     InspectRound {
@@ -89,6 +104,21 @@ enum Command {
         subticks: SubtickMode,
         #[arg(long, default_value_t = DEFAULT_FREEZE_PREROLL_SECONDS)]
         freeze_preroll_seconds: f32,
+        #[arg(
+            long,
+            help = "Write demo-observed weapon/knife/glove cosmetic metadata into manifest JSON; default is no cosmetic export."
+        )]
+        export_cosmetics: bool,
+        #[arg(
+            long,
+            help = "Confirm you understand cosmetic export/alignment may carry Valve Game Server Login Token risk."
+        )]
+        acknowledge_cosmetic_gslt_risk: bool,
+        #[arg(
+            long,
+            help = "Confirm you accept responsibility for using exported cosmetic metadata only where appropriate."
+        )]
+        accept_cosmetic_export_disclaimer: bool,
     },
     /// Convert grenade throws into short .dtr clips and a nade manifest.
     ConvertNades {
@@ -248,7 +278,15 @@ fn run() -> cs2_demotracer::Result<()> {
             full_round,
             subticks,
             freeze_preroll_seconds,
+            export_cosmetics,
+            acknowledge_cosmetic_gslt_risk,
+            accept_cosmetic_export_disclaimer,
         } => {
+            let export_cosmetics = validate_cosmetic_export_consent(
+                export_cosmetics,
+                acknowledge_cosmetic_gslt_risk,
+                accept_cosmetic_export_disclaimer,
+            )?;
             let parsed = read_demo(&demo)?;
             let selected_rounds = rounds.as_deref().map(parse_round_list).transpose()?;
             let report = export_demo(
@@ -262,6 +300,7 @@ fn run() -> cs2_demotracer::Result<()> {
                     cut_before_bomb_plant: !full_round,
                     subtick_mode: subticks,
                     freeze_preroll_seconds,
+                    export_cosmetics,
                     analysis: AnalysisOptions {
                         max_round_seconds,
                         ..AnalysisOptions::default()
@@ -374,7 +413,15 @@ fn run() -> cs2_demotracer::Result<()> {
             full_round,
             subticks,
             freeze_preroll_seconds,
+            export_cosmetics,
+            acknowledge_cosmetic_gslt_risk,
+            accept_cosmetic_export_disclaimer,
         } => {
+            let export_cosmetics = validate_cosmetic_export_consent(
+                export_cosmetics,
+                acknowledge_cosmetic_gslt_risk,
+                accept_cosmetic_export_disclaimer,
+            )?;
             let report = build_round_pool(&BuildPoolOptions {
                 demo_dir,
                 output_dir: output,
@@ -384,6 +431,7 @@ fn run() -> cs2_demotracer::Result<()> {
                 cut_before_bomb_plant: !full_round,
                 subtick_mode: subticks,
                 freeze_preroll_seconds,
+                export_cosmetics,
                 analysis: AnalysisOptions {
                     max_round_seconds,
                     ..AnalysisOptions::default()
@@ -499,6 +547,7 @@ fn run_wizard() -> cs2_demotracer::Result<()> {
             cut_before_bomb_plant: !full_round,
             subtick_mode,
             freeze_preroll_seconds: DEFAULT_FREEZE_PREROLL_SECONDS,
+            export_cosmetics: false,
             analysis: AnalysisOptions::default(),
         },
     )?;
@@ -517,6 +566,26 @@ fn run_wizard() -> cs2_demotracer::Result<()> {
 
 fn prompt_path(input: &str) -> PathBuf {
     PathBuf::from(input.trim().trim_matches('"').trim_matches('\''))
+}
+
+fn validate_cosmetic_export_consent(
+    export_cosmetics: bool,
+    acknowledge_gslt_risk: bool,
+    accept_disclaimer: bool,
+) -> cs2_demotracer::Result<bool> {
+    if !export_cosmetics && (acknowledge_gslt_risk || accept_disclaimer) {
+        return Err(cs2_demotracer::Error::InvalidDemo(
+            "cosmetic export acknowledgement flags require --export-cosmetics".to_string(),
+        ));
+    }
+
+    if export_cosmetics && (!acknowledge_gslt_risk || !accept_disclaimer) {
+        return Err(cs2_demotracer::Error::InvalidDemo(
+            "--export-cosmetics writes demo-observed weapon/knife/glove cosmetic metadata into manifest JSON and requires both --acknowledge-cosmetic-gslt-risk and --accept-cosmetic-export-disclaimer. Use cosmetic export/alignment only where you have assessed Valve server guideline and GSLT risk.".to_string(),
+        ));
+    }
+
+    Ok(export_cosmetics)
 }
 
 fn parse_wizard_rounds(
@@ -576,6 +645,32 @@ fn dialog_error(err: impl Display) -> cs2_demotracer::Error {
     cs2_demotracer::Error::InvalidDemo(format!("interactive prompt failed: {err}"))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cosmetic_export_requires_both_confirmations() {
+        let err = validate_cosmetic_export_consent(true, true, false).unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("--accept-cosmetic-export-disclaimer"));
+    }
+
+    #[test]
+    fn cosmetic_export_acknowledgements_require_export_flag() {
+        let err = validate_cosmetic_export_consent(false, true, true).unwrap_err();
+
+        assert!(err.to_string().contains("--export-cosmetics"));
+    }
+
+    #[test]
+    fn cosmetic_export_accepts_explicit_full_consent() {
+        assert!(validate_cosmetic_export_consent(true, true, true).unwrap());
+    }
+}
+
 #[derive(Default)]
 struct PlayerRoundStats {
     name: String,
@@ -583,6 +678,13 @@ struct PlayerRoundStats {
     rows: usize,
     first_tick: i32,
     last_tick: i32,
+    glove_item_rows: usize,
+    glove_paint_rows: usize,
+    glove_seed_rows: usize,
+    glove_wear_rows: usize,
+    glove_evidence_rows: usize,
+    glove_item_defs: BTreeSet<i32>,
+    glove_specs: BTreeSet<(u32, u32, u32)>,
 }
 
 #[derive(Default)]
@@ -660,10 +762,44 @@ fn collect_round_players(
                 rows: 0,
                 first_tick: row.tick,
                 last_tick: row.tick,
+                glove_item_rows: 0,
+                glove_paint_rows: 0,
+                glove_seed_rows: 0,
+                glove_wear_rows: 0,
+                glove_evidence_rows: 0,
+                glove_item_defs: BTreeSet::new(),
+                glove_specs: BTreeSet::new(),
             });
         entry.rows += 1;
         entry.first_tick = entry.first_tick.min(row.tick);
         entry.last_tick = entry.last_tick.max(row.tick);
+        if let Some(item_def) = row.glove_item_def_index {
+            entry.glove_item_rows += 1;
+            entry.glove_item_defs.insert(item_def);
+        }
+        if row.glove_paint_kit.is_some() {
+            entry.glove_paint_rows += 1;
+        }
+        if row.glove_paint_seed.is_some() {
+            entry.glove_seed_rows += 1;
+        }
+        if let Some(wear) = row.glove_paint_wear {
+            entry.glove_wear_rows += 1;
+            if let (Some(item_def), Some(paint)) = (row.glove_item_def_index, row.glove_paint_kit) {
+                if is_diagnostic_glove_item_def(item_def)
+                    && paint > 0
+                    && wear.is_finite()
+                    && (0.0..=1.0).contains(&wear)
+                {
+                    entry.glove_evidence_rows += 1;
+                    entry.glove_specs.insert((
+                        paint,
+                        row.glove_paint_seed.unwrap_or_default(),
+                        wear.to_bits(),
+                    ));
+                }
+            }
+        }
         if entry.name.is_empty() && !row.name.is_empty() {
             entry.name = row.name.clone();
         }
@@ -674,7 +810,9 @@ fn collect_round_players(
 
 fn print_player_table(title: &str, players: &BTreeMap<(u8, u64), PlayerRoundStats>) {
     println!("{title}: {}", players.len());
-    println!("team steamid rows first_tick last_tick name");
+    println!(
+        "team steamid rows first_tick last_tick glove_item paint seed wear evidence specs item_defs name"
+    );
     for ((_, steam_id), stats) in players {
         let team = match stats.team_num {
             2 => "T",
@@ -682,8 +820,34 @@ fn print_player_table(title: &str, players: &BTreeMap<(u8, u64), PlayerRoundStat
             _ => "UNK",
         };
         println!(
-            "{team:>3} {steam_id} {:>6} {:>10} {:>9} {}",
-            stats.rows, stats.first_tick, stats.last_tick, stats.name
+            "{team:>3} {steam_id} {:>6} {:>10} {:>9} {:>10} {:>5} {:>4} {:>4} {:>8} {:>5} {:>9} {}",
+            stats.rows,
+            stats.first_tick,
+            stats.last_tick,
+            stats.glove_item_rows,
+            stats.glove_paint_rows,
+            stats.glove_seed_rows,
+            stats.glove_wear_rows,
+            stats.glove_evidence_rows,
+            stats.glove_specs.len(),
+            format_item_defs(&stats.glove_item_defs),
+            stats.name
         );
+    }
+}
+
+fn is_diagnostic_glove_item_def(item_def: i32) -> bool {
+    (5027..=5035).contains(&item_def)
+}
+
+fn format_item_defs(item_defs: &BTreeSet<i32>) -> String {
+    if item_defs.is_empty() {
+        "-".to_string()
+    } else {
+        item_defs
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
     }
 }

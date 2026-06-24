@@ -2,8 +2,9 @@ use crate::demo_id::output_demo_id;
 use crate::model::{
     public_demo_path, ConversionManifest, ConvertedFile, ConvertedRound, EconomyClass,
     HighFidelityMetadata, ParsedDemo, ParsedGameEvent, ParsedPlayerTick, ParsedProjectile,
-    ReplayHifiEvent, ReplayHifiEventKind, ReplayInventoryItemCount, ReplayInventorySnapshot,
-    ReplayLoadout, Side, SubtickMode, TeamEconomy, DEMOTRACER_ABI, DTR_FORMAT_VERSION,
+    ReplayCosmetics, ReplayHifiEvent, ReplayHifiEventKind, ReplayInventoryItemCount,
+    ReplayInventorySnapshot, ReplayItemCosmetic, ReplayLoadout, ReplayView, ReplayWeaponCosmetic,
+    Side, SubtickMode, TeamEconomy, DEMOTRACER_ABI, DTR_FORMAT_VERSION,
 };
 use crate::quality::{analyze_demo, AnalysisOptions};
 use crate::rec_writer::write_rec;
@@ -26,6 +27,7 @@ pub struct ConvertOptions {
     pub cut_before_bomb_plant: bool,
     pub subtick_mode: SubtickMode,
     pub freeze_preroll_seconds: f32,
+    pub export_cosmetics: bool,
     pub analysis: AnalysisOptions,
 }
 
@@ -38,6 +40,7 @@ pub struct ConvertMemoryOptions {
     pub cut_before_bomb_plant: bool,
     pub subtick_mode: SubtickMode,
     pub freeze_preroll_seconds: f32,
+    pub export_cosmetics: bool,
     pub analysis: AnalysisOptions,
 }
 
@@ -51,6 +54,7 @@ impl From<&ConvertOptions> for ConvertMemoryOptions {
             cut_before_bomb_plant: options.cut_before_bomb_plant,
             subtick_mode: options.subtick_mode,
             freeze_preroll_seconds: options.freeze_preroll_seconds,
+            export_cosmetics: options.export_cosmetics,
             analysis: options.analysis,
         }
     }
@@ -254,6 +258,12 @@ pub fn export_demo_to_memory(
                 hifi_event_count: rec.high_fidelity.events.len(),
                 inventory_snapshot_count: rec.high_fidelity.inventory_snapshots.len(),
                 loadout: replay_loadout(player_rows[0]),
+                cosmetics: if options.export_cosmetics {
+                    replay_cosmetics(&player_rows)
+                } else {
+                    None
+                },
+                view: replay_view(&player_rows),
             });
             artifacts.push(ConversionArtifact {
                 path,
@@ -1173,6 +1183,166 @@ pub(crate) fn replay_loadout(row: &ParsedPlayerTick) -> ReplayLoadout {
     }
 }
 
+fn replay_view(rows: &[&ParsedPlayerTick]) -> Option<ReplayView> {
+    let mut crosshair_codes = BTreeSet::new();
+
+    for row in rows {
+        if !row.is_alive || row.steam_id == 0 {
+            continue;
+        }
+
+        if let Some(code) = row
+            .crosshair_code
+            .as_deref()
+            .map(str::trim)
+            .filter(|code| !code.is_empty())
+        {
+            crosshair_codes.insert(code.to_string());
+        }
+    }
+
+    if crosshair_codes.len() != 1 {
+        return None;
+    }
+
+    let view = ReplayView {
+        crosshair_code: crosshair_codes.into_iter().next(),
+    };
+    (!view.is_empty()).then_some(view)
+}
+
+fn replay_cosmetics(rows: &[&ParsedPlayerTick]) -> Option<ReplayCosmetics> {
+    let mut weapon_specs: BTreeMap<i32, BTreeSet<CosmeticPaintSpec>> = BTreeMap::new();
+    let mut knife_specs = BTreeSet::new();
+    let mut glove_specs = BTreeSet::new();
+    let mut glove_item_defs = BTreeSet::new();
+
+    for row in rows {
+        if !row.is_alive || row.steam_id == 0 {
+            continue;
+        }
+
+        let raw_def = row.item_def_idx;
+        if is_knife_cosmetic_def_index(raw_def) {
+            if let Some(spec) = cosmetic_paint_spec(
+                row.active_weapon_paint_kit,
+                row.active_weapon_paint_seed,
+                row.active_weapon_paint_wear,
+            ) {
+                knife_specs.insert((raw_def, spec));
+            }
+        } else {
+            let def = normalize_weapon_def_index(raw_def);
+            if is_weapon_cosmetic_def_index(def) {
+                if let Some(spec) = cosmetic_paint_spec(
+                    row.active_weapon_paint_kit,
+                    row.active_weapon_paint_seed,
+                    row.active_weapon_paint_wear,
+                ) {
+                    weapon_specs.entry(def).or_default().insert(spec);
+                }
+            }
+        }
+
+        if let Some(item_def) = row
+            .glove_item_def_index
+            .filter(|def| is_plausible_glove_item_def_index(*def))
+        {
+            glove_item_defs.insert(item_def);
+        }
+        if let Some(spec) = glove_cosmetic_paint_spec(
+            row.glove_paint_kit,
+            row.glove_paint_seed,
+            row.glove_paint_wear,
+        ) {
+            glove_specs.insert(spec);
+        }
+    }
+
+    let mut cosmetics = ReplayCosmetics::default();
+    for (weapon_def_index, specs) in weapon_specs {
+        if specs.len() != 1 {
+            continue;
+        }
+        let spec = *specs.iter().next().expect("checked one cosmetic spec");
+        cosmetics.weapons.push(ReplayWeaponCosmetic {
+            weapon_def_index,
+            paint_kit: spec.paint_kit,
+            seed: spec.seed,
+            wear: f32::from_bits(spec.wear_bits),
+        });
+    }
+
+    if knife_specs.len() == 1 {
+        if let Some((item_def_index, spec)) = knife_specs.iter().next().copied() {
+            cosmetics.knife = Some(ReplayItemCosmetic {
+                item_def_index: Some(item_def_index),
+                paint_kit: spec.paint_kit,
+                seed: spec.seed,
+                wear: f32::from_bits(spec.wear_bits),
+            });
+        }
+    }
+
+    if glove_specs.len() == 1 && glove_item_defs.len() == 1 {
+        if let Some(spec) = glove_specs.iter().next().copied() {
+            cosmetics.glove = Some(ReplayItemCosmetic {
+                item_def_index: glove_item_defs.iter().next().copied(),
+                paint_kit: spec.paint_kit,
+                seed: spec.seed,
+                wear: f32::from_bits(spec.wear_bits),
+            });
+        }
+    }
+
+    cosmetics
+        .weapons
+        .sort_by_key(|weapon| weapon.weapon_def_index);
+    (!cosmetics.is_empty()).then_some(cosmetics)
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct CosmeticPaintSpec {
+    paint_kit: u32,
+    seed: u32,
+    wear_bits: u32,
+}
+
+fn cosmetic_paint_spec(
+    paint_kit: Option<u32>,
+    seed: Option<u32>,
+    wear: Option<f32>,
+) -> Option<CosmeticPaintSpec> {
+    let paint_kit = paint_kit.filter(|value| *value > 0)?;
+    let seed = seed?;
+    let wear = wear?;
+    if !wear.is_finite() || !(0.0..=1.0).contains(&wear) {
+        return None;
+    }
+    Some(CosmeticPaintSpec {
+        paint_kit,
+        seed,
+        wear_bits: wear.to_bits(),
+    })
+}
+
+fn glove_cosmetic_paint_spec(
+    paint_kit: Option<u32>,
+    seed: Option<u32>,
+    wear: Option<f32>,
+) -> Option<CosmeticPaintSpec> {
+    let paint_kit = paint_kit.filter(|value| *value > 0)?;
+    let wear = wear?;
+    if !wear.is_finite() || !(0.0..=1.0).contains(&wear) {
+        return None;
+    }
+    Some(CosmeticPaintSpec {
+        paint_kit,
+        seed: seed.unwrap_or_default(),
+        wear_bits: wear.to_bits(),
+    })
+}
+
 fn normalize_weapon_def_index(def: i32) -> i32 {
     if def == 42 || def == 59 || (500..600).contains(&def) {
         42
@@ -1239,6 +1409,18 @@ fn is_preload_weapon_def_index(def: i32) -> bool {
 
 fn is_loadout_weapon_def_index(def: i32) -> bool {
     is_known_weapon_def_index(def) && !matches!(def, 42 | 49)
+}
+
+fn is_weapon_cosmetic_def_index(def: i32) -> bool {
+    is_known_weapon_def_index(def) && !matches!(def, 31 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49)
+}
+
+fn is_knife_cosmetic_def_index(def: i32) -> bool {
+    def == 42 || def == 59 || (500..600).contains(&def)
+}
+
+fn is_plausible_glove_item_def_index(def: i32) -> bool {
+    (5027..=5035).contains(&def)
 }
 
 fn weapon_def_index_from_item_name(item_name: &str) -> Option<i32> {
@@ -1461,6 +1643,227 @@ mod tests {
     }
 
     #[test]
+    fn manifest_includes_demo_backed_cosmetics() {
+        let mut parsed = sample_demo();
+        parsed.rows = vec![
+            ParsedPlayerTick {
+                item_def_idx: 7,
+                inventory_as_ids: vec![7, 61],
+                active_weapon_paint_kit: Some(180),
+                active_weapon_paint_seed: Some(12),
+                active_weapon_paint_wear: Some(0.125),
+                glove_item_def_index: Some(5030),
+                glove_paint_kit: Some(10006),
+                glove_paint_seed: Some(4),
+                glove_paint_wear: Some(0.2),
+                ..sample_row(100)
+            },
+            ParsedPlayerTick {
+                item_def_idx: 508,
+                inventory_as_ids: vec![7, 61],
+                active_weapon_paint_kit: Some(38),
+                active_weapon_paint_seed: Some(321),
+                active_weapon_paint_wear: Some(0.01),
+                glove_item_def_index: Some(5030),
+                glove_paint_kit: Some(10006),
+                glove_paint_seed: Some(4),
+                glove_paint_wear: Some(0.2),
+                ..sample_row(164)
+            },
+        ];
+
+        let memory = export_memory_with_cosmetics(parsed);
+        let cosmetics = memory.manifest.files[0]
+            .cosmetics
+            .as_ref()
+            .expect("expected cosmetic evidence");
+
+        assert_eq!(cosmetics.weapons.len(), 1);
+        assert_eq!(cosmetics.weapons[0].weapon_def_index, 7);
+        assert_eq!(cosmetics.weapons[0].paint_kit, 180);
+        assert_eq!(cosmetics.weapons[0].seed, 12);
+        assert_eq!(cosmetics.weapons[0].wear.to_bits(), 0.125_f32.to_bits());
+        assert_eq!(cosmetics.knife.as_ref().unwrap().item_def_index, Some(508));
+        assert_eq!(cosmetics.knife.as_ref().unwrap().paint_kit, 38);
+        assert_eq!(cosmetics.glove.as_ref().unwrap().item_def_index, Some(5030));
+        assert_eq!(cosmetics.glove.as_ref().unwrap().paint_kit, 10006);
+    }
+
+    #[test]
+    fn manifest_omits_demo_backed_cosmetics_by_default() {
+        let mut parsed = sample_demo();
+        parsed.rows = vec![
+            ParsedPlayerTick {
+                item_def_idx: 7,
+                inventory_as_ids: vec![7, 61],
+                active_weapon_paint_kit: Some(180),
+                active_weapon_paint_seed: Some(12),
+                active_weapon_paint_wear: Some(0.125),
+                glove_item_def_index: Some(5030),
+                glove_paint_kit: Some(10006),
+                glove_paint_seed: Some(4),
+                glove_paint_wear: Some(0.2),
+                ..sample_row(100)
+            },
+            ParsedPlayerTick {
+                item_def_idx: 508,
+                inventory_as_ids: vec![7, 61],
+                active_weapon_paint_kit: Some(38),
+                active_weapon_paint_seed: Some(321),
+                active_weapon_paint_wear: Some(0.01),
+                glove_item_def_index: Some(5030),
+                glove_paint_kit: Some(10006),
+                glove_paint_seed: Some(4),
+                glove_paint_wear: Some(0.2),
+                ..sample_row(164)
+            },
+        ];
+
+        let memory = export_memory(parsed);
+
+        assert!(memory.manifest.files[0].cosmetics.is_none());
+        let json = serde_json::to_string(&memory.manifest.files[0]).unwrap();
+        assert!(!json.contains("cosmetics"));
+    }
+
+    #[test]
+    fn manifest_omits_cosmetics_without_complete_evidence() {
+        let memory = export_memory(sample_demo());
+
+        assert!(memory.manifest.files[0].cosmetics.is_none());
+        let json = serde_json::to_string(&memory.manifest.files[0]).unwrap();
+        assert!(!json.contains("cosmetics"));
+    }
+
+    #[test]
+    fn glove_cosmetics_tolerate_missing_seed() {
+        let mut parsed = sample_demo();
+        parsed.rows = vec![
+            ParsedPlayerTick {
+                glove_item_def_index: Some(5034),
+                glove_paint_kit: Some(10033),
+                glove_paint_seed: None,
+                glove_paint_wear: Some(0.382),
+                ..sample_row(100)
+            },
+            ParsedPlayerTick {
+                glove_item_def_index: Some(5034),
+                glove_paint_kit: Some(10033),
+                glove_paint_seed: None,
+                glove_paint_wear: Some(0.382),
+                ..sample_row(164)
+            },
+        ];
+
+        let memory = export_memory_with_cosmetics(parsed);
+        let glove = memory.manifest.files[0]
+            .cosmetics
+            .as_ref()
+            .and_then(|cosmetics| cosmetics.glove.as_ref())
+            .expect("expected glove evidence");
+
+        assert_eq!(glove.item_def_index, Some(5034));
+        assert_eq!(glove.paint_kit, 10033);
+        assert_eq!(glove.seed, 0);
+        assert_eq!(glove.wear.to_bits(), 0.382_f32.to_bits());
+    }
+
+    #[test]
+    fn glove_cosmetics_require_item_def_evidence() {
+        let mut parsed = sample_demo();
+        parsed.rows = vec![
+            ParsedPlayerTick {
+                glove_item_def_index: None,
+                glove_paint_kit: Some(10033),
+                glove_paint_seed: None,
+                glove_paint_wear: Some(0.382),
+                ..sample_row(100)
+            },
+            ParsedPlayerTick {
+                glove_item_def_index: None,
+                glove_paint_kit: Some(10033),
+                glove_paint_seed: None,
+                glove_paint_wear: Some(0.382),
+                ..sample_row(164)
+            },
+        ];
+
+        let memory = export_memory_with_cosmetics(parsed);
+
+        assert!(memory.manifest.files[0].cosmetics.is_none());
+    }
+
+    #[test]
+    fn manifest_includes_stable_crosshair_code() {
+        let mut parsed = sample_demo();
+        parsed.rows = vec![
+            ParsedPlayerTick {
+                crosshair_code: Some("CSGO-aBcDe-fGhIj-kLmNo-pQrSt-uVwXy".to_string()),
+                ..sample_row(100)
+            },
+            ParsedPlayerTick {
+                crosshair_code: Some(" CSGO-aBcDe-fGhIj-kLmNo-pQrSt-uVwXy ".to_string()),
+                ..sample_row(164)
+            },
+        ];
+
+        let memory = export_memory_with_cosmetics(parsed);
+        let view = memory.manifest.files[0]
+            .view
+            .as_ref()
+            .expect("expected view metadata");
+
+        assert_eq!(
+            view.crosshair_code.as_deref(),
+            Some("CSGO-aBcDe-fGhIj-kLmNo-pQrSt-uVwXy")
+        );
+    }
+
+    #[test]
+    fn conflicting_crosshair_codes_are_skipped() {
+        let mut parsed = sample_demo();
+        parsed.rows = vec![
+            ParsedPlayerTick {
+                crosshair_code: Some("CSGO-aaaaa-aaaaa-aaaaa-aaaaa-aaaaa".to_string()),
+                ..sample_row(100)
+            },
+            ParsedPlayerTick {
+                crosshair_code: Some("CSGO-bbbbb-bbbbb-bbbbb-bbbbb-bbbbb".to_string()),
+                ..sample_row(164)
+            },
+        ];
+
+        let memory = export_memory(parsed);
+
+        assert!(memory.manifest.files[0].view.is_none());
+    }
+
+    #[test]
+    fn conflicting_cosmetic_evidence_is_skipped() {
+        let mut parsed = sample_demo();
+        parsed.rows = vec![
+            ParsedPlayerTick {
+                item_def_idx: 7,
+                active_weapon_paint_kit: Some(180),
+                active_weapon_paint_seed: Some(12),
+                active_weapon_paint_wear: Some(0.125),
+                ..sample_row(100)
+            },
+            ParsedPlayerTick {
+                item_def_idx: 7,
+                active_weapon_paint_kit: Some(181),
+                active_weapon_paint_seed: Some(12),
+                active_weapon_paint_wear: Some(0.125),
+                ..sample_row(164)
+            },
+        ];
+
+        let memory = export_memory(parsed);
+
+        assert!(memory.manifest.files[0].cosmetics.is_none());
+    }
+
+    #[test]
     fn memory_export_matches_filesystem_export_surface() {
         let parsed = sample_demo();
         let selected_rounds = Some(BTreeSet::from([1]));
@@ -1472,6 +1875,7 @@ mod tests {
             cut_before_bomb_plant: true,
             subtick_mode: SubtickMode::Auto,
             freeze_preroll_seconds: DEFAULT_FREEZE_PREROLL_SECONDS,
+            export_cosmetics: false,
             analysis: AnalysisOptions::default(),
         };
 
@@ -1511,6 +1915,7 @@ mod tests {
                 cut_before_bomb_plant: true,
                 subtick_mode: SubtickMode::Auto,
                 freeze_preroll_seconds: DEFAULT_FREEZE_PREROLL_SECONDS,
+                export_cosmetics: false,
                 analysis: AnalysisOptions::default(),
             },
         )
@@ -1539,6 +1944,7 @@ mod tests {
                 cut_before_bomb_plant: true,
                 subtick_mode: SubtickMode::Auto,
                 freeze_preroll_seconds: DEFAULT_FREEZE_PREROLL_SECONDS,
+                export_cosmetics: false,
                 analysis: AnalysisOptions::default(),
             },
         )
@@ -1583,6 +1989,7 @@ mod tests {
                 cut_before_bomb_plant: true,
                 subtick_mode: SubtickMode::Auto,
                 freeze_preroll_seconds: DEFAULT_FREEZE_PREROLL_SECONDS,
+                export_cosmetics: false,
                 analysis: AnalysisOptions::default(),
             },
         )
@@ -1626,6 +2033,7 @@ mod tests {
                 cut_before_bomb_plant: true,
                 subtick_mode: SubtickMode::Auto,
                 freeze_preroll_seconds: 1.0,
+                export_cosmetics: false,
                 analysis: AnalysisOptions::default(),
             },
         )
@@ -1872,6 +2280,17 @@ mod tests {
     }
 
     fn export_memory(parsed: ParsedDemo) -> MemoryConversionReport {
+        export_memory_with_options(parsed, false)
+    }
+
+    fn export_memory_with_cosmetics(parsed: ParsedDemo) -> MemoryConversionReport {
+        export_memory_with_options(parsed, true)
+    }
+
+    fn export_memory_with_options(
+        parsed: ParsedDemo,
+        export_cosmetics: bool,
+    ) -> MemoryConversionReport {
         export_demo_to_memory(
             &parsed,
             &ConvertMemoryOptions {
@@ -1882,6 +2301,7 @@ mod tests {
                 cut_before_bomb_plant: false,
                 subtick_mode: SubtickMode::Auto,
                 freeze_preroll_seconds: DEFAULT_FREEZE_PREROLL_SECONDS,
+                export_cosmetics,
                 analysis: AnalysisOptions::default(),
             },
         )
@@ -1949,6 +2369,14 @@ mod tests {
             buttonstate3: 0,
             item_def_idx: 7,
             inventory_as_ids: vec![7],
+            active_weapon_paint_kit: None,
+            active_weapon_paint_seed: None,
+            active_weapon_paint_wear: None,
+            glove_item_def_index: None,
+            glove_paint_kit: None,
+            glove_paint_seed: None,
+            glove_paint_wear: None,
+            crosshair_code: None,
             armor_value: 100,
             has_helmet: true,
             has_defuser: false,

@@ -234,6 +234,12 @@ public sealed partial class DemoTracerPlugin
 
         [JsonPropertyName("loadout")]
         public ReplayLoadoutSnapshot? Loadout { get; set; }
+
+        [JsonPropertyName("cosmetics")]
+        public ReplayCosmetics? Cosmetics { get; set; }
+
+        [JsonPropertyName("view")]
+        public ReplayView? View { get; set; }
     }
 
     private sealed class ReplayLoadoutSnapshot
@@ -249,6 +255,54 @@ public sealed partial class DemoTracerPlugin
 
         [JsonPropertyName("has_defuser")]
         public bool HasDefuser { get; set; }
+    }
+
+    private sealed class ReplayView
+    {
+        [JsonPropertyName("crosshair_code")]
+        public string? CrosshairCode { get; set; }
+    }
+
+    private sealed class ReplayCosmetics
+    {
+        [JsonPropertyName("weapons")]
+        public List<ReplayWeaponCosmetic> Weapons { get; set; } = new();
+
+        [JsonPropertyName("knife")]
+        public ReplayItemCosmetic? Knife { get; set; }
+
+        [JsonPropertyName("glove")]
+        public ReplayItemCosmetic? Glove { get; set; }
+    }
+
+    private sealed class ReplayWeaponCosmetic
+    {
+        [JsonPropertyName("weapon_def_index")]
+        public int WeaponDefIndex { get; set; }
+
+        [JsonPropertyName("paint_kit")]
+        public uint PaintKit { get; set; }
+
+        [JsonPropertyName("seed")]
+        public uint Seed { get; set; }
+
+        [JsonPropertyName("wear")]
+        public float Wear { get; set; }
+    }
+
+    private sealed class ReplayItemCosmetic
+    {
+        [JsonPropertyName("item_def_index")]
+        public int? ItemDefIndex { get; set; }
+
+        [JsonPropertyName("paint_kit")]
+        public uint PaintKit { get; set; }
+
+        [JsonPropertyName("seed")]
+        public uint Seed { get; set; }
+
+        [JsonPropertyName("wear")]
+        public float Wear { get; set; }
     }
 
     private const int NadeManifestFormatVersion = 1;
@@ -339,10 +393,10 @@ public sealed partial class DemoTracerPlugin
         if (abi == 0)
             return;
 
-        if (abi < MinManifestAbiVersion || abi > BotControllerNative.ExpectedAbiVersion)
+        if (abi < MinManifestAbiVersion || abi > MaxManifestAbiVersion)
         {
             throw new InvalidDataException(
-                $"manifest abi {abi} unsupported; expected {MinManifestAbiVersion}..{BotControllerNative.ExpectedAbiVersion}");
+                $"manifest abi {abi} unsupported; expected {MinManifestAbiVersion}..{MaxManifestAbiVersion}");
         }
     }
 

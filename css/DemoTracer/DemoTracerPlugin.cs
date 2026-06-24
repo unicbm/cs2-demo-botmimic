@@ -48,9 +48,11 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     private const float NadeCycleDefaultGapSeconds = 1.5f;
     private const float NadeCycleMaxGapSeconds = 30.0f;
     private const int MinManifestAbiVersion = 12;
+    private const int MaxManifestAbiVersion = 16;
     private const int MaxPlayerSlots = BotControllerNative.MaxSlots;
     private const int ReplayStartHealth = 100;
     private const string FreezeTimeConVarName = "mp_freezetime";
+    private const string CosmeticRiskNotice = "[DTR WARN] cosmetic alignment consumes opt-in manifest cosmetics evidence and may carry Valve GSLT/server-guideline risk outside local/private replay validation.";
 
     private readonly List<int> _loadedSlots = new();
     private readonly Dictionary<int, LoadedReplay> _loadedReplays = new();
@@ -72,6 +74,9 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     private readonly Dictionary<int, PendingBulletDamage> _pendingBulletDamages = new();
     private readonly Dictionary<int, PendingThreat360> _pendingThreat360 = new();
     private readonly Dictionary<uint, UtilityProjectileTrace> _utilityTraceProjectiles = new();
+    private readonly HashSet<int> _cosmeticSyncedSlots = new();
+    private readonly Dictionary<int, string?> _viewerOriginalCrosshairCodes = new();
+    private readonly Dictionary<int, string> _viewerAppliedCrosshairCodes = new();
     private readonly BotHiderMemoryProbe _botHiderProbe = new();
     private readonly RayTraceLosProbe _rayTraceLosProbe = new();
     private bool _safeC4Aligned;
@@ -103,20 +108,26 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     private readonly HashSet<string> _poolUsedCandidates = new();
     private bool _weaponAlignEnabled = true;
     private bool _projectileAlignEnabled = true;
+    private bool _cosmeticAlignEnabled;
+    private bool _crosshairAlignEnabled = true;
     private bool _weaponAlignFrameQueued;
+    private int _cosmeticAppliedCount;
+    private int _cosmeticSkippedCount;
     private HandoffMode _handoffMode = HandoffMode.DeathOrContact;
     private bool _handoffAllSlots;
     private bool _handoffThreat360Enabled = true;
     private float _handoffThreat360Range = HandoffThreat360DefaultRange;
     private bool _handoffThreat360LosEnabled = true;
     private bool _partialReplayEnabled = true;
-    private ReplayIdentityMode _replayIdentityMode = ReplayIdentityMode.Off;
+    private ReplayIdentityMode _replayIdentityMode = ReplayIdentityMode.Full;
     private int _nextNadeStartToken;
     private NadeCycleState? _nadeCycle;
     private int _nextNadeCycleToken;
 
     public override void Load(bool hotReload)
     {
+        LoadCosmeticLegacyPaints();
+        HookCosmeticGiveNamedItem();
         RegisterListener<Listeners.OnTick>(OnTick);
         RegisterListener<Listeners.OnEntitySpawned>(OnEntitySpawned);
         RegisterListener<Listeners.OnEntityDeleted>(OnEntityDeleted);
@@ -127,6 +138,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
 
     public override void Unload(bool hotReload)
     {
+        UnhookCosmeticGiveNamedItem();
         StopAndUnloadLoaded();
         StopUtilityTrace();
         BotControllerNative.ClearAllBuyPlans();
@@ -179,6 +191,30 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         }
 
         command.ReplyToCommand($"dtr: projectile_align={_projectileAlignEnabled}");
+    }
+
+    [ConsoleCommand("dtr_cosmetic_align", "dtr_cosmetic_align <0|1>")]
+    public void CosmeticAlignCommand(CCSPlayerController? player, CommandInfo command)
+    {
+        if (command.ArgCount >= 2)
+            _cosmeticAlignEnabled = ParseOnOff(command.GetArg(1), _cosmeticAlignEnabled);
+        if (!_cosmeticAlignEnabled)
+            ResetCosmeticAlignState();
+
+        command.ReplyToCommand($"dtr: cosmetic_align={_cosmeticAlignEnabled}");
+        if (_cosmeticAlignEnabled)
+            command.ReplyToCommand(CosmeticRiskNotice);
+    }
+
+    [ConsoleCommand("dtr_crosshair_align", "dtr_crosshair_align <0|1>")]
+    public void CrosshairAlignCommand(CCSPlayerController? player, CommandInfo command)
+    {
+        if (command.ArgCount >= 2)
+            _crosshairAlignEnabled = ParseOnOff(command.GetArg(1), _crosshairAlignEnabled);
+        if (!_crosshairAlignEnabled)
+            ResetCrosshairAlignState();
+
+        command.ReplyToCommand($"dtr: crosshair_align={_crosshairAlignEnabled}");
     }
 
     [ConsoleCommand("dtr_handoff", "dtr_handoff <off|death|contact|death_or_contact> [all|slot]")]
@@ -312,7 +348,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     {
         if (command.ArgCount < 4)
         {
-            command.ReplyToCommand("usage: dtr_set align <weapons|loadout|active_weapon|slot_lock|projectiles> <off|on>");
+            command.ReplyToCommand("usage: dtr_set align <weapons|loadout|active_weapon|slot_lock|projectiles|cosmetics|crosshair> <off|on>");
             return;
         }
 
@@ -356,8 +392,27 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                 }
                 command.ReplyToCommand($"[DTR OK] align projectiles={FormatOnOff(_projectileAlignEnabled)}");
                 return;
+            case "cosmetics":
+            case "cosmetic":
+            case "skins":
+            case "skin":
+                _cosmeticAlignEnabled = enabled;
+                if (!_cosmeticAlignEnabled)
+                    ResetCosmeticAlignState();
+                command.ReplyToCommand($"[DTR OK] align cosmetics={FormatOnOff(_cosmeticAlignEnabled)}");
+                if (_cosmeticAlignEnabled)
+                    command.ReplyToCommand(CosmeticRiskNotice);
+                return;
+            case "crosshair":
+            case "crosshairs":
+            case "view":
+                _crosshairAlignEnabled = enabled;
+                if (!_crosshairAlignEnabled)
+                    ResetCrosshairAlignState();
+                command.ReplyToCommand($"[DTR OK] align crosshair={FormatOnOff(_crosshairAlignEnabled)}");
+                return;
             default:
-                command.ReplyToCommand("usage: dtr_set align <weapons|loadout|active_weapon|slot_lock|projectiles> <off|on>");
+                command.ReplyToCommand("usage: dtr_set align <weapons|loadout|active_weapon|slot_lock|projectiles|cosmetics|crosshair> <off|on>");
                 return;
         }
     }
@@ -388,7 +443,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         if (command.ArgCount < 2)
         {
             command.ReplyToCommand("usage: dtr_set identity <off|name|full>");
-            command.ReplyToCommand("usage: dtr_set align <weapons|loadout|active_weapon|slot_lock|projectiles> <off|on>");
+            command.ReplyToCommand("usage: dtr_set align <weapons|loadout|active_weapon|slot_lock|projectiles|cosmetics|crosshair> <off|on>");
             command.ReplyToCommand("usage: dtr_set handoff <off|death|contact|death_or_contact> [slot|all]");
             command.ReplyToCommand("usage: dtr_set allow_partial <off|on>");
             return;
@@ -459,7 +514,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                         ? $"pool server_round={_poolRoundIndex} candidates={_poolManifest?.Candidates.Count ?? 0}"
                         : "none";
             command.ReplyToCommand(
-                $"[DTR OK] status plan={plan} loaded_slots={_loadedSlots.Count} settings identity={ReplayIdentityModeName()} weapons={FormatOnOff(_weaponAlignEnabled)} projectiles={FormatOnOff(_projectileAlignEnabled)} handoff={FormatHandoffMode(_handoffMode)}:{(_handoffAllSlots ? "all" : "slot")} allow_partial={FormatOnOff(_partialReplayEnabled)} mp_freezetime={(float.IsFinite(freezeTime) ? freezeTime.ToString("F2", CultureInfo.InvariantCulture) : "unknown")} {(string.IsNullOrEmpty(freezeReason) ? "" : freezeReason)}");
+                $"[DTR OK] status plan={plan} loaded_slots={_loadedSlots.Count} settings identity={ReplayIdentityModeName()} weapons={FormatOnOff(_weaponAlignEnabled)} projectiles={FormatOnOff(_projectileAlignEnabled)} cosmetics={FormatOnOff(_cosmeticAlignEnabled)} crosshair={FormatOnOff(_crosshairAlignEnabled)} handoff={FormatHandoffMode(_handoffMode)}:{(_handoffAllSlots ? "all" : "slot")} allow_partial={FormatOnOff(_partialReplayEnabled)} mp_freezetime={(float.IsFinite(freezeTime) ? freezeTime.ToString("F2", CultureInfo.InvariantCulture) : "unknown")} {(string.IsNullOrEmpty(freezeReason) ? "" : freezeReason)} {FormatCosmeticStatusCounts()} {FormatCrosshairStatusCounts()}");
             return;
         }
 
@@ -474,7 +529,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             ? $" pool_next={_poolRoundIndex}"
             : string.Empty;
         command.ReplyToCommand(
-            $"dtr: abi={BotControllerNative.AbiVersion} slot={slot} playing={state.Playing} cursor={state.Cursor} total={state.Total} handoff={FormatHandoffMode(_handoffMode)} scope={(_handoffAllSlots ? "all" : "slot")} handoff_360={_handoffThreat360Enabled}:{_handoffThreat360Range.ToString("F0", CultureInfo.InvariantCulture)} los={_handoffThreat360LosEnabled}:{_rayTraceLosProbe.ProbeStatus} partial={_partialReplayEnabled} identity={ReplayIdentityModeName()} projectile_align={_projectileAlignEnabled}{sequence}{pool}");
+            $"dtr: abi={BotControllerNative.AbiVersion} slot={slot} playing={state.Playing} cursor={state.Cursor} total={state.Total} handoff={FormatHandoffMode(_handoffMode)} scope={(_handoffAllSlots ? "all" : "slot")} handoff_360={_handoffThreat360Enabled}:{_handoffThreat360Range.ToString("F0", CultureInfo.InvariantCulture)} los={_handoffThreat360LosEnabled}:{_rayTraceLosProbe.ProbeStatus} partial={_partialReplayEnabled} identity={ReplayIdentityModeName()} projectile_align={_projectileAlignEnabled} cosmetic_align={_cosmeticAlignEnabled} crosshair_align={_crosshairAlignEnabled}{sequence}{pool}");
     }
 
     [ConsoleCommand("dtr_runtime", "dtr_runtime")]
@@ -503,7 +558,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         command.ReplyToCommand(
             $"[DTR DOCTOR] bots players T={tPlayers}/CT={ctPlayers} strict_bots={strictBots} bot_hider_managed={managedBots} safe_replay_targets={replayTargets.Count}");
         command.ReplyToCommand(
-            $"[DTR DOCTOR] replay loaded={_loadedSlots.Count} playing={loadedPlaying} identity={ReplayIdentityModeName()} weapons={FormatOnOff(_weaponAlignEnabled)} projectiles={FormatOnOff(_projectileAlignEnabled)} handoff={FormatHandoffMode(_handoffMode)}:{(_handoffAllSlots ? "all" : "slot")} partial={FormatOnOff(_partialReplayEnabled)} raytrace={_rayTraceLosProbe.ProbeStatus}");
+            $"[DTR DOCTOR] replay loaded={_loadedSlots.Count} playing={loadedPlaying} identity={ReplayIdentityModeName()} weapons={FormatOnOff(_weaponAlignEnabled)} projectiles={FormatOnOff(_projectileAlignEnabled)} cosmetics={FormatOnOff(_cosmeticAlignEnabled)} crosshair={FormatOnOff(_crosshairAlignEnabled)} handoff={FormatHandoffMode(_handoffMode)}:{(_handoffAllSlots ? "all" : "slot")} partial={FormatOnOff(_partialReplayEnabled)} raytrace={_rayTraceLosProbe.ProbeStatus} {FormatCosmeticStatusCounts()} {FormatCrosshairStatusCounts()}");
 
         if (command.ArgCount >= 2)
             ReplyDoctorManifest(command, command.GetArg(1));
@@ -718,11 +773,13 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         if (_loadedSlots.Count == 0)
         {
             SetReplayPovMask(0);
+            RestoreAllReplayViewerCrosshairs();
             return;
         }
 
         var playerSnapshot = BuildTickPlayerSnapshot();
         UpdateReplayPovMask(playerSnapshot);
+        UpdateReplayViewerCrosshairs(playerSnapshot);
 
         foreach (var slot in _loadedSlots.ToArray())
         {
@@ -1144,6 +1201,8 @@ public sealed partial class DemoTracerPlugin : BasePlugin
 
     private void OnEntitySpawned(CEntityInstance entity)
     {
+        TryApplySpawnedReplayWeaponCosmetic(entity);
+
         if (!TryGetProjectileKind(entity, out var kind, out var weaponDefIndex))
             return;
 
@@ -1923,6 +1982,8 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                 file.FirstWeaponDefIndex ?? -1,
                 file.PreloadWeaponDefIndices,
                 file.Loadout,
+                file.Cosmetics,
+                file.View,
                 replayMetadata: replayMetadata);
             BotControllerNative.SetBuySkip(slot);
             TryApplyReplayIdentity(slot, file);
@@ -2002,6 +2063,17 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                     ApplyReplayLoadoutForSlot(slot, replay);
                     PreloadReplayWeaponsForSlot(slot, replay);
                 }
+            }
+        }
+
+        if (_cosmeticAlignEnabled && _weaponAlignEnabled)
+        {
+            foreach (var slot in _loadedSlots)
+            {
+                if (!IsReplaySlotStillSafe(slot))
+                    continue;
+                if (_loadedReplays.TryGetValue(slot, out var replay) && !_cosmeticSyncedSlots.Contains(slot))
+                    ApplyLoadedReplayCosmeticsForSlot(slot, replay);
             }
         }
 
@@ -2458,6 +2530,8 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         _queuedNadeStartTokens.Clear();
         _rebuiltInventorySlots.Clear();
         _loadoutSyncedSlots.Clear();
+        ResetCosmeticAlignState(resetCounters: true);
+        ResetCrosshairAlignState(resetCounters: true);
         _lastPlayingSlots.Clear();
         _quietReplaySlots.Clear();
         _replayStartedAt.Clear();
@@ -2497,6 +2571,8 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         _pendingProjectileAlign.Clear();
         _queuedNadeStartTokens.Clear();
         _rebuiltInventorySlots.Clear();
+        _cosmeticSyncedSlots.Clear();
+        RestoreAllReplayViewerCrosshairs();
         _lastPlayingSlots.Clear();
         _quietReplaySlots.Clear();
         _replayStartedAt.Clear();
@@ -2686,6 +2762,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         _replayHifiEventNextBySlot.Remove(slot);
         _queuedNadeStartTokens.Remove(slot);
         _rebuiltInventorySlots.Remove(slot);
+        _cosmeticSyncedSlots.Remove(slot);
         KillTrackedReplayDropsForSlot(slot, "forget_replay");
     }
 
@@ -2697,6 +2774,8 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         int manifestFirstWeaponDefIndex = -1,
         IReadOnlyList<int>? manifestPreloadWeaponDefIndices = null,
         ReplayLoadoutSnapshot? loadout = null,
+        ReplayCosmetics? cosmetics = null,
+        ReplayView? view = null,
         bool utilityOnly = false,
         int utilityWeaponDefIndex = -1,
         ReplayFileMetadata? replayMetadata = null)
@@ -2720,6 +2799,8 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             .OrderBy(snapshot => snapshot.TickIndex)
             .ThenBy(snapshot => snapshot.Tick)
             .ToArray();
+        var normalizedCosmetics = NormalizeReplayCosmetics(cosmetics);
+        var normalizedView = NormalizeReplayView(view);
         _loadedReplays[slot] = new LoadedReplay(
             path,
             playerName,
@@ -2728,6 +2809,8 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             preloadDefs,
             hasLoadout,
             NormalizeReplayLoadout(loadout ?? new ReplayLoadoutSnapshot()),
+            normalizedCosmetics,
+            normalizedView,
             metadata.Projectiles ?? [],
             hifiEvents,
             inventorySnapshots,
@@ -2743,6 +2826,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         _replayHifiEventNextBySlot[slot] = 0;
         _rebuiltInventorySlots.Remove(slot);
         _loadoutSyncedSlots.Remove(slot);
+        _cosmeticSyncedSlots.Remove(slot);
         _safeC4Aligned = false;
     }
 
@@ -3140,7 +3224,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                 normalized,
                 forceSwitch: false,
                 allowGive: true,
-                replaceConflictingSlot: false);
+                replaceConflictingSlot: true);
             if (!ensured)
             {
                 _lastReplayWeaponDef.Remove(slot);
@@ -3151,6 +3235,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         if (BotControllerNative.SwitchBotWeapon(slot, normalized))
         {
             _lastReplayWeaponDef[slot] = normalized;
+            ApplyReplayWeaponCosmeticForSlot(slot, normalized);
         }
         else if (!allowSlotReplacement)
         {
@@ -3241,6 +3326,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             return false;
 
         _lastEnsuredWeaponDef[slot] = normalized;
+        ApplyReplayWeaponCosmeticForSlot(slot, normalized);
         if (forceSwitch)
         {
             if (!BotControllerNative.SwitchBotWeapon(slot, normalized))
@@ -3280,13 +3366,21 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             ReplayWeaponSlot.C4 or ReplayWeaponSlot.Taser)
             return false;
 
-        if (!replaceConflictingSlot && HasConflictingWeaponInSlot(pawn, slot, className))
-            return false;
+        if (HasConflictingWeaponInSlot(pawn, slot, className))
+        {
+            if (!replaceConflictingSlot)
+                return false;
 
-        // CS2 can leave invalid networked weapon entities when items are
-        // removed from C# during playback. Do not delete conflicting slot
-        // weapons here; runtime-level replacement needs a safer engine path.
-        _ = replaceConflictingSlot;
+            var targetClassName = className;
+            var conflictingWeapons = GetWeaponsInReplaySlot(pawn, slot)
+                .Where(weapon => !WeaponClassMatches(weapon.DesignerName, targetClassName))
+                .ToList();
+            foreach (var weapon in conflictingWeapons)
+            {
+                if (!DropAndKillReplayWeapon(player, pawn, weapon, "replace_replay_slot"))
+                    return false;
+            }
+        }
 
         if (HasReplayWeapon(pawn, className))
             return true;
@@ -3416,6 +3510,8 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         int[] PreloadWeaponDefIndices,
         bool HasLoadout,
         ReplayLoadoutSnapshot Loadout,
+        ReplayCosmetics Cosmetics,
+        ReplayView View,
         ReplayProjectileEvent[] Projectiles,
         ReplayHifiEvent[] HifiEvents,
         ReplayInventorySnapshot[] InventorySnapshots,

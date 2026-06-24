@@ -41,6 +41,17 @@ cs2-demotracer.exe convert --demo <demo.dem> --output <output-dir> --include-sus
 cs2-demotracer.exe convert --demo <demo.dem> --output <output-dir> --freeze-preroll-seconds 10
 ```
 
+Cosmetic/econ metadata is not exported by default, so normal manifests contain
+no `cosmetics` blocks. To intentionally export demo-observed weapon paint,
+knife, and glove metadata, you must pass all three flags:
+
+```powershell
+cs2-demotracer.exe convert --demo <demo.dem> --output <output-dir> --export-cosmetics --acknowledge-cosmetic-gslt-risk --accept-cosmetic-export-disclaimer
+```
+
+`convert-pool` accepts the same three flags and otherwise keeps every replay
+manifest cosmetic-free.
+
 The most important files are:
 
 ```text
@@ -243,5 +254,21 @@ plugin, then use the server commands in [`COMMANDS.md`](COMMANDS.md).
 Round manifests use `dtr_run_manifest` or `dtr_run_pool`. Nade manifests use
 `dtr_list_nades` and `dtr_run_nade`.
 
-DemoTracer intentionally does not extract or apply cosmetic inventory metadata
-such as skins, knives, gloves, stickers, charms, or agents.
+Cosmetic alignment is optional and off by default. It has no effect unless the
+round manifest was exported with `--export-cosmetics` plus the two risk
+acknowledgement flags. When evidence exists, DemoTracer applies only
+demo-observed weapon paint, knife, and glove metadata to safe replay bots. It
+does not randomize cosmetics, read profile databases, or apply stickers,
+charms, agents, nametags, or StatTrak.
+
+This feature is intended for local/private replay validation. A local listen
+server may not have the same GSLT exposure as a dedicated server, but bot-only
+cosmetic mutation is not a policy exemption if humans can observe, control, or
+use those bot items. Dedicated, community, or public servers should treat this
+as cosmetic/inventory simulation risk under Valve server guidelines and enable
+it only at the operator's own risk.
+
+Crosshair alignment is on by default. DemoTracer temporarily applies stable
+demo-observed `crosshair_code` metadata to a human viewer while they are
+watching a safe replay bot in-eye, then restores the viewer's original
+crosshair when they leave that replay POV.

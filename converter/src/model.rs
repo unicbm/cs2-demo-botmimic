@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
 
-pub const DEMOTRACER_ABI: i32 = 15;
+pub const DEMOTRACER_ABI: i32 = 16;
 pub const DTR_FORMAT_VERSION: u32 = 6;
 
 pub fn public_demo_path(path: &str) -> String {
@@ -447,6 +447,14 @@ pub struct ParsedPlayerTick {
     pub buttonstate3: u64,
     pub item_def_idx: i32,
     pub inventory_as_ids: Vec<i32>,
+    pub active_weapon_paint_kit: Option<u32>,
+    pub active_weapon_paint_seed: Option<u32>,
+    pub active_weapon_paint_wear: Option<f32>,
+    pub glove_item_def_index: Option<i32>,
+    pub glove_paint_kit: Option<u32>,
+    pub glove_paint_seed: Option<u32>,
+    pub glove_paint_wear: Option<f32>,
+    pub crosshair_code: Option<String>,
     pub armor_value: u32,
     pub has_helmet: bool,
     pub has_defuser: bool,
@@ -687,6 +695,10 @@ pub struct ConvertedFile {
     pub inventory_snapshot_count: usize,
     #[serde(default)]
     pub loadout: ReplayLoadout,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cosmetics: Option<ReplayCosmetics>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub view: Option<ReplayView>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -695,6 +707,51 @@ pub struct ReplayLoadout {
     pub armor_value: u32,
     pub has_helmet: bool,
     pub has_defuser: bool,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ReplayView {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crosshair_code: Option<String>,
+}
+
+impl ReplayView {
+    pub fn is_empty(&self) -> bool {
+        self.crosshair_code.is_none()
+    }
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
+pub struct ReplayCosmetics {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub weapons: Vec<ReplayWeaponCosmetic>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub knife: Option<ReplayItemCosmetic>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub glove: Option<ReplayItemCosmetic>,
+}
+
+impl ReplayCosmetics {
+    pub fn is_empty(&self) -> bool {
+        self.weapons.is_empty() && self.knife.is_none() && self.glove.is_none()
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ReplayWeaponCosmetic {
+    pub weapon_def_index: i32,
+    pub paint_kit: u32,
+    pub seed: u32,
+    pub wear: f32,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct ReplayItemCosmetic {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_def_index: Option<i32>,
+    pub paint_kit: u32,
+    pub seed: u32,
+    pub wear: f32,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

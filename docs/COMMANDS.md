@@ -9,17 +9,15 @@ console line.
 
 ```text
 css_plugins reload DemoTracer
-dtr_set identity full
-dtr_set align weapons on
-dtr_set align projectiles on
 dtr_set handoff death_or_contact slot
 dtr_set allow_partial on
 dtr_go seq "<output-dir>\<demo-id>\manifest.json" 0
 ```
 
-`dtr_set identity full` is useful when BotHider is present because the replay
-slots inherit demo names and SteamID64 values. If BotHider is unavailable, leave
-it off.
+Replay identity, weapon/loadout alignment, projectile alignment, and crosshair
+alignment are on by default. Identity alignment only writes demo names and
+SteamID64 values when BotHider is present and managing the target replay bot
+slots.
 
 Use `seq` for "sequence from source round", `round` for one source round only,
 and `pool` for economy-matched pool playback. `dtr_go` validates the plan,
@@ -32,9 +30,11 @@ arms it, then issues `mp_restartgame 1` so playback catches a fresh
 | --- | --- | --- |
 | `dtr_weapon_align` | `1` | Align loadout, buy behavior, active weapon, and weapon slot locks. |
 | `dtr_projectile_align` | `1` | Align grenade projectile initial vectors from `.dtr` v4+ data. |
+| `dtr_cosmetic_align` | `0` | Consume opt-in manifest cosmetic evidence and apply weapon skin, knife, and glove cosmetics to replay bots. |
+| `dtr_crosshair_align` | `1` | Apply demo-evidence crosshair codes to human viewers while they watch replay bots in-eye. |
 | `dtr_handoff` | `death_or_contact slot` | Release only the contacted/dead replay slot after contact or death. |
 | `dtr_partial` | `1` | Allow replay with fewer bots than manifest players. |
-| `dtr_replay_identity` | `0` | Do not write BotHider name/SteamID unless explicitly enabled. |
+| `dtr_replay_identity` | `full` | Write demo name and SteamID64 through BotHider-managed replay bot slots when available. |
 | `dtr_util_trace` | `0` | Utility CSV trace disabled. |
 | `bc_replay_pov` | `spectated` | Publish expensive native first-person POV updates only for replay bots watched in-eye. |
 
@@ -254,16 +254,60 @@ not always reproduce the same grenade initial velocity. Small velocity or height
 differences can make precision smokes hit a different collision edge. The
 projectile data records the demo result directly and corrects that bias.
 
+### `dtr_cosmetic_align <0|1>`
+
+Enables or disables cosmetic alignment. It is off by default and has no effect
+unless the converter wrote manifest `cosmetics` evidence through the explicit
+`--export-cosmetics`, `--acknowledge-cosmetic-gslt-risk`, and
+`--accept-cosmetic-export-disclaimer` flags.
+
+Implementation when enabled:
+
+- Applies only manifest `cosmetics` evidence exported from the demo player's
+  observed round data.
+- Supports weapon paint kit/seed/wear, knife item def plus paint kit/seed/wear,
+  and glove item def plus paint kit/wear where the demo exposes it. If
+  demoparser exposes glove item def/paint/wear but no glove seed, the converter
+  writes deterministic seed `0` for that glove.
+- Applies only to safe replay bot slots after weapon/loadout alignment has
+  confirmed the replay inventory path.
+- Never picks random cosmetics, never reads a server profile/database, and never
+  applies to real human players.
+
+Important limits:
+
+- Stickers, charms/keychains, agents, nametags, and StatTrak are not applied.
+- Missing, zero, contradictory, or unsupported demo evidence is skipped.
+- This is a replay-fidelity feature intended for local/private validation.
+- A local listen/practice server may not have the same GSLT exposure as a
+  dedicated server, but bot-only cosmetic mutation is not a policy exemption if
+  human players can observe, control, possess, inspect, or otherwise use those
+  bot items.
+- On dedicated, community, or public servers, cosmetic/inventory simulation can
+  fall under Valve server-operation policy. Use outside private local
+  validation is at the operator's own risk.
+
+### `dtr_crosshair_align <0|1>`
+
+Enables or disables crosshair alignment. It is on by default.
+
+When enabled, DemoTracer uses manifest `view.crosshair_code` evidence exported
+from the demo player's stable `crosshair_code` value while a human viewer is
+watching a safe replay bot in-eye. Missing or contradictory demo evidence is
+skipped. This affects POV/spectator fidelity only; it does not change movement,
+weapons, projectiles, replay bot state, or inventory cosmetics.
+
 ### `dtr_replay_identity <0|1>`
 
 Controls BotHider identity alignment.
 
 When enabled and BotHider is available, manifest loading queues name and
 SteamID64 updates for BotHider-managed bot slots using the demo player's
-`player_name` and `steam_id`.
+`player_name` and `steam_id`. The default mode is `full`.
 
-This is mainly for POV/spectator clarity. It is off by default because it
-depends on BotHider being installed and managing the replay bot slots.
+This is mainly for POV/spectator clarity. If BotHider is not installed or is not
+managing a replay bot slot, identity alignment skips that slot instead of
+applying to real human players.
 
 ### `dtr_partial <0|1>`
 

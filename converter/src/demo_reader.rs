@@ -44,6 +44,14 @@ mod demoparser_impl {
             "usercmd_buttonstate_3",
             "item_def_idx",
             "inventory_as_ids",
+            "weapon_skin_id",
+            "weapon_paint_seed",
+            "weapon_float",
+            "glove_item_idx",
+            "glove_paint_id",
+            "glove_paint_seed",
+            "glove_paint_float",
+            "crosshair_code",
             "armor_value",
             "has_helmet",
             "has_defuser",
@@ -192,6 +200,15 @@ mod demoparser_impl {
                     .into_iter()
                     .map(|v| v as i32)
                     .collect(),
+                active_weapon_paint_kit: get_u32(&columns, "weapon_skin_id", idx),
+                active_weapon_paint_seed: get_u32(&columns, "weapon_paint_seed", idx),
+                active_weapon_paint_wear: get_f32(&columns, "weapon_float", idx),
+                glove_item_def_index: get_i32(&columns, "glove_item_idx", idx),
+                glove_paint_kit: get_u32(&columns, "glove_paint_id", idx),
+                glove_paint_seed: get_u32(&columns, "glove_paint_seed", idx),
+                glove_paint_wear: get_f32(&columns, "glove_paint_float", idx),
+                crosshair_code: get_string(&columns, "crosshair_code", idx)
+                    .and_then(normalize_crosshair_code),
                 armor_value: get_u32(&columns, "armor_value", idx).unwrap_or_default(),
                 has_helmet: get_bool(&columns, "has_helmet", idx).unwrap_or(false),
                 has_defuser: get_bool(&columns, "has_defuser", idx).unwrap_or(false),
@@ -778,7 +795,16 @@ mod demoparser_impl {
             VarVec::U32(v) => v.get(idx).copied().flatten(),
             VarVec::I32(v) => v.get(idx).copied().flatten().map(|v| v as u32),
             VarVec::U64(v) => v.get(idx).copied().flatten().map(|v| v as u32),
+            VarVec::F32(v) => v.get(idx).copied().flatten().and_then(f32_to_whole_u32),
             _ => None,
+        }
+    }
+
+    fn f32_to_whole_u32(value: f32) -> Option<u32> {
+        if value.is_finite() && value >= 0.0 && value.fract() == 0.0 && value <= u32::MAX as f32 {
+            Some(value as u32)
+        } else {
+            None
         }
     }
 
@@ -866,6 +892,15 @@ mod demoparser_impl {
         match columns.get(name)?.data.as_ref()? {
             VarVec::String(v) => v.get(idx).cloned().flatten(),
             _ => None,
+        }
+    }
+
+    fn normalize_crosshair_code(value: String) -> Option<String> {
+        let trimmed = value.trim();
+        if trimmed.is_empty() || trimmed.len() > 128 {
+            None
+        } else {
+            Some(trimmed.to_string())
         }
     }
 }
