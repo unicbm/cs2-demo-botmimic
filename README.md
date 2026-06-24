@@ -517,5 +517,14 @@ CS2 DemoTracer also uses [Metamod:Source](https://github.com/alliedmodders/metam
 and [CounterStrikeSharp](https://github.com/roflmuffin/CounterStrikeSharp) for
 the runtime/plugin stack.
 
-CS2 DemoTracer's own code is licensed under GPL-3.0-only. Vendored third-party
-source keeps its upstream license files in `third_party/`.
+## License
+
+CS2 DemoTracer is now mixed-license:
+
+- `converter/`: Apache-2.0.
+- `runtime/BotController/`: GPL-3.0-only.
+- `css/DemoTracer/` and `css/DemoTracerApi/`: GPL-3.0-only for now, pending an
+  explicit BotController ABI/API exception decision.
+- `third_party/`: vendored components keep their upstream license files.
+
+See `LICENSE` for the path-level license matrix.

@@ -323,5 +323,14 @@ CS2 DemoTracer 也使用 [Metamod:Source](https://github.com/alliedmodders/metam
 和 [CounterStrikeSharp](https://github.com/roflmuffin/CounterStrikeSharp) 构建
 runtime/plugin 栈。
 
-CS2 DemoTracer 自己的代码使用 GPL-3.0-only。vendored 的第三方源码保留各自上游
-license 文件。
+## 许可
+
+CS2 DemoTracer 现在采用按路径划分的 mixed-license：
+
+- `converter/`：Apache-2.0。
+- `runtime/BotController/`：GPL-3.0-only。
+- `css/DemoTracer/` 和 `css/DemoTracerApi/`：暂时保持 GPL-3.0-only，等待
+  BotController ABI/API 例外明确后再决定是否调整。
+- `third_party/`：vendored 组件保留各自上游 license 文件。
+
+完整路径级许可矩阵见根目录 `LICENSE`。

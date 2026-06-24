@@ -2,7 +2,7 @@
 name = "cs2-demotracer"
 version = "0.1.4"
 edition = "2021"
-license = "GPL-3.0-only"
+license = "Apache-2.0"
 publish = false
 
 [features]
