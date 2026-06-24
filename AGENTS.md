@@ -13,8 +13,9 @@ or legacy CS:GO paths.
 - The public CLI is `cs2-demotracer`; the public server command prefix is
   `dtr_`.
 - The replay extension is `.dtr`. The binary magic is `CSDTRREC`; current
-  writer format is `.dtr` v5. Do not change magic, ABI, or format layout
-  without an explicit version decision and matching docs.
+  writer format is `.dtr` v6. Current manifest ABI is 17, BotController native
+  ABI is 15, and DemoTracer companion API is 2. Do not change magic, ABI, API,
+  or format layout without an explicit version decision and matching docs.
 - The maintained packaged converter target is Windows x64. Linux may work from
   source, but do not claim or publish Linux binaries unless they are built and
   verified.
@@ -32,7 +33,8 @@ or legacy CS:GO paths.
   input injection, weapon/buy control, and native C ABI exports.
 - `css/DemoTracer/`: CounterStrikeSharp plugin, `dtr_` commands, manifest
   loading, bot assignment, replay sequencing, BotHider identity handoff, loadout
-  alignment, projectile alignment, and user-facing status.
+  alignment, projectile alignment, cosmetic/sticker alignment, crosshair
+  alignment, optional scoreboard alignment, and user-facing status.
 - `css/DemoTracerApi/`: CounterStrikeSharp API contract exposed to companion
   plugins.
 - `docs/`: user-facing usage, command, and localized supplemental docs. The
@@ -48,9 +50,16 @@ or legacy CS:GO paths.
   `output/<demo-id>/roundNN/t|ct/`, where `<demo-id>` is content-hashed.
 - Preserve replay state losslessly. Do not add interpolation, quantization, or
   precision-reducing compression unless the format is explicitly versioned.
-- `.dtr` v5 is the current writer format. Projectile metadata was introduced in
-  v4 for smoke alignment; older v3 files remain readable but do not contain
-  projectile events.
+- `.dtr` v6 is the current writer format. Projectile metadata was introduced in
+  v4, v5 added `play_start_tick_index`/bounded freeze-time replay context, and
+  v6 added the high-fidelity metadata JSON blob. Older v3-v5 files remain
+  readable; v3 files do not contain projectile events and v3-v5 files do not
+  contain high-fidelity metadata JSON.
+- Cosmetic/econ metadata is default-off and must stay explicit opt-in.
+  `--export-cosmetics` requires the GSLT acknowledgement and export disclaimer
+  flags; sticker export additionally requires `--export-stickers`. Do not add
+  random cosmetics, generated fallback inventory, or server profile/database
+  state.
 - The converter should write `.dtr`, `manifest.json`, pool manifests, and
   user-facing logs. Do not add CSV/Parquet/raw dumps unless explicitly asked.
 
@@ -59,6 +68,10 @@ or legacy CS:GO paths.
 - Keep manifest ABI, C# reader expectations, and native runtime ABI in sync.
 - Never assign replay control to real human players. Valid targets are strict
   CS2 bots or slots known to be bot-managed by the BotHider/shared-state path.
+- Default replay fidelity settings are identity `full`, weapon/loadout alignment
+  on, projectile alignment on, crosshair alignment on, partial replay on, and
+  handoff `death_or_contact slot`. Cosmetic, sticker, and scoreboard alignment
+  are default-off.
 - `dtr_handoff death_or_contact slot` is the safe default for opening-route
   replay.
 - On stop, unload, finish, handoff, or failure, release replay state: stop
@@ -70,6 +83,17 @@ or legacy CS:GO paths.
   commands for team rosters, branding, bot profiles, or unrelated AI behavior.
 - Weapon/loadout and projectile alignment are part of replay fidelity. Keep
   them defensive: avoid unstable entity deletion/replacement during live replay.
+- Cosmetic and sticker alignment may only consume demo-backed manifest evidence
+  and may only apply to safe replay bots. Never apply cosmetics to human
+  players. Bot-only inventory mutation is not a Valve/GSLT policy exemption if
+  humans can observe, control, possess, inspect, or otherwise use those bots.
+- Crosshair alignment is safe to keep default-on because it only applies a
+  stable demo crosshair code to the human viewer while they watch a replay bot
+  in-eye, then restores the viewer's original crosshair.
+- Scoreboard alignment is best-effort, default-off local presentation sync.
+  Keep it one-shot and conservative; do not force damage, ADR, blind time,
+  utility damage, or other fields unless the runtime interface is proven and
+  documented.
 
 ## Documentation And Releases
 
@@ -78,10 +102,15 @@ or legacy CS:GO paths.
 - Keep English README and `docs/README.zh-Hans.md` aligned at a high level.
 - Keep the root README `.dtr Format Contract` aligned with the current `.dtr`
   writer/reader.
+- Keep the README GSLT/cosmetic safety callout visible whenever cosmetic or
+  sticker export/runtime behavior changes.
 - Release sample packs must be sanitized: no raw `.dem`, no local paths in
   manifests, and no trace/debug CSVs.
 - Release notes should be factual and conservative. Do not claim Linux packages
   or non-smoke projectile fixes unless they were built and verified.
+- For version bumps, update `converter/Cargo.toml`, `converter/Cargo.lock`, and
+  `scripts/package-server.ps1` together. Current release assets are the Windows
+  x64 converter CLI zip, the Windows x64 server bundle zip, and `SHA256SUMS.txt`.
 
 ## Validation
 
