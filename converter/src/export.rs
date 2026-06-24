@@ -4,9 +4,8 @@ use crate::model::{
     HighFidelityMetadata, ParsedDemo, ParsedGameEvent, ParsedInventoryWeaponCosmetic,
     ParsedPlayerTick, ParsedProjectile, ParsedWeaponSticker, ReplayCosmetics, ReplayHifiEvent,
     ReplayHifiEventKind, ReplayInventoryItemCount, ReplayInventorySnapshot, ReplayItemCosmetic,
-    ReplayLoadout, ReplayPlayerScoreboard, ReplayRoundScoreboard, ReplayView,
-    ReplayWeaponCosmetic, ReplayWeaponSticker, Side, SubtickMode, TeamEconomy, DEMOTRACER_ABI,
-    DTR_FORMAT_VERSION,
+    ReplayLoadout, ReplayPlayerScoreboard, ReplayRoundScoreboard, ReplayView, ReplayWeaponCosmetic,
+    ReplayWeaponSticker, Side, SubtickMode, TeamEconomy, DEMOTRACER_ABI, DTR_FORMAT_VERSION,
 };
 use crate::quality::{analyze_demo, AnalysisOptions};
 use crate::rec_writer::write_rec;
