@@ -6,9 +6,10 @@ repository-wide license grant should be inferred from a single component.
 
 Path-level licenses:
 
-- `converter/`: Apache License 2.0. See `LICENSES/Apache-2.0.txt`.
-- `runtime/BotController/`: GPL-3.0-only. See `runtime/BotController/LICENSE`
-  for the GPL-3.0-only license text.
+- `converter/`: Apache License 2.0. See `LICENSE-APACHE-2.0`.
+- `runtime/BotController/`: GPL-3.0-only. See `LICENSE-GPL-3.0` for the
+  standard license text and `runtime/BotController/LICENSE` for the component
+  copy.
 - `css/DemoTracer/`: GPL-3.0-only for now. This can be reconsidered after the
   BotController ABI/API licensing exception is explicit.
 - `css/DemoTracerApi/`: GPL-3.0-only for now, kept aligned with the current
@@ -17,6 +18,10 @@ Path-level licenses:
   vendored demoparser license is at `third_party/demoparser/LICENSE`.
 - Documentation and examples follow the license of the component they describe
   unless a file states otherwise.
+
+The root `LICENSE-APACHE-2.0` and `LICENSE-GPL-3.0` files are kept as standard
+license texts so GitHub and license scanners can identify the repository's
+top-level license set. This `LICENSE` file remains the path-level map.
 
 Previously published GPL-3.0-only releases remain available under their
 published terms. Later versions may use the path-level licenses above.

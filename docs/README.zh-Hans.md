@@ -333,4 +333,5 @@ CS2 DemoTracer 现在采用按路径划分的 mixed-license：
   BotController ABI/API 例外明确后再决定是否调整。
 - `third_party/`：vendored 组件保留各自上游 license 文件。
 
-完整路径级许可矩阵见根目录 `LICENSE`。
+完整路径级许可矩阵见根目录 `LICENSE`。根目录的 `LICENSE-APACHE-2.0` 和
+`LICENSE-GPL-3.0` 是给 GitHub 和 license scanner 识别用的标准 license 正文。

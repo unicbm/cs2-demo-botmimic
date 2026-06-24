@@ -527,4 +527,6 @@ CS2 DemoTracer is now mixed-license:
   explicit BotController ABI/API exception decision.
 - `third_party/`: vendored components keep their upstream license files.
 
-See `LICENSE` for the path-level license matrix.
+See `LICENSE` for the path-level license matrix. The root
+`LICENSE-APACHE-2.0` and `LICENSE-GPL-3.0` files are standard license texts for
+GitHub and license scanners.
