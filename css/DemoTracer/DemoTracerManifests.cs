@@ -288,6 +288,9 @@ public sealed partial class DemoTracerPlugin
 
         [JsonPropertyName("wear")]
         public float Wear { get; set; }
+
+        [JsonPropertyName("custom_name")]
+        public string? CustomName { get; set; }
     }
 
     private sealed class ReplayItemCosmetic
@@ -303,6 +306,9 @@ public sealed partial class DemoTracerPlugin
 
         [JsonPropertyName("wear")]
         public float Wear { get; set; }
+
+        [JsonPropertyName("custom_name")]
+        public string? CustomName { get; set; }
     }
 
     private const int NadeManifestFormatVersion = 1;

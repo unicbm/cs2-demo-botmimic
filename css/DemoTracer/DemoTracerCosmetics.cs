@@ -118,7 +118,8 @@ public sealed partial class DemoTracerPlugin
                 WeaponDefIndex = group.Key,
                 PaintKit = weapon.PaintKit,
                 Seed = weapon.Seed,
-                Wear = weapon.Wear
+                Wear = weapon.Wear,
+                CustomName = NormalizeCosmeticCustomName(weapon.CustomName)
             });
         }
 
@@ -150,7 +151,8 @@ public sealed partial class DemoTracerPlugin
             ItemDefIndex = source.ItemDefIndex,
             PaintKit = source.PaintKit,
             Seed = source.Seed,
-            Wear = source.Wear
+            Wear = source.Wear,
+            CustomName = NormalizeCosmeticCustomName(source.CustomName)
         };
 
     private static bool HasCosmeticEvidence(ReplayCosmetics? cosmetics)
@@ -167,6 +169,19 @@ public sealed partial class DemoTracerPlugin
            cosmetic.PaintKit > 0 &&
            cosmetic.Wear is >= 0.0f and <= 1.0f &&
            float.IsFinite(cosmetic.Wear);
+
+    private static string? NormalizeCosmeticCustomName(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+        var cleaned = new string(value
+            .Trim()
+            .Where(ch => !char.IsControl(ch) || ch == '\t')
+            .Take(128)
+            .ToArray())
+            .Trim();
+        return cleaned.Length == 0 ? null : cleaned;
+    }
 
     private static bool IsWeaponCosmeticDefIndex(int weaponDefIndex)
         => IsKnownWeaponDefIndex(weaponDefIndex) &&
@@ -720,7 +735,8 @@ public sealed partial class DemoTracerPlugin
                 ItemDefIndex = cosmetic.WeaponDefIndex,
                 PaintKit = cosmetic.PaintKit,
                 Seed = cosmetic.Seed,
-                Wear = cosmetic.Wear
+                Wear = cosmetic.Wear,
+                CustomName = cosmetic.CustomName
             },
             allowSubclassChange: false);
     }
@@ -749,6 +765,8 @@ public sealed partial class DemoTracerPlugin
             weapon.FallbackPaintKit = (int)Math.Min(cosmetic.PaintKit, int.MaxValue);
             weapon.FallbackSeed = (int)Math.Min(cosmetic.Seed, int.MaxValue);
             weapon.FallbackWear = cosmetic.Wear;
+            if (!string.IsNullOrWhiteSpace(cosmetic.CustomName))
+                item.CustomName = cosmetic.CustomName;
             _ = TrySetTextureAttributes(item.NetworkedDynamicAttributes.Handle, cosmetic);
             _ = TrySetTextureAttributes(item.AttributeList.Handle, cosmetic);
             Utilities.SetStateChanged(weapon, "CEconEntity", "m_AttributeManager");

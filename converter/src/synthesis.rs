@@ -309,6 +309,7 @@ mod tests {
             active_weapon_paint_kit: None,
             active_weapon_paint_seed: None,
             active_weapon_paint_wear: None,
+            active_weapon_custom_name: None,
             glove_item_def_index: None,
             glove_paint_kit: None,
             glove_paint_seed: None,

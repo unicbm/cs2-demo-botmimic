@@ -1213,7 +1213,9 @@ fn replay_view(rows: &[&ParsedPlayerTick]) -> Option<ReplayView> {
 
 fn replay_cosmetics(rows: &[&ParsedPlayerTick]) -> Option<ReplayCosmetics> {
     let mut weapon_specs: BTreeMap<i32, BTreeSet<CosmeticPaintSpec>> = BTreeMap::new();
+    let mut weapon_custom_names: BTreeMap<i32, BTreeSet<String>> = BTreeMap::new();
     let mut knife_specs = BTreeSet::new();
+    let mut knife_custom_names = BTreeSet::new();
     let mut glove_specs = BTreeSet::new();
     let mut glove_item_defs = BTreeSet::new();
 
@@ -1231,6 +1233,9 @@ fn replay_cosmetics(rows: &[&ParsedPlayerTick]) -> Option<ReplayCosmetics> {
             ) {
                 knife_specs.insert((raw_def, spec));
             }
+            if let Some(name) = cosmetic_custom_name(row) {
+                knife_custom_names.insert((raw_def, name));
+            }
         } else {
             let def = normalize_weapon_def_index(raw_def);
             if is_weapon_cosmetic_def_index(def) {
@@ -1240,6 +1245,9 @@ fn replay_cosmetics(rows: &[&ParsedPlayerTick]) -> Option<ReplayCosmetics> {
                     row.active_weapon_paint_wear,
                 ) {
                     weapon_specs.entry(def).or_default().insert(spec);
+                }
+                if let Some(name) = cosmetic_custom_name(row) {
+                    weapon_custom_names.entry(def).or_default().insert(name);
                 }
             }
         }
@@ -1270,6 +1278,7 @@ fn replay_cosmetics(rows: &[&ParsedPlayerTick]) -> Option<ReplayCosmetics> {
             paint_kit: spec.paint_kit,
             seed: spec.seed,
             wear: f32::from_bits(spec.wear_bits),
+            custom_name: stable_weapon_custom_name(&weapon_custom_names, weapon_def_index),
         });
     }
 
@@ -1280,6 +1289,7 @@ fn replay_cosmetics(rows: &[&ParsedPlayerTick]) -> Option<ReplayCosmetics> {
                 paint_kit: spec.paint_kit,
                 seed: spec.seed,
                 wear: f32::from_bits(spec.wear_bits),
+                custom_name: stable_knife_custom_name(&knife_custom_names, item_def_index),
             });
         }
     }
@@ -1291,6 +1301,7 @@ fn replay_cosmetics(rows: &[&ParsedPlayerTick]) -> Option<ReplayCosmetics> {
                 paint_kit: spec.paint_kit,
                 seed: spec.seed,
                 wear: f32::from_bits(spec.wear_bits),
+                custom_name: None,
             });
         }
     }
@@ -1299,6 +1310,46 @@ fn replay_cosmetics(rows: &[&ParsedPlayerTick]) -> Option<ReplayCosmetics> {
         .weapons
         .sort_by_key(|weapon| weapon.weapon_def_index);
     (!cosmetics.is_empty()).then_some(cosmetics)
+}
+
+fn cosmetic_custom_name(row: &ParsedPlayerTick) -> Option<String> {
+    let cleaned = row
+        .active_weapon_custom_name
+        .as_deref()?
+        .trim()
+        .chars()
+        .filter(|ch| !ch.is_control() || *ch == '\t')
+        .take(128)
+        .collect::<String>();
+    let cleaned = cleaned.trim();
+    (!cleaned.is_empty()).then(|| cleaned.to_string())
+}
+
+fn stable_weapon_custom_name(
+    names: &BTreeMap<i32, BTreeSet<String>>,
+    weapon_def_index: i32,
+) -> Option<String> {
+    let names = names.get(&weapon_def_index)?;
+    if names.len() == 1 {
+        names.iter().next().cloned()
+    } else {
+        None
+    }
+}
+
+fn stable_knife_custom_name(
+    names: &BTreeSet<(i32, String)>,
+    item_def_index: i32,
+) -> Option<String> {
+    let mut matching = names
+        .iter()
+        .filter_map(|(def, name)| (*def == item_def_index).then_some(name.clone()))
+        .collect::<BTreeSet<_>>();
+    if matching.len() == 1 {
+        matching.pop_first()
+    } else {
+        None
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -1652,6 +1703,7 @@ mod tests {
                 active_weapon_paint_kit: Some(180),
                 active_weapon_paint_seed: Some(12),
                 active_weapon_paint_wear: Some(0.125),
+                active_weapon_custom_name: Some("alpha rifle".to_string()),
                 glove_item_def_index: Some(5030),
                 glove_paint_kit: Some(10006),
                 glove_paint_seed: Some(4),
@@ -1664,6 +1716,7 @@ mod tests {
                 active_weapon_paint_kit: Some(38),
                 active_weapon_paint_seed: Some(321),
                 active_weapon_paint_wear: Some(0.01),
+                active_weapon_custom_name: Some("alpha knife".to_string()),
                 glove_item_def_index: Some(5030),
                 glove_paint_kit: Some(10006),
                 glove_paint_seed: Some(4),
@@ -1683,8 +1736,16 @@ mod tests {
         assert_eq!(cosmetics.weapons[0].paint_kit, 180);
         assert_eq!(cosmetics.weapons[0].seed, 12);
         assert_eq!(cosmetics.weapons[0].wear.to_bits(), 0.125_f32.to_bits());
+        assert_eq!(
+            cosmetics.weapons[0].custom_name.as_deref(),
+            Some("alpha rifle")
+        );
         assert_eq!(cosmetics.knife.as_ref().unwrap().item_def_index, Some(508));
         assert_eq!(cosmetics.knife.as_ref().unwrap().paint_kit, 38);
+        assert_eq!(
+            cosmetics.knife.as_ref().unwrap().custom_name.as_deref(),
+            Some("alpha knife")
+        );
         assert_eq!(cosmetics.glove.as_ref().unwrap().item_def_index, Some(5030));
         assert_eq!(cosmetics.glove.as_ref().unwrap().paint_kit, 10006);
     }
@@ -1861,6 +1922,39 @@ mod tests {
         let memory = export_memory(parsed);
 
         assert!(memory.manifest.files[0].cosmetics.is_none());
+    }
+
+    #[test]
+    fn conflicting_custom_name_only_skips_custom_name() {
+        let mut parsed = sample_demo();
+        parsed.rows = vec![
+            ParsedPlayerTick {
+                item_def_idx: 7,
+                active_weapon_paint_kit: Some(180),
+                active_weapon_paint_seed: Some(12),
+                active_weapon_paint_wear: Some(0.125),
+                active_weapon_custom_name: Some("first".to_string()),
+                ..sample_row(100)
+            },
+            ParsedPlayerTick {
+                item_def_idx: 7,
+                active_weapon_paint_kit: Some(180),
+                active_weapon_paint_seed: Some(12),
+                active_weapon_paint_wear: Some(0.125),
+                active_weapon_custom_name: Some("second".to_string()),
+                ..sample_row(164)
+            },
+        ];
+
+        let memory = export_memory_with_cosmetics(parsed);
+        let weapon = &memory.manifest.files[0]
+            .cosmetics
+            .as_ref()
+            .expect("expected cosmetic evidence")
+            .weapons[0];
+
+        assert_eq!(weapon.paint_kit, 180);
+        assert!(weapon.custom_name.is_none());
     }
 
     #[test]
@@ -2372,6 +2466,7 @@ mod tests {
             active_weapon_paint_kit: None,
             active_weapon_paint_seed: None,
             active_weapon_paint_wear: None,
+            active_weapon_custom_name: None,
             glove_item_def_index: None,
             glove_paint_kit: None,
             glove_paint_seed: None,

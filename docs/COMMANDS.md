@@ -265,8 +265,9 @@ Implementation when enabled:
 
 - Applies only manifest `cosmetics` evidence exported from the demo player's
   observed round data.
-- Supports weapon paint kit/seed/wear, knife item def plus paint kit/seed/wear,
-  and glove item def plus paint kit/wear where the demo exposes it. If
+- Supports weapon paint kit/seed/wear, stable weapon/knife custom names, knife
+  item def plus paint kit/seed/wear, and glove item def plus paint kit/wear
+  where the demo exposes it. If
   demoparser exposes glove item def/paint/wear but no glove seed, the converter
   writes deterministic seed `0` for that glove.
 - Applies only to safe replay bot slots after weapon/loadout alignment has
@@ -276,7 +277,7 @@ Implementation when enabled:
 
 Important limits:
 
-- Stickers, charms/keychains, agents, nametags, and StatTrak are not applied.
+- Stickers, charms/keychains, agents, and StatTrak are not applied.
 - Missing, zero, contradictory, or unsupported demo evidence is skipped.
 - This is a replay-fidelity feature intended for local/private validation.
 - A local listen/practice server may not have the same GSLT exposure as a

@@ -47,6 +47,7 @@ mod demoparser_impl {
             "weapon_skin_id",
             "weapon_paint_seed",
             "weapon_float",
+            "custom_name",
             "glove_item_idx",
             "glove_paint_id",
             "glove_paint_seed",
@@ -203,6 +204,8 @@ mod demoparser_impl {
                 active_weapon_paint_kit: get_u32(&columns, "weapon_skin_id", idx),
                 active_weapon_paint_seed: get_u32(&columns, "weapon_paint_seed", idx),
                 active_weapon_paint_wear: get_f32(&columns, "weapon_float", idx),
+                active_weapon_custom_name: get_string(&columns, "custom_name", idx)
+                    .and_then(normalize_custom_name),
                 glove_item_def_index: get_i32(&columns, "glove_item_idx", idx),
                 glove_paint_kit: get_u32(&columns, "glove_paint_id", idx),
                 glove_paint_seed: get_u32(&columns, "glove_paint_seed", idx),
@@ -901,6 +904,23 @@ mod demoparser_impl {
             None
         } else {
             Some(trimmed.to_string())
+        }
+    }
+
+    fn normalize_custom_name(value: String) -> Option<String> {
+        let trimmed = value.trim().trim_matches('\0').trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let cleaned = trimmed
+            .chars()
+            .filter(|ch| !ch.is_control() || *ch == '\t')
+            .collect::<String>();
+        let cleaned = cleaned.trim();
+        if cleaned.is_empty() {
+            None
+        } else {
+            Some(cleaned.chars().take(128).collect())
         }
     }
 }

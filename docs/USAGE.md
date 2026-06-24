@@ -43,7 +43,8 @@ cs2-demotracer.exe convert --demo <demo.dem> --output <output-dir> --freeze-prer
 
 Cosmetic/econ metadata is not exported by default, so normal manifests contain
 no `cosmetics` blocks. To intentionally export demo-observed weapon paint,
-knife, and glove metadata, you must pass all three flags:
+knife, glove metadata, and stable weapon/knife custom names, you must pass all
+three flags:
 
 ```powershell
 cs2-demotracer.exe convert --demo <demo.dem> --output <output-dir> --export-cosmetics --acknowledge-cosmetic-gslt-risk --accept-cosmetic-export-disclaimer
@@ -257,9 +258,9 @@ Round manifests use `dtr_run_manifest` or `dtr_run_pool`. Nade manifests use
 Cosmetic alignment is optional and off by default. It has no effect unless the
 round manifest was exported with `--export-cosmetics` plus the two risk
 acknowledgement flags. When evidence exists, DemoTracer applies only
-demo-observed weapon paint, knife, and glove metadata to safe replay bots. It
-does not randomize cosmetics, read profile databases, or apply stickers,
-charms, agents, nametags, or StatTrak.
+demo-observed weapon paint, knife, glove metadata, and stable weapon/knife
+custom names to safe replay bots. It does not randomize cosmetics, read profile
+databases, or apply stickers, charms, agents, or StatTrak.
 
 This feature is intended for local/private replay validation. A local listen
 server may not have the same GSLT exposure as a dedicated server, but bot-only

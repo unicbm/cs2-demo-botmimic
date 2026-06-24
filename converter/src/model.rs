@@ -450,6 +450,7 @@ pub struct ParsedPlayerTick {
     pub active_weapon_paint_kit: Option<u32>,
     pub active_weapon_paint_seed: Option<u32>,
     pub active_weapon_paint_wear: Option<f32>,
+    pub active_weapon_custom_name: Option<String>,
     pub glove_item_def_index: Option<i32>,
     pub glove_paint_kit: Option<u32>,
     pub glove_paint_seed: Option<u32>,
@@ -743,6 +744,8 @@ pub struct ReplayWeaponCosmetic {
     pub paint_kit: u32,
     pub seed: u32,
     pub wear: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -752,6 +755,8 @@ pub struct ReplayItemCosmetic {
     pub paint_kit: u32,
     pub seed: u32,
     pub wear: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]

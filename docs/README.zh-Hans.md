@@ -101,7 +101,8 @@ cs2-demotracer.exe convert --demo "<demo.dem>" --output "<输出目录>" --freez
 `inspect` 会输出地图、tick rate、行数，以及推荐/可疑回合列表。`convert` 默认只导出推荐回合；只有明确需要可疑回合时再加 `--include-suspicious`。默认导出的 replay 会在 C4 开始安放前截断，先专注“开局路线”；需要整回合时加 `--full-round`。回合 replay 默认最多保留同一回合内 10 秒 freeze-time 上下文，用来保留开局前按住的道具 attack 状态，可用 `--freeze-preroll-seconds` 调整。
 
 饰品/econ 元数据默认绝不导出；普通 `manifest.json` 不会包含 `cosmetics` block。
-如果你明确要把 demo 中观测到的武器 paint、刀具和手套元数据写入 manifest，必须同时传入
+如果你明确要把 demo 中观测到的武器 paint、刀具、手套元数据，以及稳定的武器/刀具
+custom name 写入 manifest，必须同时传入
 三个显式 flag：
 
 ```powershell
@@ -236,9 +237,10 @@ dtr_go seq "<输出目录>\<demo-id>\manifest.json" 0
 
 `dtr_set align cosmetics on` 是可选且默认关闭的 replay fidelity 模式。只有 manifest
 是用上面的显式饰品导出 flag 生成，并且里面确实有 `cosmetics` 证据时，它才会生效。
-生效时也只把 demo 观测到的武器 paint、刀和手套元数据应用到安全 replay bot；它不会
-随机分配饰品，不读取 profile/database，也不会应用贴纸、挂件/charms、探员、nametag
-或 StatTrak。只写 bot 不是规则豁免：如果真人玩家可以观察、接管、持有、检视或以其他
+生效时也只把 demo 观测到的武器 paint、刀、手套元数据，以及稳定的武器/刀具 custom
+name 应用到安全 replay bot；它不会随机分配饰品，不读取 profile/database，也不会应用
+贴纸、挂件/charms、探员或 StatTrak。只写 bot 不是规则豁免：如果真人玩家可以观察、
+接管、持有、检视或以其他
 方式使用这些 bot 物品外观，就应该按饰品/库存模拟风险处理。
 
 `dtr_set align crosshair on` 默认开启。它只把 demo 中稳定观测到的
@@ -298,7 +300,7 @@ dtr_stop_all
 - 需要同一张地图，并且服务器里要有足够的 bot。
 - `.dtr` 是无损压缩的 BotController 兼容 replay 格式，并包含 demo 原始投掷物元数据、按玩家记录的高保真事件和库存快照；离线完整 usercmd 还会继续补。
 - 某些武器和默认手枪配置在 CS2 里比较麻烦，目前优先保证不崩服和基本行为正确。
-- CS2 demo 可能暴露饰品/econ 元数据。converter 默认不导出这些字段；饰品导出必须显式传入 `--export-cosmetics`、`--acknowledge-cosmetic-gslt-risk` 和 `--accept-cosmetic-export-disclaimer`。runtime 饰品对齐也默认关闭，并且只消费 manifest 里的 demo 证据。这个功能面向本地/私有 replay 验证；listen/practice server 通常没有专用服 GSLT 暴露面，但这不等于 Valve 规则保证安全。专用服、社区服或公网服上的饰品/库存模拟可能进入 Valve [Game Server Operation Guidelines](https://blog.counter-strike.net/server_guidelines/) 和 Steam [game server account](https://steamcommunity.com/dev/managegameservers) 责任范围；Valve 曾经禁用提供库存/资料伪造服务的服务器运营者 GSLT。任何非私有本地验证场景下的饰品导出或对齐都请自行承担运营风险。
+- CS2 demo 可能暴露饰品/econ 元数据，包括 custom name。converter 默认不导出这些字段；饰品导出必须显式传入 `--export-cosmetics`、`--acknowledge-cosmetic-gslt-risk` 和 `--accept-cosmetic-export-disclaimer`。runtime 饰品对齐也默认关闭，并且只消费 manifest 里的 demo 证据。这个功能面向本地/私有 replay 验证；listen/practice server 通常没有专用服 GSLT 暴露面，但这不等于 Valve 规则保证安全。专用服、社区服或公网服上的饰品/库存模拟可能进入 Valve [Game Server Operation Guidelines](https://blog.counter-strike.net/server_guidelines/) 和 Steam [game server account](https://steamcommunity.com/dev/managegameservers) 责任范围；Valve 曾经禁用提供库存/资料伪造服务的服务器运营者 GSLT。任何非私有本地验证场景下的饰品导出或对齐都请自行承担运营风险。
 - 这个工具不是作弊工具，也不会接入匹配服务器；它面向本地服务器、研究和内容制作。
 
 ## 开发者入口

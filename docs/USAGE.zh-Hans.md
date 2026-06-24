@@ -40,7 +40,8 @@ cs2-demotracer.exe convert --demo <demo.dem> --output <输出目录> --freeze-pr
 ```
 
 饰品/econ 元数据默认绝不导出，所以普通 manifest 不包含 `cosmetics` block。若明确要导出
-demo 观测到的武器 paint、刀具和手套元数据，必须同时传入三个 flag：
+demo 观测到的武器 paint、刀具、手套元数据，以及稳定的武器/刀具 custom name，必须同时
+传入三个 flag：
 
 ```powershell
 cs2-demotracer.exe convert --demo <demo.dem> --output <输出目录> --export-cosmetics --acknowledge-cosmetic-gslt-risk --accept-cosmetic-export-disclaimer
@@ -243,9 +244,9 @@ write_rec_file("copy.dtr", &rec)?;
 
 饰品对齐是可选功能，默认关闭。只有 round manifest 是用 `--export-cosmetics` 和两个
 风险确认 flag 导出，并且里面确实有 `cosmetics` 证据时，它才会生效。生效时
-DemoTracer 也只会把 demo 观测到的武器 paint、刀和手套元数据应用到安全 replay bot。
-它不会随机分配饰品，不会读取 profile/database，也不会应用贴纸、挂件/charms、探员、
-nametag 或 StatTrak。
+DemoTracer 也只会把 demo 观测到的武器 paint、刀、手套元数据，以及稳定的武器/刀具
+custom name 应用到安全 replay bot。它不会随机分配饰品，不会读取 profile/database，
+也不会应用贴纸、挂件/charms、探员或 StatTrak。
 
 这个功能面向本地/私有 replay 验证。listen/practice server 未必有专用服那样的 GSLT
 暴露面，但只写 bot 不是规则豁免；如果真人玩家可以观察、接管或使用这些 bot 物品外观，
