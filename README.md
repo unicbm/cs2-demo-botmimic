@@ -347,6 +347,19 @@ An interactive prompt is also available:
 cs2-demotracer.exe wizard
 ```
 
+An optional native Windows GUI is available when building from source:
+
+```powershell
+cd converter
+cargo run --release --features gui --bin cs2-demotracer-gui
+```
+
+The GUI covers the single-demo path: choose or drop a `.dem`, choose an output
+folder, inspect round quality, select rounds, convert, validate, and copy the
+generated CS2 console command. Cosmetic/sticker export remains default-off in
+the GUI and requires the same explicit risk confirmation before it can be
+enabled. Batch pool conversion and Demo2Nade remain CLI-only in v1.
+
 ## Batch Convert A Map Pool
 
 If you have many demos, you can build a replay pool and let the plugin choose a similar round by economy:

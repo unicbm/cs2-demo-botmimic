@@ -159,6 +159,18 @@ output/<demo-id>/round01/...
 cs2-demotracer.exe wizard
 ```
 
+如果你从源码构建，也可以使用可选的原生 Windows GUI：
+
+```powershell
+cd converter
+cargo run --release --features gui --bin cs2-demotracer-gui
+```
+
+GUI v1 只覆盖单 demo 流程：选择或拖入 `.dem`、选择输出目录、查看回合质量、
+勾选回合、转换、验证，并复制生成的 CS2 console 指令。饰品/sticker 导出在
+GUI 中仍默认关闭，必须完成同样的显式风险确认后才能启用。批量回合池和
+Demo2Nade 在 v1 仍只通过 CLI 提供。
+
 ## 批量生成地图回合池
 
 如果你有很多 demo，可以先生成一个 Mirage 回合池，让插件按双方经济自动挑相似回合：

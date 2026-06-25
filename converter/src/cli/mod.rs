@@ -1,5 +1,3 @@
-mod validate;
-
 use clap::{Parser, Subcommand};
 use cs2_demotracer::api::{
     build_nade_library_with_progress, export_nade_clips_from_demo_path, NadeClipExportRequest,
@@ -16,11 +14,11 @@ use cs2_demotracer::nade_export::{
 use cs2_demotracer::nade_library::print_nade_library_progress;
 use cs2_demotracer::pool::{build_round_pool, BuildPoolOptions};
 use cs2_demotracer::quality::{analyze_demo, AnalysisOptions};
+use cs2_demotracer::validate::validate_dtr_path;
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Display;
 use std::path::PathBuf;
-use validate::validate_dtr_path;
 
 #[derive(Parser)]
 #[command(name = "cs2-demotracer")]

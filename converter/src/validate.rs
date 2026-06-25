@@ -1,15 +1,15 @@
-use cs2_demotracer::rec_writer::read_rec_file;
+use crate::rec_writer::read_rec_file;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-pub fn validate_dtr_path(input: &Path) -> cs2_demotracer::Result<usize> {
+pub fn validate_dtr_path(input: &Path) -> crate::Result<usize> {
     validate_public_artifacts(input)?;
     let mut count = 0_usize;
     for path in collect_dtr_files(input)? {
         let rec = read_rec_file(&path)?;
         if rec.ticks.is_empty() {
-            return Err(cs2_demotracer::Error::InvalidRec(format!(
+            return Err(crate::Error::InvalidRec(format!(
                 "{} has no ticks",
                 path.display()
             )));
@@ -17,7 +17,7 @@ pub fn validate_dtr_path(input: &Path) -> cs2_demotracer::Result<usize> {
         count += 1;
     }
     if count == 0 {
-        return Err(cs2_demotracer::Error::InvalidDemo(format!(
+        return Err(crate::Error::InvalidDemo(format!(
             "no .dtr files found under {}",
             input.display()
         )));
@@ -25,13 +25,13 @@ pub fn validate_dtr_path(input: &Path) -> cs2_demotracer::Result<usize> {
     Ok(count)
 }
 
-fn collect_dtr_files(root: &Path) -> cs2_demotracer::Result<Vec<PathBuf>> {
+fn collect_dtr_files(root: &Path) -> crate::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     collect_recursively(root, &mut out)?;
     Ok(out)
 }
 
-fn validate_public_artifacts(input: &Path) -> cs2_demotracer::Result<()> {
+fn validate_public_artifacts(input: &Path) -> crate::Result<()> {
     let pack_root = if input.is_file() {
         input.parent().unwrap_or_else(|| Path::new("."))
     } else {
@@ -39,7 +39,7 @@ fn validate_public_artifacts(input: &Path) -> cs2_demotracer::Result<()> {
     };
     for path in collect_files(input)? {
         if let Some(reason) = forbidden_public_artifact_reason(&path) {
-            return Err(cs2_demotracer::Error::InvalidDemo(format!(
+            return Err(crate::Error::InvalidDemo(format!(
                 "{reason} must not be included in output packs: {}",
                 path.display()
             )));
@@ -65,20 +65,20 @@ fn forbidden_public_artifact_reason(path: &Path) -> Option<&'static str> {
     }
 }
 
-fn collect_files(input: &Path) -> cs2_demotracer::Result<Vec<PathBuf>> {
+fn collect_files(input: &Path) -> crate::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     collect_files_recursively(input, &mut out)?;
     Ok(out)
 }
 
-fn collect_files_recursively(path: &Path, out: &mut Vec<PathBuf>) -> cs2_demotracer::Result<()> {
+fn collect_files_recursively(path: &Path, out: &mut Vec<PathBuf>) -> crate::Result<()> {
     if path.is_file() {
         out.push(path.to_path_buf());
         return Ok(());
     }
-    let entries = fs::read_dir(path).map_err(|e| cs2_demotracer::io_error(path, e))?;
+    let entries = fs::read_dir(path).map_err(|e| crate::io_error(path, e))?;
     for entry in entries {
-        let entry = entry.map_err(|e| cs2_demotracer::io_error(path, e))?;
+        let entry = entry.map_err(|e| crate::io_error(path, e))?;
         collect_files_recursively(&entry.path(), out)?;
     }
     Ok(())
@@ -91,20 +91,20 @@ fn is_manifest_json(path: &Path) -> bool {
     name.ends_with(".json") || name.ends_with(".json.br")
 }
 
-fn read_manifest_text(path: &Path) -> cs2_demotracer::Result<String> {
+fn read_manifest_text(path: &Path) -> crate::Result<String> {
     if !path
         .file_name()
         .and_then(|value| value.to_str())
         .is_some_and(|name| name.ends_with(".json.br"))
     {
-        return fs::read_to_string(path).map_err(|e| cs2_demotracer::io_error(path, e));
+        return fs::read_to_string(path).map_err(|e| crate::io_error(path, e));
     }
 
-    let file = fs::File::open(path).map_err(|e| cs2_demotracer::io_error(path, e))?;
+    let file = fs::File::open(path).map_err(|e| crate::io_error(path, e))?;
     let mut decompressor = brotli::Decompressor::new(file, 4096);
     let mut text = String::new();
     decompressor.read_to_string(&mut text).map_err(|e| {
-        cs2_demotracer::Error::InvalidDemo(format!(
+        crate::Error::InvalidDemo(format!(
             "{} could not be decompressed as Brotli JSON manifest: {e}",
             path.display()
         ))
@@ -112,23 +112,20 @@ fn read_manifest_text(path: &Path) -> cs2_demotracer::Result<String> {
     Ok(text)
 }
 
-fn parse_manifest_json(path: &Path, text: &str) -> cs2_demotracer::Result<serde_json::Value> {
+fn parse_manifest_json(path: &Path, text: &str) -> crate::Result<serde_json::Value> {
     serde_json::from_str(text).map_err(|e| {
-        cs2_demotracer::Error::InvalidDemo(format!("{} contains invalid JSON: {e}", path.display()))
+        crate::Error::InvalidDemo(format!("{} contains invalid JSON: {e}", path.display()))
     })
 }
 
-fn validate_manifest_demo_paths(
-    path: &Path,
-    value: &serde_json::Value,
-) -> cs2_demotracer::Result<()> {
+fn validate_manifest_demo_paths(path: &Path, value: &serde_json::Value) -> crate::Result<()> {
     match value {
         serde_json::Value::Object(map) => {
             for (key, value) in map {
                 if key == "demo_path" {
                     if let Some(text) = value.as_str() {
                         if is_local_demo_path(text) {
-                            return Err(cs2_demotracer::Error::InvalidDemo(format!(
+                            return Err(crate::Error::InvalidDemo(format!(
                                 "{} contains local demo_path {:?}",
                                 path.display(),
                                 text
@@ -153,7 +150,7 @@ fn validate_manifest_artifact_paths(
     pack_root: &Path,
     manifest_path: &Path,
     value: &serde_json::Value,
-) -> cs2_demotracer::Result<()> {
+) -> crate::Result<()> {
     match value {
         serde_json::Value::Object(map) => {
             for (key, value) in map {
@@ -195,15 +192,15 @@ fn validate_manifest_artifact_path(
     key: &str,
     kind: ManifestArtifactKind,
     value: &str,
-) -> cs2_demotracer::Result<()> {
+) -> crate::Result<()> {
     if value.trim().is_empty() {
-        return Err(cs2_demotracer::Error::InvalidDemo(format!(
+        return Err(crate::Error::InvalidDemo(format!(
             "{} contains empty {key}",
             manifest_path.display()
         )));
     }
     if is_absolute_manifest_artifact_path(value) {
-        return Err(cs2_demotracer::Error::InvalidDemo(format!(
+        return Err(crate::Error::InvalidDemo(format!(
             "{} contains absolute {key} {:?}",
             manifest_path.display(),
             value
@@ -215,7 +212,7 @@ fn validate_manifest_artifact_path(
         normalize_path(&manifest_dir.join(value.replace('\\', std::path::MAIN_SEPARATOR_STR)));
     let root = normalize_path(pack_root);
     if !path_is_under_root(&full, &root) {
-        return Err(cs2_demotracer::Error::InvalidDemo(format!(
+        return Err(crate::Error::InvalidDemo(format!(
             "{} contains {key} outside output pack {:?}",
             manifest_path.display(),
             value
@@ -223,7 +220,7 @@ fn validate_manifest_artifact_path(
     }
     validate_manifest_artifact_extension(manifest_path, key, kind, value, &full)?;
     if !full.exists() {
-        return Err(cs2_demotracer::Error::InvalidDemo(format!(
+        return Err(crate::Error::InvalidDemo(format!(
             "{} contains missing {key} target {:?}",
             manifest_path.display(),
             value
@@ -238,11 +235,11 @@ fn validate_manifest_artifact_extension(
     kind: ManifestArtifactKind,
     value: &str,
     full: &Path,
-) -> cs2_demotracer::Result<()> {
+) -> crate::Result<()> {
     match kind {
         ManifestArtifactKind::Dtr => {
             if !has_dtr_extension(full) {
-                return Err(cs2_demotracer::Error::InvalidDemo(format!(
+                return Err(crate::Error::InvalidDemo(format!(
                     "{} contains {key} target with unsupported extension {:?}: expected .dtr",
                     manifest_path.display(),
                     value
@@ -251,7 +248,7 @@ fn validate_manifest_artifact_extension(
         }
         ManifestArtifactKind::ManifestJson => {
             if !is_manifest_json(full) {
-                return Err(cs2_demotracer::Error::InvalidDemo(format!(
+                return Err(crate::Error::InvalidDemo(format!(
                     "{} contains {key} target with unsupported extension {:?}: expected .json or .json.br",
                     manifest_path.display(),
                     value
@@ -297,16 +294,16 @@ fn is_local_demo_path(value: &str) -> bool {
     value.contains('\\') || value.contains('/') || value.contains(':')
 }
 
-fn collect_recursively(path: &Path, out: &mut Vec<PathBuf>) -> cs2_demotracer::Result<()> {
+fn collect_recursively(path: &Path, out: &mut Vec<PathBuf>) -> crate::Result<()> {
     if path.is_file() {
         if path.extension().and_then(|e| e.to_str()) == Some("dtr") {
             out.push(path.to_path_buf());
         }
         return Ok(());
     }
-    let entries = std::fs::read_dir(path).map_err(|e| cs2_demotracer::io_error(path, e))?;
+    let entries = std::fs::read_dir(path).map_err(|e| crate::io_error(path, e))?;
     for entry in entries {
-        let entry = entry.map_err(|e| cs2_demotracer::io_error(path, e))?;
+        let entry = entry.map_err(|e| crate::io_error(path, e))?;
         collect_recursively(&entry.path(), out)?;
     }
     Ok(())

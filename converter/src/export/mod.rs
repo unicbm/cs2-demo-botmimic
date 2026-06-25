@@ -6,7 +6,8 @@ use crate::model::{
     ParsedPlayerTick, ParsedProjectile, ParsedWeaponSticker, ReplayCosmetics, ReplayHifiEvent,
     ReplayHifiEventKind, ReplayInventoryItemCount, ReplayInventorySnapshot, ReplayItemCosmetic,
     ReplayPlayerScoreboard, ReplayRoundScoreboard, ReplayView, ReplayWeaponCosmetic,
-    ReplayWeaponSticker, Side, SubtickMode, TeamEconomy, DEMOTRACER_ABI, DTR_FORMAT_VERSION,
+    ReplayWeaponSticker, RoundSummary, Side, SubtickMode, TeamEconomy, DEMOTRACER_ABI,
+    DTR_FORMAT_VERSION,
 };
 use crate::rec_writer::write_rec;
 use crate::replay::context::{
@@ -103,11 +104,81 @@ pub struct MemoryConversionReport {
     pub artifacts: Vec<ConversionArtifact>,
 }
 
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum ConversionProgress {
+    AnalysisStarted,
+    AnalysisFinished {
+        rounds: usize,
+        selected_rounds: usize,
+        estimated_files: usize,
+    },
+    RoundSkipped {
+        round: u32,
+        reason: String,
+    },
+    RoundStarted {
+        round: u32,
+        estimated_players: usize,
+    },
+    PlayerSkipped {
+        round: u32,
+        steam_id: u64,
+        reason: String,
+    },
+    PlayerWritten {
+        round: u32,
+        steam_id: u64,
+        player_name: String,
+        side: String,
+        path: String,
+        ticks: usize,
+        subticks: usize,
+    },
+    RoundFinished {
+        round: u32,
+        files: usize,
+    },
+    ArtifactsWritingStarted {
+        root: String,
+        artifacts: usize,
+    },
+    ArtifactWritten {
+        path: String,
+        kind: ConversionArtifactKind,
+    },
+    Finished {
+        root: String,
+        manifest_path: String,
+        files_written: usize,
+    },
+}
+
 pub fn export_demo_to_memory(
     parsed: &ParsedDemo,
     options: &ConvertMemoryOptions,
 ) -> Result<MemoryConversionReport> {
+    export_demo_to_memory_inner(parsed, options, None)
+}
+
+pub fn export_demo_to_memory_with_progress<F>(
+    parsed: &ParsedDemo,
+    options: &ConvertMemoryOptions,
+    mut progress: F,
+) -> Result<MemoryConversionReport>
+where
+    F: FnMut(ConversionProgress),
+{
+    export_demo_to_memory_inner(parsed, options, Some(&mut progress))
+}
+
+fn export_demo_to_memory_inner(
+    parsed: &ParsedDemo,
+    options: &ConvertMemoryOptions,
+    mut progress: Option<&mut dyn FnMut(ConversionProgress)>,
+) -> Result<MemoryConversionReport> {
     validate_freeze_preroll_seconds(options.freeze_preroll_seconds)?;
+    emit_conversion_progress(&mut progress, ConversionProgress::AnalysisStarted);
     let analysis = analyze_demo(parsed, options.analysis);
     let output_stem = output_demo_id(
         &parsed.stem,
@@ -131,26 +202,31 @@ pub fn export_demo_to_memory(
     let mut subtick_stats = SynthesisStats::default();
     let rows_by_round = rows_by_round(&parsed.rows);
     let projectiles_by_steam_id = projectiles_by_steam_id(&parsed.projectiles);
+    let (selected_rounds, estimated_files) =
+        selected_round_summary(parsed, &rows_by_round, &analysis.rounds, options);
+    emit_conversion_progress(
+        &mut progress,
+        ConversionProgress::AnalysisFinished {
+            rounds: analysis.rounds.len(),
+            selected_rounds,
+            estimated_files,
+        },
+    );
     log.push(format!(
         "demo={} id={} sha256={} map={} tick_rate={:.3}",
         parsed.path, output_stem, parsed.demo_sha256, parsed.map, parsed.tick_rate
     ));
 
     for round in &analysis.rounds {
-        let selected = match &options.selected_rounds {
-            Some(rounds) => rounds.contains(&round.round),
-            None => round.recommended() || options.include_suspicious,
-        };
-        if !selected {
-            log.push(format!("skip round {}: not selected", round.round));
-            continue;
-        }
-        if !round.recommended() && !options.include_suspicious {
-            log.push(format!(
-                "skip round {}: suspicious ({})",
-                round.round,
-                round.problems.join("; ")
-            ));
+        if let Some(reason) = round_skip_reason(round, options) {
+            log.push(format!("skip round {}: {reason}", round.round));
+            emit_conversion_progress(
+                &mut progress,
+                ConversionProgress::RoundSkipped {
+                    round: round.round,
+                    reason,
+                },
+            );
             continue;
         }
 
@@ -164,10 +240,15 @@ pub fn export_demo_to_memory(
         let bomb_planted_seconds_after_live = bomb_planted_tick
             .map(|tick| ticks_to_seconds(tick - round.start_tick, parsed.tick_rate));
         if end_tick <= round.start_tick {
-            log.push(format!(
-                "skip round {}: cut window empty after {:?}",
-                round.round, cut_reason
-            ));
+            let reason = format!("cut window empty after {cut_reason:?}");
+            log.push(format!("skip round {}: {reason}", round.round));
+            emit_conversion_progress(
+                &mut progress,
+                ConversionProgress::RoundSkipped {
+                    round: round.round,
+                    reason,
+                },
+            );
             continue;
         }
         let round_rows: &[&ParsedPlayerTick] = rows_by_round
@@ -200,18 +281,32 @@ pub fn export_demo_to_memory(
             }
             players.entry(row.steam_id).or_default().push(row);
         }
+        emit_conversion_progress(
+            &mut progress,
+            ConversionProgress::RoundStarted {
+                round: round.round,
+                estimated_players: players.len(),
+            },
+        );
         let cosmetic_players = cosmetic_rows_by_player(round_rows, end_tick, options.side);
 
         for (steam_id, mut player_rows) in players {
             player_rows.sort_by_key(|row| row.tick);
             player_rows.dedup_by_key(|row| row.tick);
             if player_rows.len() < 2 {
+                let reason = format!("{} rows", player_rows.len());
                 log.push(format!(
-                    "skip round {} player {}: {} rows",
-                    round.round,
-                    steam_id,
-                    player_rows.len()
+                    "skip round {} player {steam_id}: {reason}",
+                    round.round
                 ));
+                emit_conversion_progress(
+                    &mut progress,
+                    ConversionProgress::PlayerSkipped {
+                        round: round.round,
+                        steam_id,
+                        reason,
+                    },
+                );
                 continue;
             }
             let play_start_tick_index = play_start_tick_index(&player_rows, round.start_tick);
@@ -256,14 +351,16 @@ pub fn export_demo_to_memory(
             let mut bytes = Vec::new();
             write_rec(&mut bytes, &rec)?;
             let path = rel_path.to_string_lossy().replace('\\', "/");
+            let ticks = rec.ticks.len();
+            let subticks = rec.subticks.len();
             manifest.files.push(ConvertedFile {
                 path: path.clone(),
                 round: round.round,
                 side: team_dir.to_string(),
                 steam_id,
-                player_name,
-                ticks: rec.ticks.len(),
-                subticks: rec.subticks.len(),
+                player_name: player_name.clone(),
+                ticks,
+                subticks,
                 play_start_tick_index: rec.header.play_start_tick_index,
                 first_weapon_def_index: first_weapon_def_index(&rec),
                 preload_weapon_def_indices: preload_weapon_def_indices_from_refs(
@@ -287,12 +384,24 @@ pub fn export_demo_to_memory(
                 scoreboard: replay_player_scoreboard(cosmetic_player_rows),
             });
             artifacts.push(ConversionArtifact {
-                path,
+                path: path.clone(),
                 bytes,
                 kind: ConversionArtifactKind::Dtr,
                 round: Some(round.round),
                 steam_id: Some(steam_id),
             });
+            emit_conversion_progress(
+                &mut progress,
+                ConversionProgress::PlayerWritten {
+                    round: round.round,
+                    steam_id,
+                    player_name,
+                    side: team_dir.to_string(),
+                    path,
+                    ticks,
+                    subticks,
+                },
+            );
         }
 
         let files = manifest.files.len() - first_file_index;
@@ -320,6 +429,13 @@ pub fn export_demo_to_memory(
                 files,
             });
         }
+        emit_conversion_progress(
+            &mut progress,
+            ConversionProgress::RoundFinished {
+                round: round.round,
+                files,
+            },
+        );
     }
 
     let manifest_json = serde_json::to_string_pretty(&manifest)?;
@@ -362,9 +478,30 @@ pub fn export_demo_to_memory(
 }
 
 pub fn export_demo(parsed: &ParsedDemo, options: &ConvertOptions) -> Result<ConversionReport> {
-    let memory = export_demo_to_memory(parsed, &ConvertMemoryOptions::from(options))?;
+    export_demo_with_progress(parsed, options, |_| {})
+}
+
+pub fn export_demo_with_progress<F>(
+    parsed: &ParsedDemo,
+    options: &ConvertOptions,
+    mut progress: F,
+) -> Result<ConversionReport>
+where
+    F: FnMut(ConversionProgress),
+{
+    let mut progress_ref = Some(&mut progress as &mut dyn FnMut(ConversionProgress));
+    let memory =
+        export_demo_to_memory_inner(parsed, &ConvertMemoryOptions::from(options), progress_ref)?;
     let root = options.output_dir.join(&memory.demo_id);
     fs::create_dir_all(&root).map_err(|e| io_error(&root, e))?;
+    progress_ref = Some(&mut progress as &mut dyn FnMut(ConversionProgress));
+    emit_conversion_progress(
+        &mut progress_ref,
+        ConversionProgress::ArtifactsWritingStarted {
+            root: root.display().to_string(),
+            artifacts: memory.artifacts.len(),
+        },
+    );
 
     for artifact in &memory.artifacts {
         let path = root.join(&artifact.path);
@@ -372,14 +509,117 @@ pub fn export_demo(parsed: &ParsedDemo, options: &ConvertOptions) -> Result<Conv
             fs::create_dir_all(parent).map_err(|e| io_error(parent, e))?;
         }
         fs::write(&path, &artifact.bytes).map_err(|e| io_error(&path, e))?;
+        emit_conversion_progress(
+            &mut progress_ref,
+            ConversionProgress::ArtifactWritten {
+                path: artifact.path.clone(),
+                kind: artifact.kind.clone(),
+            },
+        );
     }
 
-    Ok(ConversionReport {
+    let report = ConversionReport {
         root: root.clone(),
         manifest_path: root.join("manifest.json"),
         files_written: memory.files_written,
         manifest: memory.manifest,
-    })
+    };
+    emit_conversion_progress(
+        &mut progress_ref,
+        ConversionProgress::Finished {
+            root: report.root.display().to_string(),
+            manifest_path: report.manifest_path.display().to_string(),
+            files_written: report.files_written,
+        },
+    );
+    Ok(report)
+}
+
+fn emit_conversion_progress(
+    progress: &mut Option<&mut dyn FnMut(ConversionProgress)>,
+    event: ConversionProgress,
+) {
+    if let Some(callback) = progress.as_deref_mut() {
+        callback(event);
+    }
+}
+
+fn selected_round_summary(
+    parsed: &ParsedDemo,
+    rows_by_round: &BTreeMap<u32, Vec<&ParsedPlayerTick>>,
+    rounds: &[RoundSummary],
+    options: &ConvertMemoryOptions,
+) -> (usize, usize) {
+    let mut selected_rounds = 0_usize;
+    let mut estimated_files = 0_usize;
+    for round in rounds {
+        if round_skip_reason(round, options).is_some() {
+            continue;
+        }
+        selected_rounds += 1;
+        estimated_files += estimate_round_files(parsed, rows_by_round, round, options);
+    }
+    (selected_rounds, estimated_files)
+}
+
+fn estimate_round_files(
+    parsed: &ParsedDemo,
+    rows_by_round: &BTreeMap<u32, Vec<&ParsedPlayerTick>>,
+    round: &RoundSummary,
+    options: &ConvertMemoryOptions,
+) -> usize {
+    let (end_tick, _) = if options.cut_before_bomb_plant {
+        cut_before_bomb_plant(parsed, round.start_tick, round.end_tick)
+    } else {
+        (round.end_tick, None)
+    };
+    if end_tick <= round.start_tick {
+        return 0;
+    }
+    let round_rows: &[&ParsedPlayerTick] = rows_by_round
+        .get(&round.round)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let recording_start_tick = recording_start_tick_for_round(
+        round_rows,
+        parsed.tick_rate,
+        round.start_tick,
+        options.freeze_preroll_seconds,
+    );
+    let mut ticks_by_player: BTreeMap<u64, BTreeSet<i32>> = BTreeMap::new();
+    for &row in round_rows {
+        if row.tick < recording_start_tick
+            || row.tick > end_tick
+            || (row.tick < round.start_tick && !row.is_freeze_period)
+            || !row.is_alive
+            || row.steam_id == 0
+            || !options.side.matches_team(row.team_num)
+        {
+            continue;
+        }
+        ticks_by_player
+            .entry(row.steam_id)
+            .or_default()
+            .insert(row.tick);
+    }
+    ticks_by_player
+        .values()
+        .filter(|ticks| ticks.len() >= 2)
+        .count()
+}
+
+fn round_skip_reason(round: &RoundSummary, options: &ConvertMemoryOptions) -> Option<String> {
+    let selected = match &options.selected_rounds {
+        Some(rounds) => rounds.contains(&round.round),
+        None => round.recommended() || options.include_suspicious,
+    };
+    if !selected {
+        return Some("not selected".to_string());
+    }
+    if !round.recommended() && !options.include_suspicious {
+        return Some(format!("suspicious ({})", round.problems.join("; ")));
+    }
+    None
 }
 
 fn cut_before_bomb_plant(
@@ -2583,6 +2823,89 @@ mod tests {
         assert_eq!(disk_dtr, dtr.bytes);
         assert!(filesystem.manifest_path.exists());
         assert!(filesystem.root.join("conversion.log").exists());
+    }
+
+    #[test]
+    fn export_progress_reports_ordered_round_and_player_events() {
+        let parsed = sample_demo();
+        let options = ConvertMemoryOptions {
+            output_stem: Some("progress-demo".to_string()),
+            side: Side::Both,
+            selected_rounds: Some(BTreeSet::from([1])),
+            include_suspicious: true,
+            cut_before_bomb_plant: true,
+            subtick_mode: SubtickMode::Auto,
+            freeze_preroll_seconds: DEFAULT_FREEZE_PREROLL_SECONDS,
+            export_cosmetics: false,
+            export_stickers: false,
+            analysis: AnalysisOptions::default(),
+        };
+        let mut events = Vec::new();
+
+        let report = export_demo_to_memory_with_progress(&parsed, &options, |event| {
+            events.push(event);
+        })
+        .unwrap();
+
+        assert_eq!(report.files_written, 1);
+        assert!(matches!(
+            events.first(),
+            Some(ConversionProgress::AnalysisStarted)
+        ));
+        assert!(matches!(
+            events.get(1),
+            Some(ConversionProgress::AnalysisFinished {
+                selected_rounds: 1,
+                estimated_files: 1,
+                ..
+            })
+        ));
+        assert!(events
+            .iter()
+            .any(|event| matches!(event, ConversionProgress::RoundStarted { round: 1, .. })));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ConversionProgress::PlayerWritten {
+                round: 1,
+                steam_id: 76561198000000001,
+                ..
+            }
+        )));
+        assert!(matches!(
+            events.last(),
+            Some(ConversionProgress::RoundFinished { round: 1, files: 1 })
+        ));
+    }
+
+    #[test]
+    fn export_progress_reports_round_skip_reason() {
+        let parsed = sample_demo();
+        let options = ConvertMemoryOptions {
+            output_stem: Some("skip-demo".to_string()),
+            side: Side::Both,
+            selected_rounds: Some(BTreeSet::from([2])),
+            include_suspicious: true,
+            cut_before_bomb_plant: true,
+            subtick_mode: SubtickMode::Auto,
+            freeze_preroll_seconds: DEFAULT_FREEZE_PREROLL_SECONDS,
+            export_cosmetics: false,
+            export_stickers: false,
+            analysis: AnalysisOptions::default(),
+        };
+        let mut events = Vec::new();
+
+        let report = export_demo_to_memory_with_progress(&parsed, &options, |event| {
+            events.push(event);
+        })
+        .unwrap();
+
+        assert_eq!(report.files_written, 0);
+        assert!(events.iter().any(|event| matches!(
+            event,
+            ConversionProgress::RoundSkipped { round: 1, reason }
+                if reason == "not selected"
+        )));
+        assert!(report.log.contains("skip round 1: not selected"));
     }
 
     #[test]

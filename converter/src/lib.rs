@@ -4,6 +4,8 @@ pub mod browser_analysis;
 pub mod demo_id;
 pub mod demo_reader;
 pub mod export;
+#[cfg(feature = "gui")]
+pub mod gui;
 pub mod model;
 mod nade;
 pub mod nade_export;
@@ -13,6 +15,7 @@ pub mod quality;
 pub mod rec_writer;
 mod replay;
 pub mod synthesis;
+pub mod validate;
 mod workflows;
 
 pub mod dtr {
