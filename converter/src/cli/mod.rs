@@ -189,9 +189,6 @@ enum Command {
     },
     /// Run the interactive conversion wizard.
     Wizard,
-    #[cfg(feature = "gui")]
-    /// Run the experimental GUI build.
-    Gui,
 }
 
 pub(crate) fn run() -> cs2_demotracer::Result<()> {
@@ -458,10 +455,6 @@ pub(crate) fn run() -> cs2_demotracer::Result<()> {
         }
         Command::Wizard => {
             run_wizard()?;
-        }
-        #[cfg(feature = "gui")]
-        Command::Gui => {
-            cs2_demotracer::gui::run_gui()?;
         }
     }
     Ok(())

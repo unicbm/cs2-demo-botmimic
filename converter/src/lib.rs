@@ -15,11 +15,6 @@ mod replay;
 pub mod synthesis;
 mod workflows;
 
-#[cfg(feature = "gui")]
-pub mod gui;
-#[cfg(feature = "gui")]
-mod ui;
-
 pub mod dtr {
     pub use crate::model::{
         Cs2Rec, Cs2RecHeader, MovementSnapshot, ReplayProjectile, ReplayTick, SubtickMove,
