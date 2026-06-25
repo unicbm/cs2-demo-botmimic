@@ -92,7 +92,8 @@ namespace BotController
 
         static constexpr float kSoftSnapDistance = 64.0f;
         static constexpr float kSoftSnapVerticalDistance = 48.0f;
-        static constexpr float kFinishMoveResyncNudgeZ = 1.0f;
+        static constexpr float kFinishMoveResyncNudgeZ = 0.03125f;
+        static constexpr float kReplayMinEngineVelZ = -500.0f;
         static constexpr uint8_t kMoveTypeWalk = 2;
         static constexpr uint8_t kMoveTypeLadder = 9;
         static constexpr float kLadderNormalResidueSq = 0.0001f;
@@ -1428,6 +1429,13 @@ namespace BotController
 
         // Write velocity onto the pawn. View is controlled separately so
         // we can A/B direct view writes without changing movement replay.
+        static float ReplayEngineVelZ(float velZ)
+        {
+            if (!std::isfinite(velZ))
+                return 0.0f;
+            return velZ < kReplayMinEngineVelZ ? kReplayMinEngineVelZ : velZ;
+        }
+
         static void WriteVelocityToPawn(void *services, const MovementSnapshot &s)
         {
             auto *sv = reinterpret_cast<char *>(services);
@@ -1438,7 +1446,7 @@ namespace BotController
 
             *reinterpret_cast<float *>(p + tg::kEnt_AbsVelocity + 0) = s.velX;
             *reinterpret_cast<float *>(p + tg::kEnt_AbsVelocity + 4) = s.velY;
-            *reinterpret_cast<float *>(p + tg::kEnt_AbsVelocity + 8) = s.velZ;
+            *reinterpret_cast<float *>(p + tg::kEnt_AbsVelocity + 8) = ReplayEngineVelZ(s.velZ);
         }
 
         // Write origin + velocity into CMoveData.
@@ -1450,7 +1458,7 @@ namespace BotController
             *reinterpret_cast<float *>(m + tg::kMove_AbsOrigin + 8) = s.originZ;
             *reinterpret_cast<float *>(m + tg::kMove_Velocity + 0) = s.velX;
             *reinterpret_cast<float *>(m + tg::kMove_Velocity + 4) = s.velY;
-            *reinterpret_cast<float *>(m + tg::kMove_Velocity + 8) = s.velZ;
+            *reinterpret_cast<float *>(m + tg::kMove_Velocity + 8) = ReplayEngineVelZ(s.velZ);
         }
 
         static void WriteMovementServiceState(void *services,
@@ -1591,7 +1599,7 @@ namespace BotController
             *reinterpret_cast<float *>(m + tg::kMove_AbsOrigin + 8) = t->post.originZ;
             *reinterpret_cast<float *>(m + tg::kMove_Velocity + 0) = t->post.velX;
             *reinterpret_cast<float *>(m + tg::kMove_Velocity + 4) = t->post.velY;
-            *reinterpret_cast<float *>(m + tg::kMove_Velocity + 8) = t->post.velZ;
+            *reinterpret_cast<float *>(m + tg::kMove_Velocity + 8) = ReplayEngineVelZ(t->post.velZ);
 
             // Force engine to resync the entity origin from MoveData
             auto *sv = reinterpret_cast<char *>(services);
