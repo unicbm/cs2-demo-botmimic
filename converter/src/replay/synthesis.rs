@@ -146,12 +146,14 @@ fn synthesize_player_rec_with_projectile_iter<'a>(
     let first = rows[0].row();
     let mut ticks = Vec::with_capacity(rows.len().saturating_sub(1));
     let mut subticks = Vec::new();
+    let mut command_frames = Vec::with_capacity(rows.len().saturating_sub(1));
     let mut stats = SynthesisStats::default();
     for pair in rows.windows(2) {
         let pre_row = pair[0].row();
         let post_row = pair[1].row();
         let pre = pre_row.snapshot();
         let post = post_row.snapshot();
+        command_frames.push(pre_row.command_frame());
         let mut tick_subticks = sanitize_subticks(pre_row, options.subtick_mode, &mut stats);
         let num_subtick = tick_subticks.len() as u32;
         subticks.append(&mut tick_subticks);
@@ -181,6 +183,8 @@ fn synthesize_player_rec_with_projectile_iter<'a>(
             projectiles: replay_projectiles,
             high_fidelity: crate::model::HighFidelityMetadata::default(),
             subticks,
+            command_frames,
+            movement_extras: Vec::new(),
         },
         stats,
     ))
@@ -304,6 +308,16 @@ mod tests {
             buttonstate1: 1,
             buttonstate2: 1,
             buttonstate3: 0,
+            usercmd_forward_move: Some(12.5),
+            usercmd_left_move: Some(-4.0),
+            usercmd_up_move: Some(0.25),
+            usercmd_pitch: Some(40.0),
+            usercmd_yaw: Some(50.0),
+            usercmd_roll: Some(0.0),
+            usercmd_mouse_dx: Some(3),
+            usercmd_mouse_dy: Some(-2),
+            usercmd_weapon_select: Some(123),
+            usercmd_left_hand_desired: Some(true),
             item_def_idx: weapon,
             inventory_as_ids: Vec::new(),
             inventory_weapon_cosmetics: Vec::new(),
@@ -384,6 +398,20 @@ mod tests {
         assert_eq!(rec.ticks[0].pre.origin[0], 10.0);
         assert_eq!(rec.ticks[0].post.origin[0], 11.0);
         assert_eq!(rec.ticks[1].weapon_def_index, 7);
+        assert_eq!(rec.command_frames.len(), 2);
+        assert_eq!(rec.command_frames[0].forward_move, 12.5);
+        assert_eq!(rec.command_frames[0].left_move, -4.0);
+        assert_eq!(rec.command_frames[0].up_move, 0.25);
+        assert_eq!(rec.command_frames[0].pitch, 40.0);
+        assert_eq!(rec.command_frames[0].yaw, 50.0);
+        assert_eq!(rec.command_frames[0].mouse_dx, 3);
+        assert_eq!(rec.command_frames[0].mouse_dy, -2);
+        assert_eq!(rec.command_frames[0].weapon_select, 123);
+        assert_eq!(rec.command_frames[0].left_hand_desired, 1);
+        assert_ne!(
+            rec.command_frames[0].fields & crate::model::COMMAND_FIELD_FORWARD_MOVE,
+            0
+        );
         assert!(rec.subticks.is_empty());
     }
 

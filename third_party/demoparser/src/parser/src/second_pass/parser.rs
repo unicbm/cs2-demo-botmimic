@@ -257,6 +257,7 @@ impl<'a> SecondPassParser<'a> {
                 _ => return Ok(()),
             };
 
+            let left_hand_desired = user_cmd.left_hand_desired();
             if let Some(base) = user_cmd.base {
                 let entity_id = base.pawn_entity_handle() & 0x7FF;
                 if let Some(Some(ent)) = self.entities.get_mut(entity_id as usize) {
@@ -292,9 +293,12 @@ impl<'a> SecondPassParser<'a> {
                     ent.props.insert(USERCMD_SUBTICK_MOVES_BASEID, Variant::UserCmdSubtickMoves(subtick_moves));
                     ent.props.insert(USERCMD_LEFTMOVE, Variant::F32(base.leftmove()));
                     ent.props.insert(USERCMD_FORWARDMOVE, Variant::F32(base.forwardmove()));
+                    ent.props.insert(USERCMD_UPMOVE, Variant::F32(base.upmove()));
                     ent.props.insert(USERCMD_IMPULSE, Variant::I32(base.impulse()));
                     ent.props.insert(USERCMD_MOUSE_DX, Variant::I32(base.mousedx()));
                     ent.props.insert(USERCMD_MOUSE_DY, Variant::I32(base.mousedy()));
+                    ent.props.insert(USERCMD_WEAPON_SELECT, Variant::I32(base.weaponselect()));
+                    ent.props.insert(USERCMD_SUBTICK_LEFT_HAND_DESIRED, Variant::Bool(left_hand_desired));
                     if let Some(viewangles) = base.viewangles {
                         ent.props.insert(USERCMD_VIEWANGLE_X, Variant::F32(viewangles.x()));
                         ent.props.insert(USERCMD_VIEWANGLE_Y, Variant::F32(viewangles.y()));

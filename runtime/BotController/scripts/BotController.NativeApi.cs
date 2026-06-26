@@ -1,4 +1,4 @@
-// P/Invoke wrapper for BotController.dll (ABI 15). Check IsCompatible() before use.
+// P/Invoke wrapper for BotController.dll (ABI 16). Check IsCompatible() before use.
 // Main-thread only.
 
 using System;
@@ -77,6 +77,47 @@ namespace BotControllerApi
         public float YawDelta;
     }
 
+    /** Optional replay usercmd frame. Must match C++ ReplayCommandFrameData */
+    [StructLayout(LayoutKind.Sequential, Pack = 4)]
+    public struct ReplayCommandFrame
+    {
+        public float ForwardMove;
+        public float LeftMove;
+        public float UpMove;
+        public float Pitch;
+        public float Yaw;
+        public float Roll;
+        public ulong Buttons;
+        public ulong Buttons1;
+        public ulong Buttons2;
+        public int MouseDx;
+        public int MouseDy;
+        public int WeaponSelect;
+        public uint Fields;
+        public byte LeftHandDesired;
+        public byte Pad0;
+        public byte Pad1;
+        public byte Pad2;
+    }
+
+    /** Optional offset-backed replay movement state. Must match C++ ReplayMovementExtra */
+    [StructLayout(LayoutKind.Sequential, Pack = 4)]
+    public struct ReplayMovementExtra
+    {
+        public uint Fields;
+        public float JumpPressedTime;
+        public float LastDuckTime;
+        public int LastActualJumpPressTick;
+        public float LastActualJumpPressFrac;
+        public int LastUsableJumpPressTick;
+        public float LastUsableJumpPressFrac;
+        public int LastLandedTick;
+        public float LastLandedFrac;
+        public float LastLandedVelocityX;
+        public float LastLandedVelocityY;
+        public float LastLandedVelocityZ;
+    }
+
     [StructLayout(LayoutKind.Sequential, Pack = 4)]
     public struct AbiInfo
     {
@@ -97,7 +138,7 @@ namespace BotControllerApi
     // Thin static binding over the native exports. No orchestration here.
     public static class BotController
     {
-        public const int ExpectedAbiVersion = 15;
+        public const int ExpectedAbiVersion = 16;
         public const ulong CapabilityReplaySlotState = 1UL << 0;
         public const ulong CapabilityStartReplayAt = 1UL << 1;
         public const ulong CapabilityStartReplayUntil = 1UL << 2;
@@ -106,6 +147,7 @@ namespace BotControllerApi
         public const ulong CapabilityPovMask = 1UL << 5;
         public const ulong CapabilityBuyPlan = 1UL << 6;
         public const ulong CapabilityControllerBotOffset = 1UL << 7;
+        public const ulong CapabilityExtendedReplay = 1UL << 8;
 
         // Sentinel weapon def meaning "any knife"
         public const int KnifeDef = 9001;
@@ -161,6 +203,13 @@ namespace BotControllerApi
         private static extern int BotController_LoadReplay(
             int slot, [In] ReplayTick[] ticks, int tickCount,
             [In] SubtickMove[] subs, int subCount);
+
+        [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int BotController_LoadReplayExtended(
+            int slot, [In] ReplayTick[] ticks, int tickCount,
+            [In] SubtickMove[] subs, int subCount,
+            [In] ReplayCommandFrame[] commands, int commandCount,
+            [In] ReplayMovementExtra[] movementExtras, int movementExtraCount);
 
         [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
         private static extern int BotController_TransferRecordingToReplay(int srcSlot, int dstSlot);
@@ -317,6 +366,24 @@ namespace BotControllerApi
                && BotController_LoadReplay(slot, ticks, ticks.Length,
                                        subs ?? Array.Empty<SubtickMove>(),
                                        subs?.Length ?? 0) == 0;
+
+        public static bool LoadReplayExtended(
+            int slot,
+            ReplayTick[] ticks,
+            SubtickMove[] subs,
+            ReplayCommandFrame[] commands,
+            ReplayMovementExtra[] movementExtras)
+            => ticks is { Length: > 0 }
+               && BotController_LoadReplayExtended(
+                   slot,
+                   ticks,
+                   ticks.Length,
+                   subs ?? Array.Empty<SubtickMove>(),
+                   subs?.Length ?? 0,
+                   commands ?? Array.Empty<ReplayCommandFrame>(),
+                   commands?.Length ?? 0,
+                   movementExtras ?? Array.Empty<ReplayMovementExtra>(),
+                   movementExtras?.Length ?? 0) == 0;
 
         // Move a slot's just-recorded buffers straight into another slot's
         // replay buffer, no managed round-trip.

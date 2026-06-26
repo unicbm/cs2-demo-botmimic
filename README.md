@@ -84,22 +84,25 @@ details are documented in [`docs/COMMANDS.md`](docs/COMMANDS.md).
 loader and BotController runtime. This section is the public binary contract;
 format changes should update this section in the same commit.
 
-All values are little-endian. v6 is the current writer format. The runtime
-reader also accepts v3-v5 files for backward compatibility. v3 does not contain
-projectile metadata; v3/v4 files have `play_start_tick_index = 0`; v3-v5 files
-have no high-fidelity metadata JSON blob.
+All values are little-endian. v7 is the current writer format. The runtime
+reader also accepts v3-v6 files for backward compatibility. v3 does not contain
+projectile metadata; v3/v4 files have
+`play_start_tick_index = 0`; v3-v5 files have no high-fidelity metadata JSON
+blob. v7 files require the matching server bundle with BotController native ABI
+16 and extended replay capability.
 
 The format is lossless: movement snapshots, projectile events, high-fidelity
-metadata, and subtick records are written with their original `f32`, integer, or
-UTF-8 JSON values. The body removes duplicated adjacent tick snapshots and is
-then compressed with Brotli.
+metadata, subtick records, and command-frame data are written with their
+original `f32`, integer, or UTF-8 JSON values. v7 stores payloads as ordered
+sections so future optional replay evidence can be skipped by older v7-aware
+readers.
 
 ### Header
 
 | Field | Type | Notes |
 | --- | --- | --- |
 | magic | 8 bytes | `CSDTRREC` |
-| version | `u32` | `6` |
+| version | `u32` | `7` |
 | tick_rate | `f32` | Demo tickrate estimate |
 | round | `u32` | `total_rounds_played` window |
 | side | `u8` | `2=T`, `3=CT`, `0=unknown` |
@@ -112,20 +115,58 @@ then compressed with Brotli.
 | metadata_json_len | `u32` | Byte length of high-fidelity metadata JSON; v6+ only |
 | map | `u16 len + utf8` | Map name |
 | player_name | `u16 len + utf8` | Demo player name |
-| codec | `u8` | `1 = Brotli` |
-| body_uncompressed_len | `u64` | Expected decoded body byte length |
-| body_compressed_len | `u64` | Compressed body byte length |
+| section_count | `u32` | v7 only; number of section records that follow |
 
-The next `body_compressed_len` bytes are a Brotli stream.
+For v3-v6 legacy files, the header instead continues after `player_name` with
+`codec: u8`, `body_uncompressed_len: u64`, `body_compressed_len: u64`, followed
+by a single Brotli-compressed legacy body.
 
-Round replay v6 files may store up to 10 seconds of same-round freeze-time
+Round replay v5+ files may store up to 10 seconds of same-round freeze-time
 context before `play_start_tick_index`. Playback still begins at
 `round_freeze_end`; the pre-start context is used to preserve held grenade
 button state without replaying arbitrarily long paused freeze time.
 
-### Decoded Body
+### v7 Sections
 
-After decompression, the body layout is:
+Each v7 section is:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| section_id | `u32` | Known IDs listed below |
+| section_version | `u32` | `1` for current section layouts |
+| codec | `u8` | `0 = none`; readers may also accept `1 = Brotli` |
+| pad | 3 bytes | Must be ignored by readers |
+| flags | `u32` | Reserved |
+| element_count | `u32` | Logical item count |
+| uncompressed_len | `u64` | Expected decoded payload byte length |
+| compressed_len | `u64` | Stored payload byte length |
+| payload | bytes | Raw or compressed section payload |
+
+Required sections:
+
+| ID | Section | Count | Bytes Each |
+| ---: | --- | ---: | ---: |
+| 1 | `MovementSnapshotV3` chain | `0 if tick_count == 0, else tick_count + 1` | 92 |
+| 2 | tick metadata | `tick_count` | 8 |
+| 5 | `SubtickMoveV3` | `subtick_count` | 28 |
+
+Optional sections:
+
+| ID | Section | Count | Bytes Each |
+| ---: | --- | ---: | ---: |
+| 3 | `ProjectileEventV4` | `projectile_count` | 48 |
+| 4 | `HighFidelityMetadataV6` | `0 or 1` | UTF-8 JSON |
+| 6 | `CommandFrameV1` | `tick_count` | 68 |
+| 7 | `MovementExtraV1` | `tick_count` | 48 |
+
+Unknown section IDs must be skipped using `compressed_len`. Duplicate known
+sections are invalid. Missing required sections are invalid. Optional
+tick-aligned sections may be omitted; when present, their `element_count` must
+equal `tick_count`.
+
+### v3-v6 Legacy Body
+
+After legacy body decompression, the body layout is:
 
 | Part | Count | Bytes Each |
 | --- | ---: | ---: |
@@ -170,8 +211,9 @@ projectile data. Older v3 files have no projectile event section.
 
 ### HighFidelityMetadataV6
 
-v6 adds a Brotli-body UTF-8 JSON blob after projectile events and before
-subtick moves. The top-level object is:
+v6+ files may include a UTF-8 JSON blob. In v3-v6 legacy files it appears after
+projectile events and before subtick moves inside the Brotli body. In v7 it is
+section ID `4`. The top-level object is:
 
 | Field | Type | Notes |
 | --- | --- | --- |
@@ -196,6 +238,49 @@ player inventory changes. Each snapshot contains normalized weapon def counts,
 the active weapon def, armor value, helmet state, and defuser state. The CSS
 plugin does not use snapshots to repair inventory every replay tick; they are a
 contract for validation, diagnostics, and future higher-fidelity playback.
+
+### CommandFrameV1
+
+This optional v7 section records demo-backed usercmd evidence for each replay
+tick. Fields missing from the parser are written with defaults and omitted from
+the `fields` bitset.
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| forward_move | `f32` | Present when bit `0` is set |
+| left_move | `f32` | Present when bit `1` is set |
+| up_move | `f32` | Present when bit `2` is set |
+| view_angles | `f32[3]` | pitch/yaw/roll; present when bit `3` is set |
+| buttons | `u64[3]` | buttonstate0/1/2; present when bit `4` is set |
+| mouse_dx | `i32` | Present with mouse bit `5` |
+| mouse_dy | `i32` | Present with mouse bit `5` |
+| weapon_select | `i32` | Raw demo command value; present when bit `6` is set |
+| fields | `u32` | Presence bitset |
+| left_hand_desired | `u8` | Present when bit `7` is set |
+| pad | 3 bytes | |
+
+BotController uses movement, view, button, mouse, and left-hand command fields
+when available. Runtime weapon selection still resolves from recorded weapon
+definition to a live bot entity index instead of trusting raw demo entity IDs.
+
+### MovementExtraV1
+
+This optional v7 section carries offset-backed movement internals when the
+converter/runtime has evidence and a matching capability gate. Missing offset
+support means the section is omitted.
+
+| Field | Type |
+| --- | --- |
+| fields | `u32` |
+| jump_pressed_time | `f32` |
+| last_duck_time | `f32` |
+| last_actual_jump_press_tick | `i32` |
+| last_actual_jump_press_frac | `f32` |
+| last_usable_jump_press_tick | `i32` |
+| last_usable_jump_press_frac | `f32` |
+| last_landed_tick | `i32` |
+| last_landed_frac | `f32` |
+| last_landed_velocity | `f32[3]` |
 
 ### MovementSnapshotV3
 
@@ -235,17 +320,18 @@ This layout is `92` bytes with `Pack=4`.
 ### Parser Checklist
 
 1. Read and validate magic `CSDTRREC`.
-2. Require `version == 6` for current writer output, or accept `version == 3`,
-   `4`, and `5` for backward compatibility.
+2. Require `version == 7` for current writer output, or accept `version == 3`
+   through `6` for backward compatibility.
 3. Read `tick_count`, `subtick_count`, `projectile_count`,
    `play_start_tick_index`, `metadata_json_len`, `map`, and `player_name`. For
    v3, treat `projectile_count` as `0`; for v3/v4, treat
    `play_start_tick_index` as `0`; for v3-v5, treat `metadata_json_len` as `0`.
-4. Require `codec == 1`.
-5. Check `body_uncompressed_len == snapshot_count * 92 + tick_count * 8 +
-   projectile_count * 48 + metadata_json_len + subtick_count * 28`, where
-   `snapshot_count` is `0` for empty replays and `tick_count + 1` otherwise.
-6. Read and Brotli-decompress exactly `body_compressed_len` bytes.
+4. For v7, read `section_count`, parse known sections, and skip unknown
+   sections using `compressed_len`.
+5. For v7, require snapshot, tick metadata, and subtick sections; require
+   projectile/high-fidelity sections when their header counts are non-zero.
+6. For v3-v6, require legacy `codec == 1`, verify legacy body length, then
+   Brotli-decompress exactly `body_compressed_len` bytes.
 7. Rebuild ticks from the snapshot chain and metadata.
 8. Sum all tick `num_subtick` values and verify it equals `subtick_count`.
 9. If `metadata_json_len > 0`, parse exactly that many bytes as UTF-8 JSON.

@@ -16,7 +16,7 @@
 
 namespace
 {
-    constexpr int kBotControllerAbiMajor = 15;
+    constexpr int kBotControllerAbiMajor = 16;
     constexpr int kBotControllerAbiMinor = 1;
     constexpr uint64_t kCapabilityReplaySlotState = 1ULL << 0;
     constexpr uint64_t kCapabilityStartReplayAt = 1ULL << 1;
@@ -26,6 +26,7 @@ namespace
     constexpr uint64_t kCapabilityPovMask = 1ULL << 5;
     constexpr uint64_t kCapabilityBuyPlan = 1ULL << 6;
     constexpr uint64_t kCapabilityControllerBotOffset = 1ULL << 7;
+    constexpr uint64_t kCapabilityExtendedReplay = 1ULL << 8;
     constexpr uint64_t kBotControllerCapabilities =
         kCapabilityReplaySlotState |
         kCapabilityStartReplayAt |
@@ -34,7 +35,8 @@ namespace
         kCapabilityWeaponSwitchRead |
         kCapabilityPovMask |
         kCapabilityBuyPlan |
-        kCapabilityControllerBotOffset;
+        kCapabilityControllerBotOffset |
+        kCapabilityExtendedReplay;
 
 #pragma pack(push, 4)
     struct BotControllerAbiInfo
@@ -230,6 +232,20 @@ extern "C" __declspec(dllexport) int BotController_LoadReplay(int slot,
 {
     return BotController::MotionRecorder::LoadReplay(slot, ticks, tickCount,
                                                      subs, subCount)
+               ? 0
+               : -1;
+}
+
+extern "C" __declspec(dllexport) int BotController_LoadReplayExtended(
+    int slot,
+    const BotController::ReplayTick *ticks, int tickCount,
+    const BotController::SubtickMove *subs, int subCount,
+    const BotController::ReplayCommandFrameData *commands, int commandCount,
+    const BotController::ReplayMovementExtra *movementExtras, int movementExtraCount)
+{
+    return BotController::MotionRecorder::LoadReplayExtended(
+               slot, ticks, tickCount, subs, subCount,
+               commands, commandCount, movementExtras, movementExtraCount)
                ? 0
                : -1;
 }

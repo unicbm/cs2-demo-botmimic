@@ -120,9 +120,9 @@ CS2 DemoTracer Server Bundle
 version: v$Version
 git_commit: $gitCommit
 platform: windows-x64
-bundled_botcontroller_abi: 15
-expected_demotracer_native_abi: 15
-dtr_reader: 3..6
+bundled_botcontroller_abi: 16
+expected_demotracer_native_abi: 16
+dtr_reader: 3..7
 demotracer_api: 2
 
 Install target:
@@ -153,10 +153,10 @@ bc_status
 Expected ABI check:
 
 ```text
-expected_abi=15 runtime_abi=15
+expected_abi=16 runtime_abi=16
 ```
 
-If `runtime_abi` is lower than `15`, the server is still loading an old
+If `runtime_abi` is lower than `16`, the server is still loading an old
 `BotController.dll`. Replace `addons/BotController/bin/win64/BotController.dll`,
 `addons/BotController/gamedata.json`, and `addons/metamod/BotController.vdf`
 from this package.
@@ -172,9 +172,9 @@ from this package.
 
 ## Compatibility
 
-- Required BotController native ABI: 15
-- Bundled BotController native ABI: 15
-- Supported `.dtr` reader versions: 3..6
+- Required BotController native ABI: 16
+- Bundled BotController native ABI: 16
+- Supported `.dtr` reader versions: 3..7
 - Maintained runtime platform: Windows x64
 '@
 $readme = $readme.Replace("__VERSION__", $Version)

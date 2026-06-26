@@ -119,7 +119,7 @@ BotController native exports or replay buffer structs.
 ```csharp
 using BotControllerApi;
 
-if (!BotController.IsCompatible()) return;   // requires ABI 15
+if (!BotController.IsCompatible()) return;   // requires ABI 16
 BotController.TryGetAbiInfo(out var abiInfo);
 var capabilities = BotController.Capabilities();
 var buildId = BotController.BuildId();

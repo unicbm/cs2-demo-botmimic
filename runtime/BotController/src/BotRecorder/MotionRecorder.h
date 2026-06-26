@@ -51,12 +51,58 @@ namespace BotController
         float pitchDelta;    // pitch_delta
         float yawDelta;      // yaw_delta
     };
+
+    struct ReplayCommandFrameData
+    {
+        float forwardMove;
+        float leftMove;
+        float upMove;
+        float pitch;
+        float yaw;
+        float roll;
+        uint64_t buttons;
+        uint64_t buttons1;
+        uint64_t buttons2;
+        int32_t mouseDx;
+        int32_t mouseDy;
+        int32_t weaponSelect;
+        uint32_t fields;
+        uint8_t leftHandDesired;
+        uint8_t _pad[3];
+    };
+
+    struct ReplayMovementExtra
+    {
+        uint32_t fields;
+        float jumpPressedTime;
+        float lastDuckTime;
+        int32_t lastActualJumpPressTick;
+        float lastActualJumpPressFrac;
+        int32_t lastUsableJumpPressTick;
+        float lastUsableJumpPressFrac;
+        int32_t lastLandedTick;
+        float lastLandedFrac;
+        float lastLandedVelocityX;
+        float lastLandedVelocityY;
+        float lastLandedVelocityZ;
+    };
 #pragma pack(pop)
+
+    static_assert(sizeof(ReplayCommandFrameData) == 68);
+    static_assert(sizeof(ReplayMovementExtra) == 48);
 
     namespace MotionRecorder
     {
         constexpr int kMaxSlots = 64;
         constexpr int kMaxSubtickPerTick = 36;
+        constexpr uint32_t kCommandFieldForwardMove = 1u << 0;
+        constexpr uint32_t kCommandFieldLeftMove = 1u << 1;
+        constexpr uint32_t kCommandFieldUpMove = 1u << 2;
+        constexpr uint32_t kCommandFieldViewAngles = 1u << 3;
+        constexpr uint32_t kCommandFieldButtons = 1u << 4;
+        constexpr uint32_t kCommandFieldMouse = 1u << 5;
+        constexpr uint32_t kCommandFieldWeaponSelect = 1u << 6;
+        constexpr uint32_t kCommandFieldLeftHand = 1u << 7;
 
         enum class ReplaySnapMode : int
         {
@@ -134,12 +180,21 @@ namespace BotController
         {
             const ReplayTick *tick;
             const SubtickMove *subticks;
+            const ReplayCommandFrameData *command;
             int32_t subtickCount;
             int32_t weaponSelect;
             MovementSnapshot commandView;
             uint64_t buttons0;
             uint64_t buttons1;
             uint64_t buttons2;
+            uint32_t commandFields;
+            float forwardMove;
+            float leftMove;
+            float upMove;
+            int32_t mouseDx;
+            int32_t mouseDy;
+            int32_t rawWeaponSelect;
+            uint8_t leftHandDesired;
         };
 
         void SetReplaySnapMode(ReplaySnapMode mode);
@@ -190,6 +245,12 @@ namespace BotController
         // Load parallel arrays into a slot's replay buffer
         bool LoadReplay(int slot, const ReplayTick *ticks, int tickCount,
                         const SubtickMove *subs, int subCount);
+        bool LoadReplayExtended(int slot, const ReplayTick *ticks, int tickCount,
+                                const SubtickMove *subs, int subCount,
+                                const ReplayCommandFrameData *commands,
+                                int commandCount,
+                                const ReplayMovementExtra *movementExtras,
+                                int movementExtraCount);
         bool StartReplay(int slot, bool loop); // play from tick 0
         bool StartReplayAt(int slot, bool loop, int startIndex);
         bool StartReplayUntil(int slot, bool loop, int startIndex, int holdBeforeIndex);

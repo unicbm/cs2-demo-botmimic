@@ -264,7 +264,24 @@ namespace BotController
                         CMsgQAngle *view = base->mutable_viewangles();
                         view->set_x(frame.commandView.pitch);
                         view->set_y(NormalizeDeg(frame.commandView.yaw));
-                        view->set_z(0.0f);
+                        view->set_z(
+                            (frame.commandFields & MotionRecorder::kCommandFieldViewAngles) != 0
+                                ? frame.commandView.roll
+                                : 0.0f);
+
+                        if ((frame.commandFields & MotionRecorder::kCommandFieldForwardMove) != 0)
+                            base->set_forwardmove(frame.forwardMove);
+                        if ((frame.commandFields & MotionRecorder::kCommandFieldLeftMove) != 0)
+                            base->set_leftmove(frame.leftMove);
+                        if ((frame.commandFields & MotionRecorder::kCommandFieldUpMove) != 0)
+                            base->set_upmove(frame.upMove);
+                        if ((frame.commandFields & MotionRecorder::kCommandFieldMouse) != 0)
+                        {
+                            base->set_mousedx(frame.mouseDx);
+                            base->set_mousedy(frame.mouseDy);
+                        }
+                        if ((frame.commandFields & MotionRecorder::kCommandFieldLeftHand) != 0)
+                            pc->set_left_hand_desired(frame.leftHandDesired != 0);
 
                         if (frame.weaponSelect >= 0)
                             base->set_weaponselect(frame.weaponSelect);

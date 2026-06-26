@@ -3,7 +3,16 @@ use std::fmt;
 use std::str::FromStr;
 
 pub const DEMOTRACER_ABI: i32 = 17;
-pub const DTR_FORMAT_VERSION: u32 = 6;
+pub const DTR_FORMAT_VERSION: u32 = 7;
+
+pub const COMMAND_FIELD_FORWARD_MOVE: u32 = 1 << 0;
+pub const COMMAND_FIELD_LEFT_MOVE: u32 = 1 << 1;
+pub const COMMAND_FIELD_UP_MOVE: u32 = 1 << 2;
+pub const COMMAND_FIELD_VIEW_ANGLES: u32 = 1 << 3;
+pub const COMMAND_FIELD_BUTTONS: u32 = 1 << 4;
+pub const COMMAND_FIELD_MOUSE: u32 = 1 << 5;
+pub const COMMAND_FIELD_WEAPON_SELECT: u32 = 1 << 6;
+pub const COMMAND_FIELD_LEFT_HAND: u32 = 1 << 7;
 
 pub fn public_demo_path(path: &str) -> String {
     let normalized = path.replace('\\', "/");
@@ -123,6 +132,38 @@ pub struct ReplayTick {
     pub post: MovementSnapshot,
     pub weapon_def_index: i32,
     pub num_subtick: u32,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct ReplayCommandFrame {
+    pub forward_move: f32,
+    pub left_move: f32,
+    pub up_move: f32,
+    pub pitch: f32,
+    pub yaw: f32,
+    pub roll: f32,
+    pub buttons: u64,
+    pub buttons1: u64,
+    pub buttons2: u64,
+    pub mouse_dx: i32,
+    pub mouse_dy: i32,
+    pub weapon_select: i32,
+    pub fields: u32,
+    pub left_hand_desired: u8,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct ReplayMovementExtra {
+    pub fields: u32,
+    pub jump_pressed_time: f32,
+    pub last_duck_time: f32,
+    pub last_actual_jump_press_tick: i32,
+    pub last_actual_jump_press_frac: f32,
+    pub last_usable_jump_press_tick: i32,
+    pub last_usable_jump_press_frac: f32,
+    pub last_landed_tick: i32,
+    pub last_landed_frac: f32,
+    pub last_landed_velocity: [f32; 3],
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -378,6 +419,8 @@ pub struct Cs2Rec {
     pub projectiles: Vec<ReplayProjectile>,
     pub high_fidelity: HighFidelityMetadata,
     pub subticks: Vec<SubtickMove>,
+    pub command_frames: Vec<ReplayCommandFrame>,
+    pub movement_extras: Vec<ReplayMovementExtra>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
@@ -494,6 +537,16 @@ pub struct ParsedPlayerTick {
     pub buttonstate1: u64,
     pub buttonstate2: u64,
     pub buttonstate3: u64,
+    pub usercmd_forward_move: Option<f32>,
+    pub usercmd_left_move: Option<f32>,
+    pub usercmd_up_move: Option<f32>,
+    pub usercmd_pitch: Option<f32>,
+    pub usercmd_yaw: Option<f32>,
+    pub usercmd_roll: Option<f32>,
+    pub usercmd_mouse_dx: Option<i32>,
+    pub usercmd_mouse_dy: Option<i32>,
+    pub usercmd_weapon_select: Option<i32>,
+    pub usercmd_left_hand_desired: Option<bool>,
     pub item_def_idx: i32,
     pub inventory_as_ids: Vec<i32>,
     pub inventory_weapon_cosmetics: Vec<ParsedInventoryWeaponCosmetic>,
@@ -576,6 +629,64 @@ impl ParsedPlayerTick {
             desires_duck: u8::from(desires_duck),
             actual_move_type: self.move_type,
         }
+    }
+
+    pub fn command_frame(&self) -> ReplayCommandFrame {
+        let (buttons, buttons1, buttons2) =
+            if self.buttonstate1 != 0 || self.buttonstate2 != 0 || self.buttonstate3 != 0 {
+                (self.buttonstate1, self.buttonstate2, self.buttonstate3)
+            } else {
+                (self.buttons, 0, 0)
+            };
+        let mut fields = 0_u32;
+        let mut frame = ReplayCommandFrame {
+            buttons,
+            buttons1,
+            buttons2,
+            weapon_select: -1,
+            ..ReplayCommandFrame::default()
+        };
+
+        if let Some(value) = self.usercmd_forward_move {
+            frame.forward_move = value;
+            fields |= COMMAND_FIELD_FORWARD_MOVE;
+        }
+        if let Some(value) = self.usercmd_left_move {
+            frame.left_move = value;
+            fields |= COMMAND_FIELD_LEFT_MOVE;
+        }
+        if let Some(value) = self.usercmd_up_move {
+            frame.up_move = value;
+            fields |= COMMAND_FIELD_UP_MOVE;
+        }
+        let pitch = self.usercmd_pitch.unwrap_or(self.pitch);
+        let yaw = self.usercmd_yaw.unwrap_or(self.yaw);
+        let roll = self.usercmd_roll.unwrap_or(0.0);
+        frame.pitch = pitch;
+        frame.yaw = yaw;
+        frame.roll = roll;
+        if self.usercmd_pitch.is_some() || self.usercmd_yaw.is_some() || self.usercmd_roll.is_some()
+        {
+            fields |= COMMAND_FIELD_VIEW_ANGLES;
+        }
+        if self.buttonstate1 != 0 || self.buttonstate2 != 0 || self.buttonstate3 != 0 {
+            fields |= COMMAND_FIELD_BUTTONS;
+        }
+        if let (Some(dx), Some(dy)) = (self.usercmd_mouse_dx, self.usercmd_mouse_dy) {
+            frame.mouse_dx = dx;
+            frame.mouse_dy = dy;
+            fields |= COMMAND_FIELD_MOUSE;
+        }
+        if let Some(value) = self.usercmd_weapon_select {
+            frame.weapon_select = value;
+            fields |= COMMAND_FIELD_WEAPON_SELECT;
+        }
+        if let Some(value) = self.usercmd_left_hand_desired {
+            frame.left_hand_desired = u8::from(value);
+            fields |= COMMAND_FIELD_LEFT_HAND;
+        }
+        frame.fields = fields;
+        frame
     }
 }
 

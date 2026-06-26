@@ -13,9 +13,10 @@ or legacy CS:GO paths.
 - The public CLI is `cs2-demotracer`; the public server command prefix is
   `dtr_`.
 - The replay extension is `.dtr`. The binary magic is `CSDTRREC`; current
-  writer format is `.dtr` v6. Current manifest ABI is 17, BotController native
-  ABI is 15, and DemoTracer companion API is 2. Do not change magic, ABI, API,
-  or format layout without an explicit version decision and matching docs.
+  writer format is `.dtr` v7. Current manifest ABI is 17,
+  BotController native ABI is 16, and DemoTracer companion API is 2. Do not
+  change magic, ABI, API, or format layout without an explicit version decision
+  and matching docs.
 - The maintained packaged converter target is Windows x64. Linux may work from
   source, but do not claim or publish Linux binaries unless they are built and
   verified.
@@ -50,11 +51,12 @@ or legacy CS:GO paths.
   `output/<demo-id>/roundNN/t|ct/`, where `<demo-id>` is content-hashed.
 - Preserve replay state losslessly. Do not add interpolation, quantization, or
   precision-reducing compression unless the format is explicitly versioned.
-- `.dtr` v6 is the current writer format. Projectile metadata was introduced in
-  v4, v5 added `play_start_tick_index`/bounded freeze-time replay context, and
-  v6 added the high-fidelity metadata JSON blob. Older v3-v5 files remain
-  readable; v3 files do not contain projectile events and v3-v5 files do not
-  contain high-fidelity metadata JSON.
+- `.dtr` v7 is the current writer format. Projectile metadata was
+  introduced in v4, v5 added `play_start_tick_index`/bounded freeze-time replay
+  context, v6 added the high-fidelity metadata JSON blob, and v7 adds the
+  section container plus optional command-frame/movement-extra sections. Older
+  v3-v6 files remain readable; v3 files do not contain projectile events and
+  v3-v5 files do not contain high-fidelity metadata JSON.
 - Cosmetic/econ metadata is default-off and must stay explicit opt-in.
   `--export-cosmetics` requires the GSLT acknowledgement and export disclaimer
   flags; sticker export additionally requires `--export-stickers`. Do not add

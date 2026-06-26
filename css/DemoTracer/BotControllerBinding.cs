@@ -37,6 +37,18 @@ internal static partial class BotControllerNative
         int subCount);
 
     [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int BotController_LoadReplayExtended(
+        int slot,
+        [In] NativeReplayTick[] ticks,
+        int tickCount,
+        [In] NativeSubtickMove[] subs,
+        int subCount,
+        [In] NativeReplayCommandFrame[] commandFrames,
+        int commandFrameCount,
+        [In] NativeReplayMovementExtra[] movementExtras,
+        int movementExtraCount);
+
+    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
     private static extern int BotController_StartReplay(int slot, int loop);
 
     [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]

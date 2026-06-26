@@ -5,12 +5,14 @@ namespace DemoTracer;
 
 internal static partial class BotControllerNative
 {
-    public const int ExpectedAbiVersion = 15;
-    public const uint RecFormatVersion = 6;
+    public const int ExpectedAbiVersion = 16;
+    public const uint RecFormatVersion = 7;
     public const uint MinRecFormatVersion = 3;
     public const int MovementSnapshotByteSize = 92;
     public const int ReplayTickByteSize = 192;
     public const int SubtickMoveByteSize = 28;
+    public const int ReplayCommandFrameByteSize = 68;
+    public const int ReplayMovementExtraByteSize = 48;
     public const int ReplaySlotStateByteSize = 24;
     public const int MaxSlots = 64;
     public const int DemoTracerApiVersion = 2;
@@ -28,6 +30,7 @@ internal static partial class BotControllerNative
     private const ulong CapabilityPovMask = 1UL << 5;
     private const ulong CapabilityBuyPlan = 1UL << 6;
     private const ulong CapabilityControllerBotOffset = 1UL << 7;
+    internal const ulong CapabilityExtendedReplay = 1UL << 8;
 
     public const ulong RequiredCapabilityMask =
         CapabilityReplaySlotState |
@@ -37,7 +40,8 @@ internal static partial class BotControllerNative
         CapabilityWeaponSwitchRead |
         CapabilityPovMask |
         CapabilityBuyPlan |
-        CapabilityControllerBotOffset;
+        CapabilityControllerBotOffset |
+        CapabilityExtendedReplay;
 
     public static string RuntimePlatformName
         => RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
@@ -59,6 +63,14 @@ internal static partial class BotControllerNative
         var subtickSize = Marshal.SizeOf<NativeSubtickMove>();
         if (subtickSize != SubtickMoveByteSize)
             throw new InvalidOperationException($"SubtickMove layout is {subtickSize}, expected {SubtickMoveByteSize}");
+
+        var commandFrameSize = Marshal.SizeOf<NativeReplayCommandFrame>();
+        if (commandFrameSize != ReplayCommandFrameByteSize)
+            throw new InvalidOperationException($"ReplayCommandFrame layout is {commandFrameSize}, expected {ReplayCommandFrameByteSize}");
+
+        var movementExtraSize = Marshal.SizeOf<NativeReplayMovementExtra>();
+        if (movementExtraSize != ReplayMovementExtraByteSize)
+            throw new InvalidOperationException($"ReplayMovementExtra layout is {movementExtraSize}, expected {ReplayMovementExtraByteSize}");
     }
 }
 
@@ -275,4 +287,43 @@ internal struct NativeSubtickMove
     public float AnalogLeft;
     public float PitchDelta;
     public float YawDelta;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+internal struct NativeReplayCommandFrame
+{
+    public float ForwardMove;
+    public float LeftMove;
+    public float UpMove;
+    public float Pitch;
+    public float Yaw;
+    public float Roll;
+    public ulong Buttons;
+    public ulong Buttons1;
+    public ulong Buttons2;
+    public int MouseDx;
+    public int MouseDy;
+    public int WeaponSelect;
+    public uint Fields;
+    public byte LeftHandDesired;
+    public byte Pad0;
+    public byte Pad1;
+    public byte Pad2;
+}
+
+[StructLayout(LayoutKind.Sequential, Pack = 4)]
+internal struct NativeReplayMovementExtra
+{
+    public uint Fields;
+    public float JumpPressedTime;
+    public float LastDuckTime;
+    public int LastActualJumpPressTick;
+    public float LastActualJumpPressFrac;
+    public int LastUsableJumpPressTick;
+    public float LastUsableJumpPressFrac;
+    public int LastLandedTick;
+    public float LastLandedFrac;
+    public float LastLandedVelocityX;
+    public float LastLandedVelocityY;
+    public float LastLandedVelocityZ;
 }

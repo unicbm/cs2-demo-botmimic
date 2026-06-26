@@ -119,6 +119,39 @@ internal static partial class BotControllerNative
             var subticks = replay.Subticks.Length == 0
                 ? [new NativeSubtickMove()]
                 : replay.Subticks;
+            if (replay.Version >= 7)
+            {
+                if (!IsCompatible)
+                {
+                    LastLoadError = $"v7 replay requires BotController ABI {ExpectedAbiVersion}; {RuntimeSummary}";
+                    return false;
+                }
+                if ((Capabilities & CapabilityExtendedReplay) == 0)
+                {
+                    LastLoadError = $"v7 replay requires extended replay capability; {RuntimeSummary}";
+                    return false;
+                }
+
+                var commandFrames = replay.CommandFrames.Length == 0
+                    ? [new NativeReplayCommandFrame()]
+                    : replay.CommandFrames;
+                var movementExtras = replay.MovementExtras.Length == 0
+                    ? [new NativeReplayMovementExtra()]
+                    : replay.MovementExtras;
+                var extendedOk = BotController_LoadReplayExtended(
+                    slot,
+                    replay.Ticks,
+                    replay.Ticks.Length,
+                    subticks,
+                    replay.Subticks.Length,
+                    commandFrames,
+                    replay.CommandFrames.Length,
+                    movementExtras,
+                    replay.MovementExtras.Length) == 0;
+                LastLoadError = extendedOk ? string.Empty : "BotController_LoadReplayExtended failed";
+                return extendedOk;
+            }
+
             var ok = BotController_LoadReplay(
                 slot,
                 replay.Ticks,

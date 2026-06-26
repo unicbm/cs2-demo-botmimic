@@ -357,7 +357,7 @@ dtr_stop_all
 - 目前主要面向 Windows x64 本地 CS2 环境。Linux 可以尝试从源码构建，
   但 converter/runtime 的 Linux 发布包目前不是维护目标。
 - 需要同一张地图，并且服务器里要有足够的 bot。
-- `.dtr` 是无损压缩的 BotController 兼容 replay 格式，并包含 demo 原始投掷物元数据、按玩家记录的高保真事件和库存快照；离线完整 usercmd 还会继续补。
+- `.dtr` 是无损压缩的 BotController 兼容 replay 格式，并包含 demo 原始投掷物元数据、按玩家记录的高保真事件、库存快照和 v7 command frame 输入证据。
 - 某些武器和默认手枪配置在 CS2 里比较麻烦，目前优先保证不崩服和基本行为正确。
 - 饰品/econ 导出和 runtime 对齐都是显式 opt-in；见
   [饰品对齐与 GSLT 风险](#饰品对齐与-gslt-风险)。
