@@ -95,6 +95,7 @@ struct GuiSettings {
     include_suspicious: bool,
     full_round: bool,
     freeze_preroll_seconds: f32,
+    sync_scoreboard: bool,
     export_cosmetics: bool,
     export_stickers: bool,
     advanced_open: bool,
@@ -112,6 +113,7 @@ impl Default for GuiSettings {
             include_suspicious: false,
             full_round: false,
             freeze_preroll_seconds: DEFAULT_FREEZE_PREROLL_SECONDS,
+            sync_scoreboard: false,
             export_cosmetics: false,
             export_stickers: false,
             advanced_open: false,
@@ -429,9 +431,9 @@ impl eframe::App for DemoTracerGui {
             let available = ui.available_size();
             let advanced_height = if self.settings.advanced_open {
                 if self.settings.export_cosmetics {
-                    154.0
+                    176.0
                 } else {
-                    96.0
+                    118.0
                 }
             } else {
                 32.0
@@ -913,8 +915,9 @@ impl DemoTracerGui {
                 let root_text = result.root.display().to_string();
                 let root_path = result.root.clone();
                 let first_round = self.first_selected_or_exported_round();
-                let round_command = result.console_round_command(first_round);
-                let seq_command = result.console_seq_command(first_round);
+                let sync_scoreboard = self.settings.sync_scoreboard;
+                let round_command = result.console_round_command(first_round, sync_scoreboard);
+                let seq_command = result.console_seq_command(first_round, sync_scoreboard);
                 let players = result.players.clone();
 
                 egui::Frame::new()
@@ -1118,6 +1121,12 @@ impl DemoTracerGui {
                                 .speed(0.5)
                                 .range(0.0..=120.0)
                                 .suffix("s"),
+                        )
+                        .changed();
+                    changed |= ui
+                        .checkbox(
+                            &mut self.settings.sync_scoreboard,
+                            tr(lang, "sync_scoreboard"),
                         )
                         .changed();
                     ui.separator();
@@ -1533,16 +1542,18 @@ impl ConversionResultView {
         }
     }
 
-    fn console_round_command(&self, first_round: Option<u32>) -> String {
+    fn console_round_command(&self, first_round: Option<u32>, sync_scoreboard: bool) -> String {
         let round = first_round.unwrap_or(0);
         let manifest = console_quote_path(&self.manifest_path);
-        format!("dtr_go round \"{manifest}\" {round}")
+        let scoreboard = if sync_scoreboard { "on" } else { "off" };
+        format!("dtr_set align scoreboard {scoreboard}; dtr_go round \"{manifest}\" {round}")
     }
 
-    fn console_seq_command(&self, first_round: Option<u32>) -> String {
+    fn console_seq_command(&self, first_round: Option<u32>, sync_scoreboard: bool) -> String {
         let round = first_round.unwrap_or(0);
         let manifest = console_quote_path(&self.manifest_path);
-        format!("dtr_go seq \"{manifest}\" {round}")
+        let scoreboard = if sync_scoreboard { "on" } else { "off" };
+        format!("dtr_set align scoreboard {scoreboard}; dtr_go seq \"{manifest}\" {round}")
     }
 }
 
@@ -1980,6 +1991,7 @@ fn tr(lang: UiLanguage, key: &str) -> &'static str {
             "side_both" => "双方",
             "full_round" => "完整回合",
             "freeze_preroll" => "freeze pre-roll",
+            "sync_scoreboard" => "同步比分",
             "export_cosmetics" => "导出饰品",
             "export_stickers" => "导出贴纸",
             "risk_confirmed" => "风险已确认",
@@ -2072,6 +2084,7 @@ fn tr(lang: UiLanguage, key: &str) -> &'static str {
             "side_both" => "Both",
             "full_round" => "Full round",
             "freeze_preroll" => "freeze pre-roll",
+            "sync_scoreboard" => "Sync scoreboard",
             "export_cosmetics" => "Export cosmetics",
             "export_stickers" => "Export stickers",
             "risk_confirmed" => "risk confirmed",
@@ -2586,6 +2599,7 @@ mod tests {
         assert_eq!(settings.theme, ThemeChoice::System);
         assert!(!settings.advanced_open);
         assert!(!settings.activity_open);
+        assert!(!settings.sync_scoreboard);
     }
 
     #[test]
@@ -2641,12 +2655,16 @@ mod tests {
         };
 
         assert_eq!(
-            result.console_round_command(Some(7)),
-            "dtr_go round \"out/demo/manifest.json\" 7"
+            result.console_round_command(Some(7), false),
+            "dtr_set align scoreboard off; dtr_go round \"out/demo/manifest.json\" 7"
         );
         assert_eq!(
-            result.console_seq_command(Some(7)),
-            "dtr_go seq \"out/demo/manifest.json\" 7"
+            result.console_seq_command(Some(7), false),
+            "dtr_set align scoreboard off; dtr_go seq \"out/demo/manifest.json\" 7"
+        );
+        assert_eq!(
+            result.console_seq_command(Some(7), true),
+            "dtr_set align scoreboard on; dtr_go seq \"out/demo/manifest.json\" 7"
         );
     }
 

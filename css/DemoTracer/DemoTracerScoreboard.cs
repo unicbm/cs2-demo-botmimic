@@ -69,6 +69,9 @@ public sealed partial class DemoTracerPlugin
 
     private void ApplyLoadedRoundScoreboard()
     {
+        if (!_scoreboardAlignEnabled)
+            return;
+
         var scoreboard = _loadedRoundScoreboard;
         if (scoreboard == null)
             return;
@@ -99,6 +102,9 @@ public sealed partial class DemoTracerPlugin
 
     private void ApplyReplayPlayerScoreboardForSlot(int slot, ReplayPlayerScoreboard scoreboard)
     {
+        if (!_scoreboardAlignEnabled)
+            return;
+
         if (!HasScoreboardEvidence(scoreboard))
         {
             _scoreboardSyncedSlots.Add(slot);
