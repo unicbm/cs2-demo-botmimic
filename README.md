@@ -39,11 +39,12 @@ First-person spectator view stays synchronized while bots replay converted CS2 d
 
 CS2 DemoTracer takes a `.dem` file, analyzes its rounds, and exports compressed `.dtr` route replay files for each player.
 
-The converter is a native Rust CLI. Normal conversion does not require Python,
+The converter is native Rust. Normal conversion does not require Python,
 Node.js, Conda, virtualenvs, or game-server plugins: download the packaged
-Windows x64 executable, point it at a demo, and validate the generated output.
-Batch conversion is designed for local CPU/disk throughput; actual speed depends
-on demo length, storage, and selected export scope.
+Windows x64 converter zip, use either the CLI or GUI executable, point it at a
+demo, and validate the generated output. Batch conversion is designed for local
+CPU/disk throughput; actual speed depends on demo length, storage, and selected
+export scope.
 
 In a local CS2 server, the runtime and CounterStrikeSharp plugin can then make bots replay the demo player's movement, view angles, jumping, crouching, firing, and basic weapon switching.
 
@@ -265,9 +266,10 @@ This layout is `92` bytes with `Pack=4`.
 - Rust only if building the converter from source.
 - A local CS2 server with Metamod and CounterStrikeSharp if you want in-game playback.
 
-The converter is a standalone Rust CLI executable. Python and Node.js are not
-required for normal conversion; the playback plugins are only needed when
-loading generated `.dtr` files in CS2.
+The converter release zip contains `cs2-demotracer.exe` for CLI workflows and
+`cs2-demotracer-gui.exe` for the native single-demo Windows GUI. Python and
+Node.js are not required for normal conversion; the playback plugins are only
+needed when loading generated `.dtr` files in CS2.
 
 If you only want to test plugin playback, download the pre-converted Mirage sample pack from the release assets: [`cs2-demotracer-sample-spirit-vs-falcons-m2-mirage-full.zip`](https://github.com/unicbm/cs2-demotracer/releases/download/v0.1.3/cs2-demotracer-sample-spirit-vs-falcons-m2-mirage-full.zip). Unzip it and run playback from the included `manifest.json`.
 
@@ -355,7 +357,13 @@ An interactive prompt is also available:
 cs2-demotracer.exe wizard
 ```
 
-An optional native Windows GUI is available when building from source:
+The packaged Windows converter zip also includes a native GUI:
+
+```powershell
+.\cs2-demotracer-gui.exe
+```
+
+When building from source:
 
 ```powershell
 cd converter

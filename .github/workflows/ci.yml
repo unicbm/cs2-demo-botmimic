@@ -30,6 +30,10 @@ jobs:
         working-directory: converter
         run: cargo check --workspace --locked
 
+      - name: Check converter GUI binary
+        working-directory: converter
+        run: cargo check --locked --features gui --bin cs2-demotracer-gui
+
       - name: Test converter
         working-directory: converter
         run: cargo test --locked

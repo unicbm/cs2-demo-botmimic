@@ -1,8 +1,11 @@
 param(
-    [string]$Version = "0.2.0",
+    [string]$Version = "0.2.1",
     [string]$Configuration = "Release",
     [string]$OutputRoot = "dist",
     [string]$RuntimePackage = "runtime\BotController\build\package",
+    [string]$RuntimeBuild = "runtime\BotController\build",
+    [string]$DotnetPath = "",
+    [switch]$BuildRuntime,
     [switch]$SkipCssBuild
 )
 
@@ -30,8 +33,49 @@ function Copy-RequiredFile([string]$Source, [string]$Destination) {
     Copy-Item -LiteralPath $Source -Destination $Destination -Force
 }
 
+function Invoke-Checked([string]$Command, [string[]]$Arguments) {
+    & $Command @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Command failed with exit code $LASTEXITCODE"
+    }
+}
+
+function Resolve-DotnetPath([string]$PreferredPath) {
+    if (-not [string]::IsNullOrWhiteSpace($PreferredPath)) {
+        return $PreferredPath
+    }
+
+    $candidates = @()
+    if ($env:DOTNET_ROOT) {
+        $candidates += (Join-Path $env:DOTNET_ROOT "dotnet.exe")
+    }
+    if ($env:DOTNET_ROOT_X64) {
+        $candidates += (Join-Path $env:DOTNET_ROOT_X64 "dotnet.exe")
+    }
+    $candidates += (Join-Path $env:USERPROFILE ".dotnet\dotnet.exe")
+    $candidates += "C:\Program Files\dotnet\dotnet.exe"
+    $candidates += "C:\Program Files (x86)\dotnet\dotnet.exe"
+
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) {
+            return $candidate
+        }
+    }
+
+    $command = Get-Command dotnet.exe -CommandType Application -ErrorAction SilentlyContinue
+    if ($command) {
+        return $command.Source
+    }
+    return "dotnet"
+}
+
+if ($BuildRuntime) {
+    Invoke-Checked "cmake" @("--build", (Join-Path $repoRoot $RuntimeBuild), "--config", $Configuration, "--target", "BotController")
+}
+
 if (-not $SkipCssBuild) {
-    dotnet build (Join-Path $repoRoot "css\DemoTracer\DemoTracer.csproj") -c $Configuration
+    $resolvedDotnetPath = Resolve-DotnetPath $DotnetPath
+    Invoke-Checked $resolvedDotnetPath @("build", (Join-Path $repoRoot "css\DemoTracer\DemoTracer.csproj"), "-c", $Configuration)
 }
 
 Require-Path (Join-Path $runtimeRoot "addons\BotController\bin\win64\BotController.dll") "BotController runtime DLL"
