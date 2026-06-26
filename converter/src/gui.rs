@@ -7,7 +7,9 @@ use crate::export::{
 use crate::model::{DemoAnalysis, ParsedDemo, RoundStatus, Side, SubtickMode};
 use crate::quality::{analyze_demo, AnalysisOptions};
 use crate::validate::validate_dtr_path;
-use eframe::egui::{self, Color32, FontId, RichText, ScrollArea, TextStyle};
+use eframe::egui::{
+    self, Color32, FontData, FontDefinitions, FontFamily, FontId, RichText, ScrollArea, TextStyle,
+};
 use egui_extras::{Column, TableBuilder};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -26,7 +28,46 @@ const DANGER: Color32 = Color32::from_rgb(255, 92, 92);
 const INFO: Color32 = Color32::from_rgb(92, 178, 255);
 const PANEL: Color32 = Color32::from_rgb(24, 30, 38);
 const PANEL_DEEP: Color32 = Color32::from_rgb(13, 18, 24);
-const MUTED: Color32 = Color32::from_rgb(158, 171, 188);
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum LanguageChoice {
+    System,
+    ZhCn,
+    En,
+}
+
+impl Default for LanguageChoice {
+    fn default() -> Self {
+        Self::System
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ThemeChoice {
+    System,
+    Dark,
+    Light,
+}
+
+impl Default for ThemeChoice {
+    fn default() -> Self {
+        Self::System
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UiLanguage {
+    ZhCn,
+    En,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ResolvedTheme {
+    Dark,
+    Light,
+}
 
 pub fn run_gui() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
@@ -47,12 +88,16 @@ pub fn run_gui() -> eframe::Result<()> {
 struct GuiSettings {
     demo_path: String,
     output_dir: String,
+    language: LanguageChoice,
+    theme: ThemeChoice,
     side: Side,
     include_suspicious: bool,
     full_round: bool,
     freeze_preroll_seconds: f32,
     export_cosmetics: bool,
     export_stickers: bool,
+    advanced_open: bool,
+    activity_open: bool,
 }
 
 impl Default for GuiSettings {
@@ -60,12 +105,16 @@ impl Default for GuiSettings {
         Self {
             demo_path: String::new(),
             output_dir: "output".to_string(),
+            language: LanguageChoice::System,
+            theme: ThemeChoice::System,
             side: Side::Both,
             include_suspicious: false,
             full_round: false,
             freeze_preroll_seconds: DEFAULT_FREEZE_PREROLL_SECONDS,
             export_cosmetics: false,
             export_stickers: false,
+            advanced_open: false,
+            activity_open: false,
         }
     }
 }
@@ -89,8 +138,9 @@ struct DemoTracerGui {
 
 impl DemoTracerGui {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        apply_visuals(&cc.egui_ctx);
         let settings = load_settings();
+        install_system_cjk_font(&cc.egui_ctx);
+        apply_visuals(&cc.egui_ctx, resolve_theme(settings.theme, &cc.egui_ctx));
         let mut progress = GuiProgress::default();
         progress.begin("Choose a demo to begin", Some(0.0));
         Self {
@@ -113,6 +163,14 @@ impl DemoTracerGui {
 
     fn is_running(&self) -> bool {
         self.running.is_some()
+    }
+
+    fn language(&self) -> UiLanguage {
+        resolve_language(self.settings.language)
+    }
+
+    fn theme(&self, ctx: &egui::Context) -> ResolvedTheme {
+        resolve_theme(self.settings.theme, ctx)
     }
 
     fn analyze(&mut self) {
@@ -357,6 +415,7 @@ impl DemoTracerGui {
 
 impl eframe::App for DemoTracerGui {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        apply_visuals(ctx, self.theme(ctx));
         self.handle_drops(ctx);
         self.receive_worker_messages(ctx);
         self.reconcile_round_selection();
@@ -364,46 +423,57 @@ impl eframe::App for DemoTracerGui {
         egui::TopBottomPanel::top("workspace-top")
             .resizable(false)
             .show(ctx, |ui| {
-                ui.add_space(4.0);
                 self.draw_header(ui);
-                ui.add_space(8.0);
                 self.draw_controls(ui);
-                ui.add_space(8.0);
                 self.draw_progress(ui);
-                ui.add_space(8.0);
-                self.draw_workflow(ui);
-                ui.add_space(6.0);
-            });
-
-        egui::TopBottomPanel::bottom("workspace-log")
-            .resizable(false)
-            .exact_height(176.0)
-            .show(ctx, |ui| {
-                ui.add_space(4.0);
-                self.draw_logs(ui);
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
             let available = ui.available_size();
+            let advanced_height = if self.settings.advanced_open {
+                if self.settings.export_cosmetics {
+                    154.0
+                } else {
+                    96.0
+                }
+            } else {
+                32.0
+            };
+            let footer_height = advanced_height
+                + if self.settings.activity_open {
+                    154.0
+                } else {
+                    32.0
+                }
+                + 12.0;
+            let main_height = (available.y - footer_height).max(240.0);
             let left_width = if available.x > 840.0 {
                 (available.x * 0.66).min(available.x - 300.0)
             } else {
                 available.x * 0.60
             };
 
-            ui.horizontal(|ui| {
-                ui.allocate_ui_with_layout(
-                    egui::vec2(left_width, available.y),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| self.draw_rounds(ui),
-                );
-                ui.separator();
-                ui.allocate_ui_with_layout(
-                    egui::vec2(ui.available_width(), available.y),
-                    egui::Layout::top_down(egui::Align::Min),
-                    |ui| self.draw_result(ui),
-                );
-            });
+            ui.allocate_ui_with_layout(
+                egui::vec2(available.x, main_height),
+                egui::Layout::left_to_right(egui::Align::Min),
+                |ui| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(left_width, main_height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| self.draw_rounds(ui),
+                    );
+                    ui.separator();
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), main_height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| self.draw_result(ui),
+                    );
+                },
+            );
+            ui.add_space(6.0);
+            self.draw_advanced(ui);
+            ui.add_space(4.0);
+            self.draw_logs(ui);
         });
 
         self.draw_overwrite_dialog(ctx);
@@ -413,119 +483,119 @@ impl eframe::App for DemoTracerGui {
 
 impl DemoTracerGui {
     fn draw_header(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.heading(
-                RichText::new("CS2 DemoTracer")
-                    .strong()
-                    .color(Color32::WHITE),
-            );
-            ui.label(RichText::new("single demo conversion workbench").color(MUTED));
-        });
-        ui.label(
-            RichText::new("Drop a .dem file here, inspect round quality, export selected rounds, then use the generated manifest in CS2.")
-                .color(Color32::from_rgb(190, 198, 210)),
-        );
+        let lang = self.language();
+        let mut changed = false;
+        egui::Frame::new()
+            .fill(top_bar_color(ui))
+            .inner_margin(egui::Margin::symmetric(12, 6))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("DT")
+                            .strong()
+                            .color(Color32::BLACK)
+                            .background_color(GOOD),
+                    );
+                    ui.label(
+                        RichText::new("CS2 DemoTracer")
+                            .strong()
+                            .color(ui.visuals().strong_text_color()),
+                    );
+                    ui.label(RichText::new("v1").color(ui.visuals().weak_text_color()));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        egui::ComboBox::from_id_salt("theme-choice")
+                            .selected_text(theme_choice_label(self.settings.theme, lang))
+                            .show_ui(ui, |ui| {
+                                changed |= ui
+                                    .selectable_value(
+                                        &mut self.settings.theme,
+                                        ThemeChoice::System,
+                                        tr(lang, "theme_system"),
+                                    )
+                                    .changed();
+                                changed |= ui
+                                    .selectable_value(
+                                        &mut self.settings.theme,
+                                        ThemeChoice::Dark,
+                                        tr(lang, "theme_dark"),
+                                    )
+                                    .changed();
+                                changed |= ui
+                                    .selectable_value(
+                                        &mut self.settings.theme,
+                                        ThemeChoice::Light,
+                                        tr(lang, "theme_light"),
+                                    )
+                                    .changed();
+                            });
+                        egui::ComboBox::from_id_salt("language-choice")
+                            .selected_text(language_choice_label(self.settings.language, lang))
+                            .show_ui(ui, |ui| {
+                                changed |= ui
+                                    .selectable_value(
+                                        &mut self.settings.language,
+                                        LanguageChoice::System,
+                                        tr(lang, "lang_system"),
+                                    )
+                                    .changed();
+                                changed |= ui
+                                    .selectable_value(
+                                        &mut self.settings.language,
+                                        LanguageChoice::ZhCn,
+                                        "简体中文",
+                                    )
+                                    .changed();
+                                changed |= ui
+                                    .selectable_value(
+                                        &mut self.settings.language,
+                                        LanguageChoice::En,
+                                        "English",
+                                    )
+                                    .changed();
+                            });
+                    });
+                });
+            });
+        if changed {
+            self.save_settings();
+        }
     }
 
     fn draw_controls(&mut self, ui: &mut egui::Ui) {
+        let lang = self.language();
         egui::Frame::new()
-            .fill(PANEL)
-            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(54, 66, 82)))
-            .corner_radius(6)
-            .inner_margin(egui::Margin::symmetric(12, 10))
+            .fill(panel_color(ui))
+            .stroke(egui::Stroke::new(1.0, border_color(ui)))
+            .inner_margin(egui::Margin::symmetric(12, 8))
             .show(ui, |ui| {
-            ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    ui.label("Demo");
+                let total = ui.available_width();
+                let demo_width = (total * 0.34).clamp(220.0, 420.0);
+                let output_width = (total * 0.24).clamp(160.0, 320.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(tr(lang, "demo")).strong());
                     ui.add_sized(
-                        [ui.available_width() - 108.0, 28.0],
+                        [demo_width, 30.0],
                         egui::TextEdit::singleline(&mut self.settings.demo_path),
                     );
-                    if ui.button("Browse").clicked() {
+                    if ui.button(tr(lang, "browse")).clicked() {
                         self.browse_demo();
                     }
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Output");
+                    ui.separator();
+                    ui.label(RichText::new(tr(lang, "output")).strong());
                     ui.add_sized(
-                        [ui.available_width() - 108.0, 28.0],
+                        [output_width, 30.0],
                         egui::TextEdit::singleline(&mut self.settings.output_dir),
                     );
-                    if ui.button("Folder").clicked() {
+                    if ui.button(tr(lang, "folder")).clicked() {
                         self.browse_output();
                     }
-                });
-                ui.horizontal(|ui| {
-                    egui::ComboBox::from_label("Side")
-                        .selected_text(self.settings.side.to_string())
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.settings.side, Side::Both, "both");
-                            ui.selectable_value(&mut self.settings.side, Side::T, "t");
-                            ui.selectable_value(&mut self.settings.side, Side::Ct, "ct");
-                        });
-                    ui.checkbox(&mut self.settings.full_round, "full round");
-                    let suspicious_changed = ui
-                        .checkbox(&mut self.settings.include_suspicious, "include suspicious")
-                        .changed();
-                    if suspicious_changed {
-                        self.reconcile_round_selection();
-                    }
-                    ui.label("freeze pre-roll");
-                    ui.add(
-                        egui::DragValue::new(&mut self.settings.freeze_preroll_seconds)
-                            .speed(0.5)
-                            .range(0.0..=120.0)
-                            .suffix("s"),
-                    );
-                });
-                ui.horizontal_wrapped(|ui| {
-                    ui.label("Optional metadata");
-                    let cosmetics_changed = ui
-                        .checkbox(&mut self.settings.export_cosmetics, "export cosmetics")
-                        .changed();
-                    if cosmetics_changed {
-                        self.cosmetic_acknowledged = false;
-                        self.cosmetic_confirmation.clear();
-                        if self.settings.export_cosmetics {
-                            self.show_cosmetic_disclaimer = true;
-                        } else {
-                            self.settings.export_stickers = false;
-                            self.show_cosmetic_disclaimer = false;
-                        }
-                    }
-                    ui.add_enabled_ui(self.settings.export_cosmetics, |ui| {
-                        let stickers_changed = ui
-                            .checkbox(&mut self.settings.export_stickers, "export stickers")
-                            .changed();
-                        if stickers_changed && self.settings.export_stickers {
-                            self.cosmetic_acknowledged = false;
-                            self.cosmetic_confirmation.clear();
-                            self.show_cosmetic_disclaimer = true;
-                        }
-                    });
-                    if !self.settings.export_cosmetics {
-                        self.settings.export_stickers = false;
-                    }
-                    if self.settings.export_cosmetics && self.cosmetic_acknowledged {
-                        ui.colored_label(Color32::from_rgb(80, 210, 146), "risk confirmed");
-                    } else if self.settings.export_cosmetics {
-                        ui.colored_label(WARN, "confirmation required");
-                    }
-                });
-                if self.settings.export_cosmetics {
-                    warning_strip(
-                        ui,
-                        "High-risk metadata option",
-                        "Cosmetic and sticker evidence will be written into manifest JSON only after explicit confirmation.",
-                    );
-                }
-                ui.horizontal(|ui| {
+                    ui.separator();
                     ui.add_enabled_ui(!self.is_running(), |ui| {
                         if ui
                             .add(
-                                egui::Button::new(RichText::new("Analyze demo").strong())
+                                egui::Button::new(RichText::new(tr(lang, "analyze")).strong())
                                     .fill(Color32::from_rgb(38, 86, 118))
-                                    .min_size(egui::vec2(132.0, 32.0)),
+                                    .min_size(egui::vec2(102.0, 32.0)),
                             )
                             .clicked()
                         {
@@ -533,24 +603,24 @@ impl DemoTracerGui {
                         }
                         if ui
                             .add(
-                                egui::Button::new(RichText::new("Convert selected").strong())
+                                egui::Button::new(RichText::new(tr(lang, "convert")).strong())
                                     .fill(Color32::from_rgb(28, 118, 82))
-                                    .min_size(egui::vec2(158.0, 32.0)),
+                                    .min_size(egui::vec2(108.0, 32.0)),
                             )
                             .clicked()
                         {
                             self.request_convert();
                         }
                     });
-                    if ui.button("Open result").clicked() {
+                    if ui.button(tr(lang, "open_result")).clicked() {
                         self.open_result_folder();
                     }
                 });
             });
-        });
     }
 
     fn draw_progress(&mut self, ui: &mut egui::Ui) {
+        let lang = self.language();
         let progress_color = if self.error.is_some() {
             DANGER
         } else if self.result.is_some() {
@@ -563,16 +633,14 @@ impl DemoTracerGui {
             WARN
         };
         egui::Frame::new()
-            .fill(PANEL_DEEP)
-            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(45, 56, 70)))
-            .corner_radius(6)
-            .inner_margin(egui::Margin::symmetric(10, 8))
+            .fill(panel_deep_color(ui))
+            .stroke(egui::Stroke::new(1.0, border_color(ui)))
+            .inner_margin(egui::Margin::symmetric(12, 6))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    ui.label(status_badge_text(self, lang).color(progress_color).strong());
                     ui.label(
-                        RichText::new(&self.progress.stage)
-                            .strong()
-                            .color(progress_color),
+                        RichText::new(&self.progress.stage).color(ui.visuals().weak_text_color()),
                     );
                     let progress = self.progress.fraction.unwrap_or(0.0);
                     let mut bar = egui::ProgressBar::new(progress)
@@ -591,74 +659,54 @@ impl DemoTracerGui {
             });
     }
 
-    fn draw_workflow(&mut self, ui: &mut egui::Ui) {
-        let demo_loaded = !self.settings.demo_path.trim().is_empty();
-        let parsed = self.analysis.is_some();
-        let selected = parsed && !self.selected_rounds().is_empty();
-        let complete = self.result.is_some();
-        let running_analyze = self.running == Some(RunningTask::Analyze);
-        let running_convert = self.running == Some(RunningTask::Convert);
-
-        ui.horizontal_wrapped(|ui| {
-            workflow_step(ui, "1", "Demo", demo_loaded, false, "source selected");
-            workflow_step(
-                ui,
-                "2",
-                "Parse",
-                parsed,
-                running_analyze,
-                self.analysis
-                    .as_ref()
-                    .map(|analysis| format!("{} rounds", analysis.rounds.len()))
-                    .unwrap_or_else(|| "analyze demo".to_string())
-                    .as_str(),
-            );
-            workflow_step(
-                ui,
-                "3",
-                "Select",
-                selected,
-                false,
-                &format!("{} rounds selected", self.selected_rounds().len()),
-            );
-            workflow_step(
-                ui,
-                "4",
-                "Convert",
-                complete,
-                running_convert,
-                self.result
-                    .as_ref()
-                    .map(|result| format!("{} .dtr ready", result.files_written))
-                    .unwrap_or_else(|| "waiting".to_string())
-                    .as_str(),
-            );
-        });
-    }
-
     fn draw_rounds(&mut self, ui: &mut egui::Ui) {
-        ui.heading(RichText::new("Rounds").color(Color32::WHITE));
+        let lang = self.language();
         let Some(analysis) = self.analysis.clone() else {
-            empty_panel(
-                ui,
-                "No analysis yet.",
-                "Choose a demo and run Analyze demo.",
-            );
+            ui.heading(RichText::new(tr(lang, "rounds")).color(ui.visuals().strong_text_color()));
+            empty_panel(ui, tr(lang, "no_demo"), tr(lang, "no_demo_hint"));
             return;
         };
+
+        ui.horizontal(|ui| {
+            ui.heading(RichText::new(tr(lang, "rounds")).color(ui.visuals().strong_text_color()));
+            ui.label(
+                RichText::new(format!(
+                    "{} / {}",
+                    self.selected_rounds().len(),
+                    analysis.rounds.len()
+                ))
+                .color(ui.visuals().weak_text_color()),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let changed = ui
+                    .checkbox(
+                        &mut self.settings.include_suspicious,
+                        tr(lang, "include_suspicious"),
+                    )
+                    .changed();
+                if changed {
+                    self.reconcile_round_selection();
+                    self.save_settings();
+                }
+            });
+        });
         egui::Frame::new()
-            .fill(PANEL)
-            .stroke(egui::Stroke::new(1.0, Color32::from_rgb(50, 62, 78)))
-            .corner_radius(6)
-            .inner_margin(egui::Margin::symmetric(10, 8))
+            .fill(panel_color(ui))
+            .stroke(egui::Stroke::new(1.0, border_color(ui)))
+            .inner_margin(egui::Margin::symmetric(8, 6))
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    metric_chip(ui, "map", &analysis.map, INFO);
-                    metric_chip(ui, "tick", &format!("{:.1}", analysis.tick_rate), INFO);
-                    metric_chip(ui, "rows", &analysis.row_count.to_string(), INFO);
+                    metric_chip(ui, tr(lang, "map"), &analysis.map, INFO);
                     metric_chip(
                         ui,
-                        "recommended",
+                        tr(lang, "tick"),
+                        &format!("{:.1}", analysis.tick_rate),
+                        INFO,
+                    );
+                    metric_chip(ui, tr(lang, "rows"), &analysis.row_count.to_string(), INFO);
+                    metric_chip(
+                        ui,
+                        tr(lang, "recommended"),
                         &analysis
                             .rounds
                             .iter()
@@ -669,7 +717,7 @@ impl DemoTracerGui {
                     );
                     metric_chip(
                         ui,
-                        "suspicious",
+                        tr(lang, "suspicious"),
                         &analysis
                             .rounds
                             .iter()
@@ -698,13 +746,13 @@ impl DemoTracerGui {
             .column(Column::remainder().at_least(220.0))
             .header(28.0, |mut header| {
                 header.col(|ui| table_header_text(ui, ""));
-                header.col(|ui| table_header_text(ui, "Round"));
-                header.col(|ui| table_header_text(ui, "Status"));
-                header.col(|ui| table_header_text(ui, "Time"));
+                header.col(|ui| table_header_text(ui, tr(lang, "round")));
+                header.col(|ui| table_header_text(ui, tr(lang, "status")));
+                header.col(|ui| table_header_text(ui, tr(lang, "time")));
                 header.col(|ui| table_header_text(ui, "T/CT"));
-                header.col(|ui| table_header_text(ui, "Rows"));
-                header.col(|ui| table_header_text(ui, "Files"));
-                header.col(|ui| table_header_text(ui, "Notes"));
+                header.col(|ui| table_header_text(ui, tr(lang, "rows")));
+                header.col(|ui| table_header_text(ui, tr(lang, "files")));
+                header.col(|ui| table_header_text(ui, tr(lang, "notes")));
             })
             .body(|mut body| {
                 for round in &analysis.rounds {
@@ -721,26 +769,35 @@ impl DemoTracerGui {
                             let checkbox_response =
                                 ui.add_enabled(allowed, egui::Checkbox::without_text(selected));
                             if !allowed {
-                                checkbox_response.on_disabled_hover_text(
-                                    "Enable include suspicious to select this round",
-                                );
+                                checkbox_response
+                                    .on_disabled_hover_text(tr(lang, "enable_suspicious_hint"));
                             }
                         });
                         row.col(|ui| {
-                            table_text(ui, format!("{:02}", round.round), Color32::WHITE, true)
+                            table_text(
+                                ui,
+                                format!("{:02}", round.round),
+                                ui.visuals().strong_text_color(),
+                                true,
+                            )
                         });
                         row.col(|ui| {
                             let status_color = match round.status {
                                 RoundStatus::Recommended => GOOD,
                                 RoundStatus::Suspicious => WARN,
                             };
-                            table_text(ui, format!("{:?}", round.status), status_color, true);
+                            table_text(
+                                ui,
+                                round_status_label(round.status, lang),
+                                status_color,
+                                true,
+                            );
                         });
                         row.col(|ui| {
                             table_text(
                                 ui,
                                 format!("{:.1}s", round.duration_seconds),
-                                Color32::WHITE,
+                                ui.visuals().strong_text_color(),
                                 false,
                             );
                         });
@@ -748,21 +805,33 @@ impl DemoTracerGui {
                             table_text(
                                 ui,
                                 format!("{}/{}", round.t_players, round.ct_players),
-                                Color32::WHITE,
+                                ui.visuals().strong_text_color(),
                                 false,
                             );
                         });
                         row.col(|ui| {
-                            table_text(ui, round.valid_rows.to_string(), Color32::WHITE, false)
+                            table_text(
+                                ui,
+                                round.valid_rows.to_string(),
+                                ui.visuals().strong_text_color(),
+                                false,
+                            )
                         });
-                        row.col(|ui| table_text(ui, files, Color32::WHITE, false));
+                        row.col(|ui| {
+                            table_text(ui, files, ui.visuals().strong_text_color(), false)
+                        });
                         row.col(|ui| {
                             let notes = if round.problems.is_empty() {
-                                "ok".to_string()
+                                String::new()
                             } else {
                                 round.problems.join("; ")
                             };
-                            ui.add(egui::Label::new(RichText::new(notes).color(MUTED)).wrap());
+                            ui.add(
+                                egui::Label::new(
+                                    RichText::new(notes).color(ui.visuals().weak_text_color()),
+                                )
+                                .wrap(),
+                            );
                         });
                     });
                 }
@@ -770,17 +839,14 @@ impl DemoTracerGui {
     }
 
     fn draw_result(&mut self, ui: &mut egui::Ui) {
-        ui.heading(RichText::new("Output").color(Color32::WHITE));
+        let lang = self.language();
+        ui.heading(RichText::new(tr(lang, "output")).color(ui.visuals().strong_text_color()));
         ScrollArea::vertical()
             .id_salt("result-scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 let Some(result) = self.result.as_ref() else {
-                    empty_panel(
-                        ui,
-                        "Waiting for conversion",
-                        "After conversion this panel shows output size, rounds, players, manifest, and CS2 commands.",
-                    );
+                    empty_panel(ui, tr(lang, "no_output"), tr(lang, "no_output_hint"));
                     return;
                 };
 
@@ -792,50 +858,63 @@ impl DemoTracerGui {
                 egui::Frame::new()
                     .fill(Color32::from_rgb(18, 58, 42))
                     .stroke(egui::Stroke::new(1.5, GOOD))
-                    .corner_radius(6)
                     .inner_margin(egui::Margin::symmetric(12, 10))
                     .show(ui, |ui| {
                         ui.label(
-                            RichText::new("Conversion complete")
+                            RichText::new(tr(lang, "conversion_complete"))
                                 .strong()
                                 .size(22.0)
                                 .color(Color32::WHITE),
                         );
-                        ui.label(
-                            RichText::new("Validated manifest and replay files are ready.")
-                                .color(Color32::from_rgb(196, 232, 214)),
-                        );
                     });
                 ui.add_space(10.0);
                 ui.horizontal_wrapped(|ui| {
-                    summary_tile(ui, "Output", &format_bytes(result.output_bytes), GOOD);
-                    summary_tile(ui, "Rounds", &result.rounds_exported.to_string(), INFO);
-                    summary_tile(ui, "Players", &players.len().to_string(), INFO);
-                    summary_tile(ui, ".dtr files", &result.files_written.to_string(), GOOD);
-                    summary_tile(ui, "Validated", &result.validated.to_string(), GOOD);
+                    summary_tile(
+                        ui,
+                        tr(lang, "size"),
+                        &format_bytes(result.output_bytes),
+                        GOOD,
+                    );
+                    summary_tile(
+                        ui,
+                        tr(lang, "rounds"),
+                        &result.rounds_exported.to_string(),
+                        INFO,
+                    );
+                    summary_tile(ui, tr(lang, "players"), &players.len().to_string(), INFO);
+                    summary_tile(ui, ".dtr", &result.files_written.to_string(), GOOD);
+                    summary_tile(
+                        ui,
+                        tr(lang, "validated"),
+                        &result.validated.to_string(),
+                        GOOD,
+                    );
                 });
                 if result.cosmetic_files > 0 {
                     ui.add_space(6.0);
                     warning_strip(
                         ui,
-                        "Cosmetic metadata exported",
-                        &format!(
-                            "{} replay files include cosmetics; {} include stickers.",
-                            result.cosmetic_files, result.sticker_files
-                        ),
+                        tr(lang, "cosmetics_exported"),
+                        &format!("{} / {}", result.cosmetic_files, result.sticker_files),
                     );
                 }
                 ui.add_space(10.0);
                 egui::Frame::new()
-                    .fill(PANEL)
-                    .stroke(egui::Stroke::new(1.0, Color32::from_rgb(50, 62, 78)))
-                    .corner_radius(6)
+                    .fill(panel_color(ui))
+                    .stroke(egui::Stroke::new(1.0, border_color(ui)))
                     .inner_margin(egui::Margin::symmetric(10, 8))
                     .show(ui, |ui| {
-                        ui.label(RichText::new("Players").strong().color(Color32::WHITE));
+                        ui.label(
+                            RichText::new(tr(lang, "players"))
+                                .strong()
+                                .color(ui.visuals().strong_text_color()),
+                        );
                         ui.add_space(4.0);
                         if players.is_empty() {
-                            ui.label(RichText::new("No player files were exported.").color(MUTED));
+                            ui.label(
+                                RichText::new(tr(lang, "no_players"))
+                                    .color(ui.visuals().weak_text_color()),
+                            );
                         } else {
                             for player in players.iter().take(12) {
                                 ui.horizontal(|ui| {
@@ -852,39 +931,39 @@ impl DemoTracerGui {
                                     ui.label(RichText::new(&player.name).strong());
                                     ui.label(
                                         RichText::new(format!(
-                                            "{} rounds / {} files / {}",
+                                            "{}r / {}f / {}",
                                             player.rounds, player.files, player.steam_id
                                         ))
-                                        .color(MUTED),
+                                        .color(ui.visuals().weak_text_color()),
                                     );
                                 });
                             }
                             if players.len() > 12 {
                                 ui.label(
                                     RichText::new(format!("+{} more players", players.len() - 12))
-                                        .color(MUTED),
+                                        .color(ui.visuals().weak_text_color()),
                                 );
                             }
                         }
                     });
                 ui.add_space(10.0);
-                path_block(ui, "Root", &root_text);
-                path_block(ui, "Manifest", &manifest_text);
+                path_block(ui, tr(lang, "root"), &root_text);
+                path_block(ui, tr(lang, "manifest"), &manifest_text);
                 ui.add_space(8.0);
                 let mut copy_command = false;
                 let mut copy_manifest = false;
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("CS2 console").strong());
-                    copy_command = ui.button("Copy command").clicked();
-                    copy_manifest = ui.button("Copy manifest").clicked();
+                    ui.label(RichText::new(tr(lang, "cs2_console")).strong());
+                    copy_command = ui.button(tr(lang, "copy_command")).clicked();
+                    copy_manifest = ui.button(tr(lang, "copy_manifest")).clicked();
                 });
                 if copy_command {
                     ui.ctx().copy_text(command.clone());
-                    self.push_log("copied CS2 console command".to_string());
+                    self.push_log(tr(lang, "copied_command").to_string());
                 }
                 if copy_manifest {
                     ui.ctx().copy_text(manifest_text.clone());
-                    self.push_log("copied manifest path".to_string());
+                    self.push_log(tr(lang, "copied_manifest").to_string());
                 }
                 let mut command_text = command;
                 ui.add(
@@ -896,44 +975,191 @@ impl DemoTracerGui {
             });
     }
 
-    fn draw_logs(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Log");
-        egui::Frame::group(ui.style()).show(ui, |ui| {
-            ScrollArea::vertical()
-                .stick_to_bottom(true)
-                .id_salt("log-scroll")
-                .auto_shrink([false, false])
-                .max_height(132.0)
-                .show(ui, |ui| {
-                    for line in &self.logs {
-                        ui.label(line);
+    fn draw_advanced(&mut self, ui: &mut egui::Ui) {
+        let lang = self.language();
+        let arrow = if self.settings.advanced_open {
+            "v"
+        } else {
+            ">"
+        };
+        if ui
+            .add_sized(
+                [ui.available_width(), 28.0],
+                egui::Button::new(format!("{arrow} {}", tr(lang, "advanced")))
+                    .fill(panel_color(ui)),
+            )
+            .clicked()
+        {
+            self.settings.advanced_open = !self.settings.advanced_open;
+            self.save_settings();
+        }
+
+        if !self.settings.advanced_open {
+            return;
+        }
+
+        let mut changed = false;
+        egui::Frame::new()
+            .fill(panel_color(ui))
+            .stroke(egui::Stroke::new(1.0, border_color(ui)))
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    egui::ComboBox::from_label(tr(lang, "side"))
+                        .selected_text(side_label(self.settings.side, lang))
+                        .show_ui(ui, |ui| {
+                            changed |= ui
+                                .selectable_value(
+                                    &mut self.settings.side,
+                                    Side::Both,
+                                    tr(lang, "side_both"),
+                                )
+                                .changed();
+                            changed |= ui
+                                .selectable_value(&mut self.settings.side, Side::T, "T")
+                                .changed();
+                            changed |= ui
+                                .selectable_value(&mut self.settings.side, Side::Ct, "CT")
+                                .changed();
+                        });
+                    changed |= ui
+                        .checkbox(&mut self.settings.full_round, tr(lang, "full_round"))
+                        .changed();
+                    ui.label(tr(lang, "freeze_preroll"));
+                    changed |= ui
+                        .add(
+                            egui::DragValue::new(&mut self.settings.freeze_preroll_seconds)
+                                .speed(0.5)
+                                .range(0.0..=120.0)
+                                .suffix("s"),
+                        )
+                        .changed();
+                    ui.separator();
+                    let cosmetics_changed = ui
+                        .checkbox(
+                            &mut self.settings.export_cosmetics,
+                            tr(lang, "export_cosmetics"),
+                        )
+                        .changed();
+                    if cosmetics_changed {
+                        changed = true;
+                        self.cosmetic_acknowledged = false;
+                        self.cosmetic_confirmation.clear();
+                        if self.settings.export_cosmetics {
+                            self.show_cosmetic_disclaimer = true;
+                        } else {
+                            self.settings.export_stickers = false;
+                            self.show_cosmetic_disclaimer = false;
+                        }
+                    }
+                    ui.add_enabled_ui(self.settings.export_cosmetics, |ui| {
+                        let stickers_changed = ui
+                            .checkbox(
+                                &mut self.settings.export_stickers,
+                                tr(lang, "export_stickers"),
+                            )
+                            .changed();
+                        if stickers_changed {
+                            changed = true;
+                        }
+                        if stickers_changed && self.settings.export_stickers {
+                            self.cosmetic_acknowledged = false;
+                            self.cosmetic_confirmation.clear();
+                            self.show_cosmetic_disclaimer = true;
+                        }
+                    });
+                    if !self.settings.export_cosmetics {
+                        self.settings.export_stickers = false;
+                    }
+                    if self.settings.export_cosmetics && self.cosmetic_acknowledged {
+                        ui.colored_label(GOOD, tr(lang, "risk_confirmed"));
+                    } else if self.settings.export_cosmetics {
+                        ui.colored_label(WARN, tr(lang, "confirmation_required"));
                     }
                 });
-        });
+                if self.settings.export_cosmetics {
+                    ui.add_space(4.0);
+                    warning_strip(
+                        ui,
+                        tr(lang, "high_risk_option"),
+                        tr(lang, "high_risk_option_body"),
+                    );
+                }
+            });
+        if changed {
+            self.save_settings();
+        }
+    }
+
+    fn draw_logs(&mut self, ui: &mut egui::Ui) {
+        let lang = self.language();
+        let arrow = if self.settings.activity_open {
+            "v"
+        } else {
+            ">"
+        };
+        let latest = self
+            .logs
+            .last()
+            .map(String::as_str)
+            .unwrap_or_else(|| tr(lang, "no_activity"));
+        if ui
+            .add_sized(
+                [ui.available_width(), 28.0],
+                egui::Button::new(format!("{arrow} {}  {}", tr(lang, "activity"), latest))
+                    .fill(panel_deep_color(ui)),
+            )
+            .clicked()
+        {
+            self.settings.activity_open = !self.settings.activity_open;
+            self.save_settings();
+        }
+
+        if !self.settings.activity_open {
+            return;
+        }
+
+        egui::Frame::new()
+            .fill(panel_deep_color(ui))
+            .stroke(egui::Stroke::new(1.0, border_color(ui)))
+            .inner_margin(egui::Margin::symmetric(8, 6))
+            .show(ui, |ui| {
+                ScrollArea::vertical()
+                    .stick_to_bottom(true)
+                    .id_salt("log-scroll")
+                    .auto_shrink([false, false])
+                    .max_height(118.0)
+                    .show(ui, |ui| {
+                        for line in &self.logs {
+                            ui.label(RichText::new(line).color(ui.visuals().weak_text_color()));
+                        }
+                    });
+            });
     }
 
     fn draw_overwrite_dialog(&mut self, ctx: &egui::Context) {
         if self.pending_overwrite.is_none() {
             return;
         };
+        let lang = self.language();
         let path = self
             .pending_overwrite
             .as_ref()
             .map(|pending| pending.overwrite_root.display().to_string())
             .unwrap_or_default();
-        egui::Window::new("Output already exists")
+        egui::Window::new(tr(lang, "output_exists"))
             .collapsible(false)
             .resizable(false)
             .show(ctx, |ui| {
-                ui.label("The target demo output directory already exists.");
+                ui.label(tr(lang, "output_exists_body"));
                 ui.label(path);
                 ui.horizontal(|ui| {
-                    if ui.button("Clear and convert").clicked() {
+                    if ui.button(tr(lang, "clear_and_convert")).clicked() {
                         if let Some(pending) = self.pending_overwrite.take() {
                             self.start_convert(pending, true);
                         }
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(tr(lang, "cancel")).clicked() {
                         self.pending_overwrite = None;
                     }
                 });
@@ -944,7 +1170,8 @@ impl DemoTracerGui {
         if !self.show_cosmetic_disclaimer {
             return;
         }
-        egui::Window::new("Cosmetic export confirmation")
+        let lang = self.language();
+        egui::Window::new(tr(lang, "cosmetic_confirmation"))
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .collapsible(false)
             .resizable(false)
@@ -957,16 +1184,13 @@ impl DemoTracerGui {
             )
             .show(ctx, |ui| {
                 ui.label(
-                    RichText::new("HIGH RISK: GSLT / cosmetic export")
+                    RichText::new(tr(lang, "high_risk_title"))
                         .strong()
                         .size(24.0)
                         .color(Color32::WHITE),
                 );
                 ui.label(
-                    RichText::new(
-                        "This writes demo-observed weapon, knife, glove, and optional sticker metadata into manifest JSON.",
-                    )
-                    .color(Color32::from_rgb(255, 220, 220)),
+                    RichText::new(tr(lang, "risk_intro")).color(Color32::from_rgb(255, 220, 220)),
                 );
                 ui.add_space(8.0);
                 egui::Frame::new()
@@ -975,13 +1199,13 @@ impl DemoTracerGui {
                     .corner_radius(6)
                     .inner_margin(egui::Margin::symmetric(12, 10))
                     .show(ui, |ui| {
-                        ui.label(RichText::new("Before enabling this, confirm:").strong());
-                        ui.label("- You have assessed Valve server guideline and GSLT risk.");
-                        ui.label("- Runtime cosmetic/sticker alignment stays default-off.");
-                        ui.label("- Do not expose simulated cosmetics to public or human-controlled bot usage unless you accept that risk.");
+                        ui.label(RichText::new(tr(lang, "before_enable")).strong());
+                        ui.label(tr(lang, "risk_bullet_guidelines"));
+                        ui.label(tr(lang, "risk_bullet_default_off"));
+                        ui.label(tr(lang, "risk_bullet_public"));
                     });
                 ui.add_space(10.0);
-                ui.label(RichText::new("Type exactly to unlock export:").strong());
+                ui.label(RichText::new(tr(lang, "type_to_unlock")).strong());
                 ui.label(
                     RichText::new(COSMETIC_CONFIRMATION_PHRASE)
                         .monospace()
@@ -994,30 +1218,34 @@ impl DemoTracerGui {
                 );
                 let confirmed = cosmetic_confirmation_matches(&self.cosmetic_confirmation);
                 if !confirmed {
-                    ui.colored_label(DANGER, "Export remains disabled until the phrase matches.");
+                    ui.colored_label(DANGER, tr(lang, "phrase_required"));
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui
                         .add_enabled(
                             confirmed,
-                            egui::Button::new(RichText::new("Enable risky export").strong())
-                                .fill(DANGER)
-                                .min_size(egui::vec2(172.0, 34.0)),
+                            egui::Button::new(
+                                RichText::new(tr(lang, "enable_risky_export")).strong(),
+                            )
+                            .fill(DANGER)
+                            .min_size(egui::vec2(172.0, 34.0)),
                         )
                         .clicked()
                     {
                         self.cosmetic_acknowledged = true;
                         self.show_cosmetic_disclaimer = false;
                         self.error = None;
-                        self.push_log("cosmetic export risk confirmed".to_string());
+                        self.save_settings();
+                        self.push_log(tr(lang, "risk_confirmed_log").to_string());
                     }
-                    if ui.button("Cancel").clicked() {
+                    if ui.button(tr(lang, "cancel")).clicked() {
                         self.settings.export_cosmetics = false;
                         self.settings.export_stickers = false;
                         self.cosmetic_acknowledged = false;
                         self.cosmetic_confirmation.clear();
                         self.show_cosmetic_disclaimer = false;
+                        self.save_settings();
                     }
                 });
             });
@@ -1273,15 +1501,131 @@ fn convert_worker(pending: PendingConversion, clear_existing: bool, tx: Sender<W
     }
 }
 
-fn apply_visuals(ctx: &egui::Context) {
-    let mut visuals = egui::Visuals::dark();
-    visuals.panel_fill = Color32::from_rgb(18, 22, 28);
-    visuals.window_fill = Color32::from_rgb(25, 31, 39);
-    visuals.extreme_bg_color = Color32::from_rgb(11, 14, 18);
-    visuals.faint_bg_color = Color32::from_rgb(31, 38, 48);
-    visuals.widgets.active.bg_fill = Color32::from_rgb(42, 94, 126);
-    visuals.widgets.hovered.bg_fill = Color32::from_rgb(57, 72, 88);
-    visuals.selection.bg_fill = Color32::from_rgb(47, 119, 152);
+fn install_system_cjk_font(ctx: &egui::Context) {
+    let Some(font_bytes) = load_system_cjk_font() else {
+        return;
+    };
+
+    let mut fonts = FontDefinitions::default();
+    let font_name = "cs2-demotracer-cjk".to_string();
+    fonts.font_data.insert(
+        font_name.clone(),
+        Arc::new(FontData::from_owned(font_bytes)),
+    );
+    for family in [FontFamily::Proportional, FontFamily::Monospace] {
+        if let Some(fallbacks) = fonts.families.get_mut(&family) {
+            if !fallbacks.iter().any(|name| name == &font_name) {
+                fallbacks.push(font_name.clone());
+            }
+        }
+    }
+    ctx.set_fonts(fonts);
+}
+
+fn load_system_cjk_font() -> Option<Vec<u8>> {
+    system_cjk_font_candidates()
+        .into_iter()
+        .find_map(|path| match fs::read(path) {
+            Ok(bytes) if !bytes.is_empty() => Some(bytes),
+            _ => None,
+        })
+}
+
+fn system_cjk_font_candidates() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    #[cfg(windows)]
+    {
+        if let Some(windir) = std::env::var_os("WINDIR") {
+            append_windows_cjk_font_candidates(
+                &mut candidates,
+                &PathBuf::from(windir).join("Fonts"),
+            );
+        }
+    }
+    candidates
+}
+
+fn append_windows_cjk_font_candidates(candidates: &mut Vec<PathBuf>, fonts_dir: &Path) {
+    for file_name in [
+        "msyh.ttc",
+        "msyhbd.ttc",
+        "msyhl.ttc",
+        "simsun.ttc",
+        "simsunb.ttf",
+    ] {
+        candidates.push(fonts_dir.join(file_name));
+    }
+}
+
+fn resolve_language(choice: LanguageChoice) -> UiLanguage {
+    match choice {
+        LanguageChoice::ZhCn => UiLanguage::ZhCn,
+        LanguageChoice::En => UiLanguage::En,
+        LanguageChoice::System => system_language(),
+    }
+}
+
+fn system_language() -> UiLanguage {
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GetUserDefaultUILanguage() -> u16;
+        }
+        let primary_language_id = unsafe { GetUserDefaultUILanguage() } & 0x03ff;
+        if primary_language_id == 0x04 {
+            return UiLanguage::ZhCn;
+        }
+        if primary_language_id == 0x09 {
+            return UiLanguage::En;
+        }
+    }
+
+    let locale = std::env::var("LANG")
+        .or_else(|_| std::env::var("LANGUAGE"))
+        .or_else(|_| std::env::var("LC_ALL"))
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    if locale.starts_with("zh") || locale.contains("zh_cn") || locale.contains("zh-hans") {
+        UiLanguage::ZhCn
+    } else {
+        UiLanguage::En
+    }
+}
+
+fn resolve_theme(choice: ThemeChoice, ctx: &egui::Context) -> ResolvedTheme {
+    match choice {
+        ThemeChoice::Dark => ResolvedTheme::Dark,
+        ThemeChoice::Light => ResolvedTheme::Light,
+        ThemeChoice::System => match ctx.system_theme() {
+            Some(egui::Theme::Light) => ResolvedTheme::Light,
+            _ => ResolvedTheme::Dark,
+        },
+    }
+}
+
+fn apply_visuals(ctx: &egui::Context, theme: ResolvedTheme) {
+    let mut visuals = match theme {
+        ResolvedTheme::Dark => egui::Visuals::dark(),
+        ResolvedTheme::Light => egui::Visuals::light(),
+    };
+    if theme == ResolvedTheme::Dark {
+        visuals.panel_fill = Color32::from_rgb(18, 19, 22);
+        visuals.window_fill = Color32::from_rgb(25, 26, 30);
+        visuals.extreme_bg_color = Color32::from_rgb(11, 12, 15);
+        visuals.faint_bg_color = Color32::from_rgb(31, 32, 37);
+        visuals.widgets.active.bg_fill = Color32::from_rgb(42, 94, 126);
+        visuals.widgets.hovered.bg_fill = Color32::from_rgb(58, 60, 68);
+        visuals.selection.bg_fill = Color32::from_rgb(47, 119, 152);
+    } else {
+        visuals.panel_fill = Color32::from_rgb(236, 238, 242);
+        visuals.window_fill = Color32::from_rgb(248, 249, 251);
+        visuals.extreme_bg_color = Color32::from_rgb(255, 255, 255);
+        visuals.faint_bg_color = Color32::from_rgb(229, 232, 238);
+        visuals.widgets.active.bg_fill = Color32::from_rgb(196, 218, 232);
+        visuals.widgets.hovered.bg_fill = Color32::from_rgb(225, 229, 236);
+        visuals.selection.bg_fill = Color32::from_rgb(140, 190, 218);
+    }
     ctx.set_visuals(visuals);
 
     let mut style = (*ctx.style()).clone();
@@ -1303,6 +1647,246 @@ fn apply_visuals(ctx: &egui::Context) {
     ctx.set_style(style);
 }
 
+fn top_bar_color(ui: &egui::Ui) -> Color32 {
+    if ui.visuals().dark_mode {
+        Color32::from_rgb(19, 20, 24)
+    } else {
+        Color32::from_rgb(244, 246, 249)
+    }
+}
+
+fn panel_color(ui: &egui::Ui) -> Color32 {
+    if ui.visuals().dark_mode {
+        PANEL
+    } else {
+        Color32::from_rgb(250, 251, 253)
+    }
+}
+
+fn panel_deep_color(ui: &egui::Ui) -> Color32 {
+    if ui.visuals().dark_mode {
+        PANEL_DEEP
+    } else {
+        Color32::from_rgb(233, 236, 242)
+    }
+}
+
+fn border_color(ui: &egui::Ui) -> Color32 {
+    if ui.visuals().dark_mode {
+        Color32::from_rgb(50, 56, 66)
+    } else {
+        Color32::from_rgb(207, 213, 224)
+    }
+}
+
+fn language_choice_label(choice: LanguageChoice, lang: UiLanguage) -> &'static str {
+    match choice {
+        LanguageChoice::System => tr(lang, "lang_system"),
+        LanguageChoice::ZhCn => "简体中文",
+        LanguageChoice::En => "English",
+    }
+}
+
+fn theme_choice_label(choice: ThemeChoice, lang: UiLanguage) -> &'static str {
+    match choice {
+        ThemeChoice::System => tr(lang, "theme_system"),
+        ThemeChoice::Dark => tr(lang, "theme_dark"),
+        ThemeChoice::Light => tr(lang, "theme_light"),
+    }
+}
+
+fn side_label(side: Side, lang: UiLanguage) -> &'static str {
+    match side {
+        Side::Both => tr(lang, "side_both"),
+        Side::T => "T",
+        Side::Ct => "CT",
+    }
+}
+
+fn round_status_label(status: RoundStatus, lang: UiLanguage) -> &'static str {
+    match status {
+        RoundStatus::Recommended => tr(lang, "recommended"),
+        RoundStatus::Suspicious => tr(lang, "suspicious"),
+    }
+}
+
+fn status_badge_text(app: &DemoTracerGui, lang: UiLanguage) -> RichText {
+    let label = if app.error.is_some() {
+        tr(lang, "status_error")
+    } else if app.result.is_some() {
+        tr(lang, "status_complete")
+    } else {
+        match app.running {
+            Some(RunningTask::Analyze) => tr(lang, "status_parsing"),
+            Some(RunningTask::Convert) => tr(lang, "status_converting"),
+            None if app.analysis.is_some() => tr(lang, "status_parsed"),
+            None => tr(lang, "status_idle"),
+        }
+    };
+    RichText::new(label)
+}
+
+fn tr(lang: UiLanguage, key: &str) -> &'static str {
+    match lang {
+        UiLanguage::ZhCn => match key {
+            "demo" => "DEMO",
+            "output" => "输出",
+            "browse" => "浏览",
+            "folder" => "目录",
+            "analyze" => "解析",
+            "convert" => "转换",
+            "open_result" => "打开结果",
+            "rounds" => "回合",
+            "round" => "回合",
+            "status" => "状态",
+            "time" => "时长",
+            "rows" => "Rows",
+            "files" => "文件",
+            "notes" => "异常",
+            "map" => "地图",
+            "tick" => "Tick",
+            "recommended" => "推荐",
+            "suspicious" => "可疑",
+            "include_suspicious" => "包含可疑回合",
+            "enable_suspicious_hint" => "先开启包含可疑回合",
+            "no_demo" => "未解析",
+            "no_demo_hint" => "选择 demo 后点击解析",
+            "no_output" => "未输出",
+            "no_output_hint" => "转换完成后显示结果",
+            "conversion_complete" => "转换完成",
+            "size" => "大小",
+            "players" => "选手",
+            "validated" => "验证",
+            "cosmetics_exported" => "已导出饰品元数据",
+            "no_players" => "没有导出选手文件",
+            "root" => "根目录",
+            "manifest" => "Manifest",
+            "cs2_console" => "CS2 控制台",
+            "copy_command" => "复制指令",
+            "copy_manifest" => "复制 manifest",
+            "copied_command" => "已复制 CS2 指令",
+            "copied_manifest" => "已复制 manifest 路径",
+            "advanced" => "高级选项",
+            "activity" => "Activity",
+            "no_activity" => "无事件",
+            "side" => "阵营",
+            "side_both" => "双方",
+            "full_round" => "完整回合",
+            "freeze_preroll" => "freeze pre-roll",
+            "export_cosmetics" => "导出饰品",
+            "export_stickers" => "导出贴纸",
+            "risk_confirmed" => "风险已确认",
+            "confirmation_required" => "需要确认",
+            "high_risk_option" => "高风险选项",
+            "high_risk_option_body" => "只写入 demo 证据；后续 runtime 启用饰品/贴纸对齐前需自行评估 GSLT 风险。",
+            "output_exists" => "输出已存在",
+            "output_exists_body" => "目标 demo 输出目录已存在。",
+            "clear_and_convert" => "清理并转换",
+            "cancel" => "取消",
+            "cosmetic_confirmation" => "饰品导出确认",
+            "high_risk_title" => "高风险：GSLT / 饰品导出",
+            "risk_intro" => "这只会把 demo 里的武器、刀、手套、贴纸证据写入 manifest；风险来自后续 runtime 使用这些证据做饰品/贴纸对齐。",
+            "before_enable" => "启用前确认：",
+            "risk_bullet_guidelines" => "- 你已评估 Valve 服务器规则和 GSLT 风险。",
+            "risk_bullet_default_off" => "- runtime 饰品/贴纸对齐仍保持默认关闭。",
+            "risk_bullet_public" => "- 不要在公网或真人可控制/可观察 bot 的环境暴露模拟饰品，除非你接受该风险。",
+            "type_to_unlock" => "输入固定短语解锁：",
+            "phrase_required" => "短语不匹配时不会启用导出。",
+            "enable_risky_export" => "启用高风险导出",
+            "risk_confirmed_log" => "饰品导出风险已确认",
+            "lang_system" => "系统语言",
+            "theme_system" => "系统主题",
+            "theme_dark" => "深色",
+            "theme_light" => "浅色",
+            "status_idle" => "Idle",
+            "status_parsing" => "Parsing",
+            "status_parsed" => "Parsed",
+            "status_converting" => "Converting",
+            "status_complete" => "Complete",
+            "status_error" => "Error",
+            _ => "",
+        },
+        UiLanguage::En => match key {
+            "demo" => "DEMO",
+            "output" => "Output",
+            "browse" => "Browse",
+            "folder" => "Folder",
+            "analyze" => "Analyze",
+            "convert" => "Convert",
+            "open_result" => "Open",
+            "rounds" => "Rounds",
+            "round" => "Round",
+            "status" => "Status",
+            "time" => "Time",
+            "rows" => "Rows",
+            "files" => "Files",
+            "notes" => "Notes",
+            "map" => "Map",
+            "tick" => "Tick",
+            "recommended" => "Recommended",
+            "suspicious" => "Suspicious",
+            "include_suspicious" => "Include suspicious",
+            "enable_suspicious_hint" => "Enable include suspicious first",
+            "no_demo" => "No demo",
+            "no_demo_hint" => "Choose a demo and analyze",
+            "no_output" => "No output",
+            "no_output_hint" => "Results appear after conversion",
+            "conversion_complete" => "Conversion complete",
+            "size" => "Size",
+            "players" => "Players",
+            "validated" => "Validated",
+            "cosmetics_exported" => "Cosmetic metadata exported",
+            "no_players" => "No player files exported",
+            "root" => "Root",
+            "manifest" => "Manifest",
+            "cs2_console" => "CS2 console",
+            "copy_command" => "Copy command",
+            "copy_manifest" => "Copy manifest",
+            "copied_command" => "Copied CS2 command",
+            "copied_manifest" => "Copied manifest path",
+            "advanced" => "Advanced Options",
+            "activity" => "Activity",
+            "no_activity" => "No activity",
+            "side" => "Side",
+            "side_both" => "Both",
+            "full_round" => "Full round",
+            "freeze_preroll" => "freeze pre-roll",
+            "export_cosmetics" => "Export cosmetics",
+            "export_stickers" => "Export stickers",
+            "risk_confirmed" => "risk confirmed",
+            "confirmation_required" => "confirmation required",
+            "high_risk_option" => "High-risk option",
+            "high_risk_option_body" => "Writes demo evidence only; assess GSLT risk before enabling runtime cosmetic/sticker alignment.",
+            "output_exists" => "Output already exists",
+            "output_exists_body" => "The target demo output directory already exists.",
+            "clear_and_convert" => "Clear and convert",
+            "cancel" => "Cancel",
+            "cosmetic_confirmation" => "Cosmetic export confirmation",
+            "high_risk_title" => "HIGH RISK: GSLT / cosmetic export",
+            "risk_intro" => "This only writes demo-observed weapon, knife, glove, and sticker evidence into the manifest; risk comes from later runtime cosmetic/sticker alignment.",
+            "before_enable" => "Before enabling this, confirm:",
+            "risk_bullet_guidelines" => "- You have assessed Valve server guideline and GSLT risk.",
+            "risk_bullet_default_off" => "- Runtime cosmetic/sticker alignment stays default-off.",
+            "risk_bullet_public" => "- Do not expose simulated cosmetics to public or human-controlled bot usage unless you accept that risk.",
+            "type_to_unlock" => "Type exactly to unlock export:",
+            "phrase_required" => "Export remains disabled until the phrase matches.",
+            "enable_risky_export" => "Enable risky export",
+            "risk_confirmed_log" => "Cosmetic export risk confirmed",
+            "lang_system" => "System language",
+            "theme_system" => "System theme",
+            "theme_dark" => "Dark",
+            "theme_light" => "Light",
+            "status_idle" => "Idle",
+            "status_parsing" => "Parsing",
+            "status_parsed" => "Parsed",
+            "status_converting" => "Converting",
+            "status_complete" => "Complete",
+            "status_error" => "Error",
+            _ => "",
+        },
+    }
+}
+
 fn default_round_selection(analysis: &DemoAnalysis) -> BTreeMap<u32, bool> {
     analysis
         .rounds
@@ -1319,59 +1903,14 @@ fn cosmetic_export_ready(settings: &GuiSettings, acknowledged: bool) -> bool {
     !settings.export_cosmetics || acknowledged
 }
 
-fn workflow_step(
-    ui: &mut egui::Ui,
-    index: &str,
-    title: &str,
-    done: bool,
-    running: bool,
-    detail: &str,
-) {
-    let (fill, stroke, accent) = if done {
-        (
-            Color32::from_rgb(16, 54, 39),
-            egui::Stroke::new(1.5, GOOD),
-            GOOD,
-        )
-    } else if running {
-        (
-            Color32::from_rgb(18, 46, 66),
-            egui::Stroke::new(1.5, INFO),
-            INFO,
-        )
-    } else {
-        (
-            PANEL,
-            egui::Stroke::new(1.0, Color32::from_rgb(48, 59, 74)),
-            MUTED,
-        )
-    };
-    egui::Frame::new()
-        .fill(fill)
-        .stroke(stroke)
-        .corner_radius(6)
-        .inner_margin(egui::Margin::symmetric(10, 8))
-        .show(ui, |ui| {
-            ui.set_min_width(170.0);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new(index).strong().size(20.0).color(accent));
-                ui.vertical(|ui| {
-                    ui.label(RichText::new(title).strong().color(Color32::WHITE));
-                    ui.label(RichText::new(detail).size(13.0).color(MUTED));
-                });
-            });
-        });
-}
-
 fn metric_chip(ui: &mut egui::Ui, label: &str, value: &str, accent: Color32) {
     egui::Frame::new()
-        .fill(PANEL_DEEP)
-        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(48, 59, 74)))
-        .corner_radius(5)
+        .fill(panel_deep_color(ui))
+        .stroke(egui::Stroke::new(1.0, border_color(ui)))
         .inner_margin(egui::Margin::symmetric(8, 5))
         .show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(RichText::new(label).color(MUTED));
+                ui.label(RichText::new(label).color(ui.visuals().weak_text_color()));
                 ui.label(RichText::new(value).strong().color(accent));
             });
         });
@@ -1379,13 +1918,16 @@ fn metric_chip(ui: &mut egui::Ui, label: &str, value: &str, accent: Color32) {
 
 fn summary_tile(ui: &mut egui::Ui, label: &str, value: &str, accent: Color32) {
     egui::Frame::new()
-        .fill(PANEL)
-        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(50, 62, 78)))
-        .corner_radius(6)
+        .fill(panel_color(ui))
+        .stroke(egui::Stroke::new(1.0, border_color(ui)))
         .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
             ui.set_min_width(104.0);
-            ui.label(RichText::new(label).size(13.0).color(MUTED));
+            ui.label(
+                RichText::new(label)
+                    .size(13.0)
+                    .color(ui.visuals().weak_text_color()),
+            );
             ui.label(RichText::new(value).strong().size(20.0).color(accent));
         });
 }
@@ -1408,18 +1950,25 @@ fn warning_strip(ui: &mut egui::Ui, title: &str, body: &str) {
 
 fn empty_panel(ui: &mut egui::Ui, title: &str, body: &str) {
     egui::Frame::new()
-        .fill(PANEL)
-        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(44, 55, 69)))
-        .corner_radius(6)
+        .fill(panel_color(ui))
+        .stroke(egui::Stroke::new(1.0, border_color(ui)))
         .inner_margin(egui::Margin::symmetric(12, 10))
         .show(ui, |ui| {
-            ui.label(RichText::new(title).strong().color(Color32::WHITE));
-            ui.label(RichText::new(body).color(MUTED));
+            ui.label(
+                RichText::new(title)
+                    .strong()
+                    .color(ui.visuals().strong_text_color()),
+            );
+            ui.label(RichText::new(body).color(ui.visuals().weak_text_color()));
         });
 }
 
 fn path_block(ui: &mut egui::Ui, label: &str, value: &str) {
-    ui.label(RichText::new(label).strong().color(Color32::WHITE));
+    ui.label(
+        RichText::new(label)
+            .strong()
+            .color(ui.visuals().strong_text_color()),
+    );
     let mut text = value.to_string();
     ui.add(
         egui::TextEdit::singleline(&mut text)
@@ -1430,7 +1979,11 @@ fn path_block(ui: &mut egui::Ui, label: &str, value: &str) {
 }
 
 fn table_header_text(ui: &mut egui::Ui, text: &str) {
-    ui.label(RichText::new(text).strong().color(MUTED));
+    ui.label(
+        RichText::new(text)
+            .strong()
+            .color(ui.visuals().weak_text_color()),
+    );
 }
 
 fn table_text(ui: &mut egui::Ui, text: impl Into<String>, color: Color32, strong: bool) {
@@ -1717,6 +2270,46 @@ mod tests {
         settings.export_cosmetics = true;
         assert!(!cosmetic_export_ready(&settings, false));
         assert!(cosmetic_export_ready(&settings, true));
+    }
+
+    #[test]
+    fn gui_defaults_keep_system_language_and_theme() {
+        let settings = GuiSettings::default();
+
+        assert_eq!(settings.language, LanguageChoice::System);
+        assert_eq!(settings.theme, ThemeChoice::System);
+        assert!(!settings.advanced_open);
+        assert!(!settings.activity_open);
+    }
+
+    #[test]
+    fn ui_message_table_covers_initial_languages() {
+        assert_eq!(resolve_language(LanguageChoice::ZhCn), UiLanguage::ZhCn);
+        assert_eq!(resolve_language(LanguageChoice::En), UiLanguage::En);
+        assert_eq!(tr(UiLanguage::ZhCn, "convert"), "转换");
+        assert_eq!(tr(UiLanguage::En, "convert"), "Convert");
+        assert_eq!(
+            theme_choice_label(ThemeChoice::System, UiLanguage::En),
+            "System theme"
+        );
+    }
+
+    #[test]
+    fn windows_cjk_font_candidates_prefer_ui_fonts() {
+        let mut candidates = Vec::new();
+        append_windows_cjk_font_candidates(&mut candidates, Path::new("Fonts"));
+        let file_names: Vec<_> = candidates
+            .iter()
+            .map(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default()
+            })
+            .collect();
+
+        assert_eq!(file_names[0], "msyh.ttc");
+        assert_eq!(file_names[1], "msyhbd.ttc");
+        assert!(file_names.contains(&"simsun.ttc"));
     }
 
     #[test]

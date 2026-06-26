@@ -166,10 +166,11 @@ cd converter
 cargo run --release --features gui --bin cs2-demotracer-gui
 ```
 
-GUI v1 只覆盖单 demo 流程：选择或拖入 `.dem`、选择输出目录、查看回合质量、
-勾选回合、转换、验证，并复制生成的 CS2 console 指令。饰品/sticker 导出在
-GUI 中仍默认关闭，必须完成同样的显式风险确认后才能启用。批量回合池和
-Demo2Nade 在 v1 仍只通过 CLI 提供。
+GUI 是纯 Rust `egui` 工作台，v1 只覆盖单 demo 流程：选择或拖入 `.dem`、
+选择输出目录、查看回合质量、勾选回合、转换、验证，并复制生成的 CS2 console
+指令。界面支持英文/简体中文和 system/light/dark 主题。饰品/sticker 导出在
+GUI 中仍默认关闭，必须完成显式风险确认后才能启用。批量回合池和 Demo2Nade
+在 v1 仍只通过 CLI 提供。
 
 ## 批量生成地图回合池
 
