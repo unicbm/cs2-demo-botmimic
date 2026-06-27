@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.3.0",
+    [string]$Version = "0.3.1",
     [string]$OutputRoot = "dist",
     [switch]$SkipBuild
 )
@@ -56,6 +56,9 @@ Copy-RequiredFile (Join-Path $repoRoot "docs\README.zh-Hans.md") (Join-Path $sta
 Copy-RequiredFile (Join-Path $repoRoot "docs\USAGE.md") (Join-Path $stageRoot "docs\USAGE.md")
 Copy-RequiredFile (Join-Path $repoRoot "docs\USAGE.zh-Hans.md") (Join-Path $stageRoot "docs\USAGE.zh-Hans.md")
 Copy-RequiredFile (Join-Path $repoRoot "LICENSE") (Join-Path $stageRoot "LICENSE")
+Copy-RequiredFile (Join-Path $repoRoot "LICENSE-AGPL-3.0") (Join-Path $stageRoot "LICENSE-AGPL-3.0")
+Copy-RequiredFile (Join-Path $repoRoot "LICENSE-GPL-3.0") (Join-Path $stageRoot "LICENSE-GPL-3.0")
+Copy-RequiredFile (Join-Path $repoRoot "LICENSE-APACHE-2.0") (Join-Path $stageRoot "LICENSE-APACHE-2.0")
 
 $gitCommit = "unknown"
 try {

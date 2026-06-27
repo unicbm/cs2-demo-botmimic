@@ -6,7 +6,8 @@ repository-wide license grant should be inferred from a single component.
 
 Path-level licenses:
 
-- `converter/`: Apache License 2.0. See `LICENSE-APACHE-2.0`.
+- `converter/`: AGPL-3.0-only beginning with v0.3.1. See
+  `LICENSE-AGPL-3.0`.
 - `runtime/BotController/`: GPL-3.0-only. See `LICENSE-GPL-3.0` for the
   standard license text and `runtime/BotController/LICENSE` for the component
   copy.
@@ -19,9 +20,16 @@ Path-level licenses:
 - Documentation and examples follow the license of the component they describe
   unless a file states otherwise.
 
-The root `LICENSE-APACHE-2.0` and `LICENSE-GPL-3.0` files are kept as standard
-license texts so GitHub and license scanners can identify the repository's
-top-level license set. This `LICENSE` file remains the path-level map.
+DemoTracer is source-available under strong copyleft terms for community and
+research use. Commercial use is allowed under AGPL/GPL, but closed-source
+redistribution, hosted conversion services, and proprietary integrations
+require either full license compliance or a separate commercial license.
 
+The root `LICENSE-AGPL-3.0`, `LICENSE-GPL-3.0`, and `LICENSE-APACHE-2.0` files
+are kept as standard license texts so GitHub and license scanners can identify
+the repository's top-level license set. This `LICENSE` file remains the
+path-level map.
+
+Converter versions before v0.3.1 remain available under Apache-2.0.
 Previously published GPL-3.0-only releases remain available under their
 published terms. Later versions may use the path-level licenses above.

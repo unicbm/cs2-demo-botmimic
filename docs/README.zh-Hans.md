@@ -434,11 +434,16 @@ runtime/plugin 栈。
 
 CS2 DemoTracer 现在采用按路径划分的 mixed-license：
 
-- `converter/`：Apache-2.0。
+- `converter/`：自 v0.3.1 起为 AGPL-3.0-only。
 - `runtime/BotController/`：GPL-3.0-only。
 - `css/DemoTracer/` 和 `css/DemoTracerApi/`：暂时保持 GPL-3.0-only，等待
   BotController ABI/API 例外明确后再决定是否调整。
 - `third_party/`：vendored 组件保留各自上游 license 文件。
 
-完整路径级许可矩阵见根目录 `LICENSE`。根目录的 `LICENSE-APACHE-2.0` 和
-`LICENSE-GPL-3.0` 是给 GitHub 和 license scanner 识别用的标准 license 正文。
+DemoTracer 以强 copyleft 条款 source-available，面向社区和研究用途。
+商业使用可以遵循 AGPL/GPL；闭源再分发、托管转换服务、专有集成则必须
+完整遵守对应 license，或取得单独商业授权。
+
+完整路径级许可矩阵见根目录 `LICENSE`。根目录的 `LICENSE-AGPL-3.0`、
+`LICENSE-GPL-3.0` 和 `LICENSE-APACHE-2.0` 是给 GitHub 和 license scanner
+识别用的标准 license 正文。v0.3.1 之前的 converter 版本仍按 Apache-2.0。
