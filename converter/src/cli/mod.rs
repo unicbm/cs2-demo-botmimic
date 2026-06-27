@@ -3,13 +3,11 @@ use cs2_demotracer::api::{
     build_nade_library_with_progress, export_nade_clips_from_demo_path, NadeClipExportRequest,
     NadeContextOptions, NadeDedupeOptions, NadeLibraryExportRequest,
 };
-use cs2_demotracer::demo_reader::{
-    probe_stattrak, read_demo, StattrakProbeObservation, StattrakProbeReport,
-};
+use cs2_demotracer::demo_reader::read_demo;
 use cs2_demotracer::export::{
     export_demo, parse_round_list, ConvertOptions, DEFAULT_FREEZE_PREROLL_SECONDS,
 };
-use cs2_demotracer::model::{ParsedDemo, Side, SubtickMode};
+use cs2_demotracer::model::{Side, SubtickMode};
 use cs2_demotracer::nade_export::{
     DEFAULT_OPENING_SECONDS, DEFAULT_POST_ROLL_SECONDS, DEFAULT_PRE_ROLL_SECONDS,
 };
@@ -93,22 +91,6 @@ enum Command {
         round: u32,
         #[arg(long, default_value_t = 240.0)]
         max_round_seconds: f32,
-    },
-    /// Probe active-weapon StatTrak evidence visible in a demo.
-    #[command(hide = true)]
-    ProbeStattrak {
-        #[arg(long)]
-        demo: PathBuf,
-        #[arg(long)]
-        all: bool,
-    },
-    /// Probe end-of-match econ item metadata visible in a demo.
-    #[command(hide = true)]
-    ProbeEconItems {
-        #[arg(long)]
-        demo: PathBuf,
-        #[arg(long)]
-        gloves_only: bool,
     },
     /// Convert one demo into compressed .dtr files and a manifest.
     Convert {
@@ -293,14 +275,6 @@ pub(crate) fn run() -> cs2_demotracer::Result<()> {
                 }
             );
             print_round_players(&parsed, summary.start_tick, summary.end_tick, round);
-        }
-        Command::ProbeStattrak { demo, all } => {
-            let report = probe_stattrak(&demo)?;
-            print_stattrak_probe(&report, all);
-        }
-        Command::ProbeEconItems { demo, gloves_only } => {
-            let parsed = read_demo(&demo)?;
-            print_econ_item_probe(&parsed, gloves_only);
         }
         Command::Convert {
             demo,
@@ -702,172 +676,6 @@ fn print_analysis_summary(analysis: &cs2_demotracer::model::DemoAnalysis) {
 
 fn dialog_error(err: impl Display) -> cs2_demotracer::Error {
     cs2_demotracer::Error::InvalidDemo(format!("interactive prompt failed: {err}"))
-}
-
-fn print_econ_item_probe(parsed: &ParsedDemo, gloves_only: bool) {
-    let mut rows = parsed
-        .econ_items
-        .iter()
-        .filter(|item| {
-            !gloves_only
-                || item
-                    .item_def_index
-                    .and_then(|def| i32::try_from(def).ok())
-                    .is_some_and(is_diagnostic_glove_item_def)
-        })
-        .collect::<Vec<_>>();
-    rows.sort_by_key(|item| {
-        (
-            item.steam_id.unwrap_or_default(),
-            item.item_def_index.unwrap_or_default(),
-            item.paint_kit.unwrap_or_default(),
-        )
-    });
-
-    println!(
-        "demo={} map={} econ_items={} shown={} gloves_only={}",
-        parsed.path,
-        parsed.map,
-        parsed.econ_items.len(),
-        rows.len(),
-        gloves_only
-    );
-    println!("steamid item_def paint seed wear_raw wear item skin");
-    for item in rows {
-        println!(
-            "{} {} {} {} {} {} {} {}",
-            format_optional(item.steam_id),
-            format_optional(item.item_def_index),
-            format_optional(item.paint_kit),
-            format_optional(item.paint_seed),
-            format_optional(item.paint_wear_raw),
-            format_optional_float(item.paint_wear),
-            item.item_name.as_deref().unwrap_or("-"),
-            item.skin_name.as_deref().unwrap_or("-")
-        );
-    }
-}
-
-fn format_optional<T: Display>(value: Option<T>) -> String {
-    value
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "-".to_string())
-}
-
-fn format_optional_float(value: Option<f32>) -> String {
-    value
-        .map(|value| format!("{value:.8}"))
-        .unwrap_or_else(|| "-".to_string())
-}
-
-fn print_stattrak_probe(report: &StattrakProbeReport, all: bool) {
-    let stattrak_item_count = report
-        .observations
-        .iter()
-        .filter(|observation| is_stattrak_candidate(observation))
-        .count();
-    let stattrak_counter_count = report
-        .observations
-        .iter()
-        .filter(|observation| has_stattrak_counter(observation))
-        .count();
-    println!(
-        "demo={} map={} rows={} observations={} stattrak_items={} stattrak_counters={} listed_matching_props={}",
-        report.demo_path,
-        report.map,
-        report.rows_seen,
-        report.observations.len(),
-        stattrak_item_count,
-        stattrak_counter_count,
-        if report.listed_matching_props.is_empty() {
-            "none".to_string()
-        } else {
-            report.listed_matching_props.join(",")
-        }
-    );
-
-    let rows = report
-        .observations
-        .iter()
-        .filter(|observation| all || is_stattrak_candidate(observation))
-        .collect::<Vec<_>>();
-    if rows.is_empty() {
-        println!(
-            "no active-weapon StatTrak item candidates found; rerun with --all to print non-candidate econ observations"
-        );
-        return;
-    }
-
-    println!(
-        "candidate round team steamid weapon paint_kit quality stattrak_values attrs first_tick last_tick samples name"
-    );
-    for observation in rows {
-        let team = match observation.team_num {
-            2 => "T",
-            3 => "CT",
-            _ => "UNK",
-        };
-        println!(
-            "{:<9} {:>5} {:>4} {} {:>6} {:>9} {:>7} {:>15} {:>28} {:>10} {:>9} {:>7} {}",
-            if is_stattrak_candidate(observation) {
-                "yes"
-            } else {
-                "no"
-            },
-            observation.round,
-            team,
-            observation.steam_id,
-            observation.weapon_def_index,
-            format_optional_u32(observation.paint_kit),
-            format_optional_i32(observation.weapon_quality),
-            format_i32_values(&observation.stattrak_values),
-            format_string_values(&observation.econ_attribute_pairs),
-            observation.first_tick,
-            observation.last_tick,
-            observation.samples,
-            observation.player_name
-        );
-    }
-}
-
-fn is_stattrak_candidate(observation: &StattrakProbeObservation) -> bool {
-    observation.weapon_quality == Some(9) || has_stattrak_counter(observation)
-}
-
-fn has_stattrak_counter(observation: &StattrakProbeObservation) -> bool {
-    observation.stattrak_values.iter().any(|value| *value >= 0)
-}
-
-fn format_optional_u32(value: Option<u32>) -> String {
-    value
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "-".to_string())
-}
-
-fn format_optional_i32(value: Option<i32>) -> String {
-    value
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "-".to_string())
-}
-
-fn format_i32_values(values: &[i32]) -> String {
-    if values.is_empty() {
-        "-".to_string()
-    } else {
-        values
-            .iter()
-            .map(i32::to_string)
-            .collect::<Vec<_>>()
-            .join(",")
-    }
-}
-
-fn format_string_values(values: &[String]) -> String {
-    if values.is_empty() {
-        "-".to_string()
-    } else {
-        values.join("|")
-    }
 }
 
 #[cfg(test)]

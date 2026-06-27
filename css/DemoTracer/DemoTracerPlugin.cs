@@ -143,6 +143,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         HookCosmeticGiveNamedItem();
         RegisterListener<Listeners.OnMapStart>(OnMapStart);
         RegisterListener<Listeners.OnMapEnd>(OnMapEnd);
+        RegisterListener<Listeners.OnClientDisconnect>(OnClientDisconnect);
         RegisterListener<Listeners.OnTick>(OnTick);
         RegisterListener<Listeners.OnEntitySpawned>(OnEntitySpawned);
         RegisterListener<Listeners.OnEntityDeleted>(OnEntityDeleted);
@@ -170,6 +171,19 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     {
         _mapActive = false;
         ClearReplayStateForLifecycle("map_end");
+    }
+
+    private void OnClientDisconnect(int playerSlot)
+    {
+        if (playerSlot < 0 || playerSlot >= MaxPlayerSlots)
+            return;
+
+        RestoreReplayViewerCrosshair(playerSlot);
+
+        if (!HasReplayLifecycleState(includeNative: true))
+            return;
+
+        ClearReplayStateForLifecycle($"client_disconnect:{playerSlot}");
     }
 
     private static void ConfigureNativeSafetyOffsets()
@@ -2774,7 +2788,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             ResetCosmeticAlignState(resetCounters: true);
             ResetStickerAlignState(resetCounters: true);
             ResetCharmAlignState(resetCounters: true);
-            ClearCrosshairAlignStateForLifecycle();
+            ResetCrosshairAlignState(resetCounters: true);
             ResetScoreboardAlignState(resetCounters: true);
             _loadedRoundScoreboard = null;
             _lastPlayingSlots.Clear();
@@ -2802,6 +2816,24 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         {
             _lifecycleResetInProgress = false;
         }
+    }
+
+    private bool HasReplayLifecycleState(bool includeNative = false)
+    {
+        if (_loadedSlots.Count > 0 ||
+            _loadedReplays.Count > 0 ||
+            _lastPlayingSlots.Count > 0 ||
+            _queuedNadeStartTokens.Count > 0 ||
+            _pendingProjectileAlign.Count > 0 ||
+            _nadeCycle != null ||
+            _armed ||
+            _sequenceActive ||
+            _poolActive)
+        {
+            return true;
+        }
+
+        return includeNative && BotControllerNative.IsCompatible && HasAnyNativeActiveReplaySlot();
     }
 
     private static void ClearNativeSlotForLifecycle(int slot)
