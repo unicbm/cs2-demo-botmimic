@@ -180,10 +180,10 @@ public sealed partial class DemoTracerPlugin : BasePlugin
 
         RestoreReplayViewerCrosshair(playerSlot);
 
-        if (!HasReplayLifecycleState(includeNative: true))
+        if (!HasReplayLifecycleStateForSlot(playerSlot, includeNative: true))
             return;
 
-        ClearReplayStateForLifecycle($"client_disconnect:{playerSlot}");
+        StopAndUnloadSlotForLifecycle(playerSlot, $"client_disconnect:{playerSlot}");
     }
 
     private static void ConfigureNativeSafetyOffsets()
@@ -2859,6 +2859,40 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         }
 
         return includeNative && BotControllerNative.IsCompatible && HasAnyNativeActiveReplaySlot();
+    }
+
+    private bool HasReplayLifecycleStateForSlot(int slot, bool includeNative = false)
+    {
+        if (_loadedSlots.Contains(slot) ||
+            _loadedReplays.ContainsKey(slot) ||
+            _lastPlayingSlots.Contains(slot) ||
+            _queuedNadeStartTokens.ContainsKey(slot) ||
+            _replayStartedAt.ContainsKey(slot))
+        {
+            return true;
+        }
+
+        return includeNative &&
+               BotControllerNative.IsCompatible &&
+               BotControllerNative.GetReplayState(slot).Playing;
+    }
+
+    private void StopAndUnloadSlotForLifecycle(int slot, string reason)
+    {
+        try
+        {
+            BotControllerNative.StopReplay(slot);
+            ReleaseReplaySlot(slot, reason);
+            BotControllerNative.UnloadReplay(slot);
+            _loadedSlots.Remove(slot);
+            ForgetLoadedReplayMetadata(slot);
+            if (IsNadeCycleSlot(slot))
+                StopNadeCycle(reason, stopCurrent: false);
+        }
+        catch (Exception ex)
+        {
+            Server.PrintToConsole($"dtr: lifecycle slot clear failed slot={slot}: {ex.Message}");
+        }
     }
 
     private static void ClearNativeSlotForLifecycle(int slot)
