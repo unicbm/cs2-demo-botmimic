@@ -15,7 +15,7 @@ namespace DemoTracer;
 public sealed partial class DemoTracerPlugin : BasePlugin
 {
     public override string ModuleName => "CS2 DemoTracer";
-    public override string ModuleVersion => "0.3.1";
+    public override string ModuleVersion => "0.3.2";
     public override string ModuleAuthor => "unicbm";
     public override string ModuleDescription => "Trace CS2 demos into bot-executable route replays.";
 
@@ -51,6 +51,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     private const int MaxManifestAbiVersion = 17;
     private const int MaxPlayerSlots = BotControllerNative.MaxSlots;
     private const int ReplayStartHealth = 100;
+    private const string AvatarOverrideCacheDirectoryName = "avatar-cache";
     private const string FreezeTimeConVarName = "mp_freezetime";
     private const string CosmeticRiskNotice = "[DTR WARN] cosmetic alignment consumes opt-in manifest cosmetics evidence and may carry Valve GSLT/server-guideline risk outside local/private replay validation.";
     private const string LeftHandDesiredFidelityNotice = "[DTR WARN] left_hand_desired=off 会降低保真度，但显著增高handoff流畅性。Reload loaded replays or plans for this setting to apply.";
@@ -2230,13 +2231,29 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             Server.ExecuteCommand($"bh_setname {slot} \"{EscapeConsoleString(file.PlayerName)}\"");
         if (_replayIdentityMode == ReplayIdentityMode.Full)
         {
-            TryApplyReplayAvatarOverride(slot, file, manifestDir, avatarOverrides);
             Server.ExecuteCommand($"bh_setsid {slot} {file.SteamId}");
+            ScheduleReplayAvatarOverride(slot, file, manifestDir, avatarOverrides);
         }
         Server.PrintToConsole(
             _replayIdentityMode == ReplayIdentityMode.Full
                 ? $"dtr: replay identity queued slot={slot} player={file.PlayerName} sid={file.SteamId}"
                 : $"dtr: replay identity queued slot={slot} player={file.PlayerName}");
+    }
+
+    private void ScheduleReplayAvatarOverride(
+        int slot,
+        ManifestFile file,
+        string manifestDir,
+        IReadOnlyDictionary<ulong, ManifestAvatarOverride> avatarOverrides)
+    {
+        if (file.SteamId == 0 ||
+            !avatarOverrides.ContainsKey(file.SteamId))
+        {
+            return;
+        }
+
+        Server.NextFrame(() =>
+            TryApplyReplayAvatarOverride(slot, file, manifestDir, avatarOverrides));
     }
 
     private void TryApplyReplayAvatarOverride(
@@ -2247,6 +2264,13 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     {
         if (file.SteamId == 0 ||
             !avatarOverrides.TryGetValue(file.SteamId, out var avatar))
+        {
+            return;
+        }
+
+        if (!_loadedReplays.TryGetValue(slot, out var replay) ||
+            replay.SteamId != file.SteamId ||
+            !IsReplaySlotStillSafe(slot))
         {
             return;
         }
@@ -2276,10 +2300,65 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             return;
         }
 
+        if (!TryPrepareAvatarOverrideCommandPath(avatarPath, avatar.Path, out var commandPath, out var cacheError))
+        {
+            Server.PrintToConsole(
+                $"dtr: replay avatar skipped slot={slot} player={file.PlayerName} sid={file.SteamId}: {cacheError}");
+            return;
+        }
+
         Server.ExecuteCommand(
-            $"bc_avatar_override_probe {file.SteamId} \"{EscapeConsoleString(avatarPath)}\"");
+            $"bc_avatar_override_probe {file.SteamId} \"{EscapeConsoleString(commandPath)}\"");
         Server.PrintToConsole(
-            $"dtr: replay avatar queued slot={slot} player={file.PlayerName} sid={file.SteamId} path={avatar.Path}");
+            $"dtr: replay avatar queued slot={slot} player={file.PlayerName} sid={file.SteamId} path={avatar.Path} cache={commandPath}");
+    }
+
+    private bool TryPrepareAvatarOverrideCommandPath(
+        string sourcePath,
+        string manifestPath,
+        out string commandPath,
+        out string error)
+    {
+        commandPath = string.Empty;
+        error = string.Empty;
+
+        try
+        {
+            var pluginDir = Path.GetDirectoryName(ModulePath);
+            if (string.IsNullOrWhiteSpace(pluginDir))
+                pluginDir = Path.GetDirectoryName(GetType().Assembly.Location);
+            if (string.IsNullOrWhiteSpace(pluginDir))
+                pluginDir = ".";
+
+            var cacheDir = Path.Combine(pluginDir, AvatarOverrideCacheDirectoryName);
+            Directory.CreateDirectory(cacheDir);
+
+            var normalizedManifestPath = manifestPath.Replace('/', Path.DirectorySeparatorChar);
+            var fileName = Path.GetFileName(normalizedManifestPath);
+            if (string.IsNullOrWhiteSpace(fileName))
+                fileName = Path.GetFileName(sourcePath);
+            if (string.IsNullOrWhiteSpace(fileName))
+            {
+                error = "avatar cache filename is empty";
+                return false;
+            }
+
+            var cachedPath = Path.Combine(cacheDir, fileName);
+            var sourceInfo = new FileInfo(sourcePath);
+            var shouldCopy =
+                !File.Exists(cachedPath) ||
+                new FileInfo(cachedPath).Length != sourceInfo.Length;
+            if (shouldCopy)
+                File.Copy(sourcePath, cachedPath, overwrite: true);
+
+            commandPath = cachedPath.Replace('\\', '/');
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = $"avatar cache failed: {ex.Message}";
+            return false;
+        }
     }
 
     private string PlayLoaded(bool loop)
