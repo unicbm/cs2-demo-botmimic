@@ -595,8 +595,12 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             var controllingBot = TryGetControllingBotState(bot, out var isControllingBot)
                 ? (isControllingBot ? "1" : "0")
                 : "unknown";
+            var userId = bot.UserId?.ToString(CultureInfo.InvariantCulture) ?? "unknown";
+            var kickIdHint = bot.UserId.HasValue
+                ? $" kick_hint='kickid {bot.UserId.Value.ToString(CultureInfo.InvariantCulture)}'"
+                : "";
             command.ReplyToCommand(
-                $"slot={bot.Slot} team={bot.Team} isBot={bot.IsBot} managed={managed} controllingBot={controllingBot} candidate={IsReplayTargetBot(bot)} name={bot.PlayerName}");
+                $"slot={bot.Slot} userid={userId} team={bot.Team} isBot={bot.IsBot} managed={managed} controllingBot={controllingBot} candidate={IsReplayTargetBot(bot)} name=\"{EscapeConsoleString(bot.PlayerName)}\"{kickIdHint}");
         }
     }
 
