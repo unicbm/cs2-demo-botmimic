@@ -91,6 +91,10 @@ namespace BotController::targets
 
     // ---- CMoveData  ----
 
+    // m_flForwardMove / m_flSideMove / m_flUpMove — movement input axes.
+    inline int kMove_ForwardMove = 44;
+    inline int kMove_SideMove = 48;
+    inline int kMove_UpMove = 52;
     // m_vecVelocity — the velocity TryPlayerMove integrates into origin
     inline int kMove_Velocity = 56;
     // m_vecAbsOrigin — post-move origin written here before FinishMove commits

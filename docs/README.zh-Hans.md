@@ -95,10 +95,20 @@ BotController replay runtime 的低层 C# P/Invoke binding。只有在写低层
 BotController 工具、明确要接触 native replay buffer 和 engine primitive 时，
 才应该直接使用它。
 
-其他 CounterStrikeSharp companion plugin 应该通过 `demotracer:api`
-plugin capability 依赖 `css/DemoTracerApi/IDemoTracerApi.cs`。它们不应该直接调用
-BotController native exports、复制 DemoTracer 内部 interop 层，或依赖 `.dtr`
-replay struct layout。
+BotController 还暴露可选的 `BotController_SetUsercmdMovementIntent` 和
+`BotController_ClearUsercmdMovementIntent` native exports，用来写入短租约的
+WASD/duck/jump 这类 usercmd movement intent。`BotController_SetLeftHandIntent`
+和 `BotController_ClearLeftHandIntent` 只是给旧 left-hand movement 调用方用的兼容别名。
+这些是低层 input primitives，不是 DemoTracer companion API，也不是 movement policy。
+runtime 只会应用 movement button bits（WASD、duck、jump），会忽略 attack/weapon/aim
+这类输入。active DTR replay 拥有它的 replay slot；load、start、stop、finish 或 clear
+replay state 都会清掉对应 slot 上的 movement intent。
+
+和 DemoTracer replay state 集成的 CounterStrikeSharp companion plugin 应该通过
+`demotracer:api` plugin capability 依赖 `css/DemoTracerApi/IDemoTracerApi.cs`。它们不应该
+复制 DemoTracer 内部 interop 层，也不应该依赖 `.dtr` replay struct layout。直接调用
+BotController native exports 只留给明确要使用 BotController engine primitive 的低层 runtime
+集成，例如 usercmd movement intent。
 
 ## 转换单个 demo
 
@@ -273,10 +283,7 @@ println!("clips={}", report.clips_written);
 
 ```text
 css_plugins reload DemoTracer
-dtr_set align weapons on
-dtr_set align projectiles on
-dtr_set handoff death_or_contact slot
-dtr_set allow_partial on
+dtr_config_status
 dtr_go seq "<输出目录>\<demo-id>\manifest.json" 0
 ```
 
@@ -288,6 +295,10 @@ dtr_go seq "<输出目录>\<demo-id>\manifest.json" 0
 - 插件会在 `round_start` 准备 bot，在 `round_freeze_end` 开始播放。
 - replay identity 默认是 `full`；BotHider 管理 replay bot slot 时，会写入 demo
   名字、SteamID64，以及 manifest 中匹配的 demo 头像 PNG 覆写。
+
+服务器本地默认值可以放在 `DemoTracer.dll` 同目录的 `demotracer.config.json`。可以从
+`demotracer.config.example.json` 起步，编辑后执行 `dtr_config_reload`。控制台命令仍可
+临时覆盖当前运行状态。
 
 完整回合回放开始时，DemoTracer 会把选中的 replay bot 当作回合起点状态处理：
 仍然存活的 replay bot 会恢复到 100 HP；已经死亡的 replay bot 会先复活，再开始
@@ -323,6 +334,11 @@ demo 观测到的 StatTrak/暗金武器质量 (`quality=9`)；如果 demo 没暴
 `dtr_set align crosshair on` 默认开启。它只把 demo 中稳定观测到的
 `crosshair_code` 临时应用到正在第一人称观察安全 replay bot 的真人观察者，并在
 离开 replay POV 时恢复原准星。
+
+`dtr_set align left_hand off` 会让新加载的 replay 不再写入 `.dtr` 的
+`left_hand_desired` command frame 证据。它会降低保真度，但显著增高handoff流畅性；
+如果左手 replay bot 在 handoff 后切回服务器默认右手视角会触发前摇，可以使用这个
+开关。已经加载的 replay 需要重新加载后才会应用。
 
 如果只想测试某一回合，可以把最后的数字改成对应 round：
 

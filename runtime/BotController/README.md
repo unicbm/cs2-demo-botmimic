@@ -41,6 +41,26 @@ Typical flow: lock the source slot if needed → `StartRecord` → move → `Sto
 
 ------------------------------------------------------------------------
 
+## Movement Intent
+
+BotController exposes optional low-level movement intent exports for callers
+that already own policy and target selection:
+
+- `BotController_SetUsercmdMovementIntent`
+- `BotController_ClearUsercmdMovementIntent`
+- `BotController_SetLeftHandIntent`
+- `BotController_ClearLeftHandIntent`
+
+The `LeftHandIntent` names are compatibility aliases. The native primitive
+writes short-lived button and analog movement intent into the usercmd/movedata
+path only; it does not aim, pick enemies, switch weapons, attack, teleport, or
+write absolute velocity. Only movement button bits (WASD, duck, jump) are
+applied; non-movement bits are ignored. Active DTR replay owns its replay slot,
+and replay load/start/stop/finish/clear paths clear any movement intent on that
+slot.
+
+------------------------------------------------------------------------
+
 ## Slots
 
 | Target  | Engine | Weapon                  |
@@ -124,6 +144,12 @@ BotController.TryGetAbiInfo(out var abiInfo);
 var capabilities = BotController.Capabilities();
 var buildId = BotController.BuildId();
 ```
+
+Low-level movement integrations can probe
+`BotController.CapabilityUsercmdMovementIntent` and then call
+`SetUsercmdMovementIntent` / `ClearUsercmdMovementIntent`. The `SetLeftHandIntent`
+helpers are present only for compatibility with existing left-hand movement
+callers.
 
 ### Locks
 

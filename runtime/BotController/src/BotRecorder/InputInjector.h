@@ -26,6 +26,15 @@ namespace BotController
         // When available, replay stops immediately if a real player takes over a bot.
         bool SetControllerControllingBotOffset(int offset);
 
+        // Short-lived, per-slot movement input lease. This is a low-level
+        // usercmd/movedata primitive; policy lives in the caller. Only
+        // movement button bits (WASD/duck/jump) are applied.
+        bool SetUsercmdMovementIntent(int slot, uint64_t buttonsSet, uint64_t buttonsClear,
+                                      float analogForward, float analogLeft,
+                                      int durationMs, int flags);
+        bool ClearUsercmdMovementIntent(int slot);
+        void ClearAllUsercmdMovementIntents();
+
         const char *Status();
 
         // Whether replay should inject subtick pitch_delta/yaw_delta into

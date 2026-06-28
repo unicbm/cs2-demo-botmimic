@@ -13,8 +13,10 @@
 #include "hook.h"
 #include "platform.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cmath>
 #include <cstdio>
@@ -61,6 +63,187 @@ namespace BotController
         static std::atomic<int> g_lastSlot{-1};
         static std::atomic<bool> g_replaySubtickViewDeltas{false};
 
+        constexpr uint64_t kInJump = 1ULL << 1;
+        constexpr uint64_t kInDuck = 1ULL << 2;
+        constexpr uint64_t kInForward = 1ULL << 3;
+        constexpr uint64_t kInBack = 1ULL << 4;
+        constexpr uint64_t kInMoveLeft = 1ULL << 9;
+        constexpr uint64_t kInMoveRight = 1ULL << 10;
+        constexpr uint64_t kMovementIntentButtons =
+            kInJump | kInDuck | kInForward | kInBack | kInMoveLeft | kInMoveRight;
+        constexpr float kCommandMoveSpeed = 450.0f;
+        constexpr float kAnalogDeadzone = 0.05f;
+        constexpr int kMaxIntentDurationMs = 60000;
+
+        struct UsercmdMovementIntentFrame
+        {
+            uint64_t buttonsSet;
+            uint64_t buttonsClear;
+            float analogForward;
+            float analogLeft;
+            int flags;
+        };
+
+        static std::array<std::atomic<uint64_t>, kMaxSlots> g_intentButtonsSet{};
+        static std::array<std::atomic<uint64_t>, kMaxSlots> g_intentButtonsClear{};
+        static std::array<std::atomic<float>, kMaxSlots> g_intentAnalogForward{};
+        static std::array<std::atomic<float>, kMaxSlots> g_intentAnalogLeft{};
+        static std::array<std::atomic<int>, kMaxSlots> g_intentFlags{};
+        static std::array<std::atomic<int64_t>, kMaxSlots> g_intentExpireMs{};
+
+        static int64_t NowMs()
+        {
+            using namespace std::chrono;
+            return duration_cast<milliseconds>(
+                       steady_clock::now().time_since_epoch())
+                .count();
+        }
+
+        static float ClampAxis(float value)
+        {
+            if (!std::isfinite(value))
+                return 0.0f;
+            return std::clamp(value, -1.0f, 1.0f);
+        }
+
+        static uint64_t ButtonsForAnalog(float analogForward, float analogLeft)
+        {
+            uint64_t buttons = 0;
+            if (analogForward > kAnalogDeadzone)
+                buttons |= kInForward;
+            else if (analogForward < -kAnalogDeadzone)
+                buttons |= kInBack;
+            if (analogLeft > kAnalogDeadzone)
+                buttons |= kInMoveLeft;
+            else if (analogLeft < -kAnalogDeadzone)
+                buttons |= kInMoveRight;
+            return buttons;
+        }
+
+        static bool SlotIsControllingBot(int slot)
+        {
+            return slot >= 0 && slot < kMaxSlots &&
+                   g_slotControllingBot[slot].load(std::memory_order_acquire);
+        }
+
+        static bool ActiveUsercmdMovementIntent(int slot, UsercmdMovementIntentFrame &out)
+        {
+            if (slot < 0 || slot >= kMaxSlots)
+                return false;
+
+            int64_t expiresAt = g_intentExpireMs[slot].load(std::memory_order_acquire);
+            if (expiresAt <= 0)
+                return false;
+            if (expiresAt <= NowMs())
+            {
+                int64_t expected = expiresAt;
+                g_intentExpireMs[slot].compare_exchange_strong(
+                    expected, 0, std::memory_order_acq_rel);
+                return false;
+            }
+
+            out.buttonsSet = g_intentButtonsSet[slot].load(std::memory_order_relaxed);
+            out.buttonsClear = g_intentButtonsClear[slot].load(std::memory_order_relaxed);
+            out.analogForward = g_intentAnalogForward[slot].load(std::memory_order_relaxed);
+            out.analogLeft = g_intentAnalogLeft[slot].load(std::memory_order_relaxed);
+            out.flags = g_intentFlags[slot].load(std::memory_order_relaxed);
+            return true;
+        }
+
+        static uint64_t ApplyUsercmdMovementButtons(
+            uint64_t buttons,
+            const UsercmdMovementIntentFrame &intent)
+        {
+            uint64_t set = intent.buttonsSet |
+                           ButtonsForAnalog(intent.analogForward, intent.analogLeft);
+            uint64_t clear = intent.buttonsClear;
+            if (std::fabs(intent.analogForward) > kAnalogDeadzone)
+                clear |= kInForward | kInBack;
+            if (std::fabs(intent.analogLeft) > kAnalogDeadzone)
+                clear |= kInMoveLeft | kInMoveRight;
+            return (buttons & ~clear) | set;
+        }
+
+        static void IntentToMoveAxes(
+            const UsercmdMovementIntentFrame &intent,
+            float &forwardMove,
+            float &leftMove,
+            float &sideMove)
+        {
+            forwardMove = intent.analogForward * kCommandMoveSpeed;
+            leftMove = intent.analogLeft * kCommandMoveSpeed;
+
+            if (std::fabs(intent.analogForward) <= kAnalogDeadzone)
+            {
+                if ((intent.buttonsSet & kInForward) != 0)
+                    forwardMove += kCommandMoveSpeed;
+                if ((intent.buttonsSet & kInBack) != 0)
+                    forwardMove -= kCommandMoveSpeed;
+            }
+            if (std::fabs(intent.analogLeft) <= kAnalogDeadzone)
+            {
+                if ((intent.buttonsSet & kInMoveLeft) != 0)
+                    leftMove += kCommandMoveSpeed;
+                if ((intent.buttonsSet & kInMoveRight) != 0)
+                    leftMove -= kCommandMoveSpeed;
+            }
+
+            sideMove = -leftMove;
+        }
+
+        static void ApplyUsercmdMovementIntentToMoveData(
+            void *services,
+            void *moveData,
+            const UsercmdMovementIntentFrame &intent)
+        {
+            if (services && tg::kServices_Buttons > 0)
+            {
+                auto *sv = reinterpret_cast<char *>(services);
+                uint64_t buttons =
+                    *reinterpret_cast<uint64_t *>(sv + tg::kServices_Buttons);
+                buttons = ApplyUsercmdMovementButtons(buttons, intent);
+                *reinterpret_cast<uint64_t *>(sv + tg::kServices_Buttons) = buttons;
+            }
+
+            if (!moveData)
+                return;
+            if (tg::kMove_ForwardMove <= 0 || tg::kMove_SideMove <= 0 ||
+                tg::kMove_UpMove <= 0)
+                return;
+
+            float forwardMove = 0.0f;
+            float leftMove = 0.0f;
+            float sideMove = 0.0f;
+            IntentToMoveAxes(intent, forwardMove, leftMove, sideMove);
+            auto *m = reinterpret_cast<char *>(moveData);
+            *reinterpret_cast<float *>(m + tg::kMove_ForwardMove) = forwardMove;
+            *reinterpret_cast<float *>(m + tg::kMove_SideMove) = sideMove;
+            *reinterpret_cast<float *>(m + tg::kMove_UpMove) = 0.0f;
+        }
+
+        static void ApplyUsercmdMovementIntentToCommand(
+            PlayerCommand *pc,
+            CBaseUserCmdPB *base,
+            const UsercmdMovementIntentFrame &intent)
+        {
+            if (!pc || !base)
+                return;
+
+            uint64_t buttons0 = pc->buttonstates.m_pButtonStates[0];
+            buttons0 = ApplyUsercmdMovementButtons(buttons0, intent);
+            CInButtonStatePB *bp = base->mutable_buttons_pb();
+            bp->set_buttonstate1(buttons0);
+            pc->buttonstates.m_pButtonStates[0] = buttons0;
+
+            float forwardMove = 0.0f;
+            float leftMove = 0.0f;
+            float sideMove = 0.0f;
+            IntentToMoveAxes(intent, forwardMove, leftMove, sideMove);
+            base->set_forwardmove(forwardMove);
+            base->set_leftmove(leftMove);
+            base->set_upmove(0.0f);
+        }
+
         void SetReplaySubtickViewDeltas(bool enabled)
         {
             g_replaySubtickViewDeltas.store(enabled, std::memory_order_relaxed);
@@ -69,6 +252,48 @@ namespace BotController
         bool ReplaySubtickViewDeltas()
         {
             return g_replaySubtickViewDeltas.load(std::memory_order_relaxed);
+        }
+
+        bool SetUsercmdMovementIntent(int slot, uint64_t buttonsSet, uint64_t buttonsClear,
+                                      float analogForward, float analogLeft,
+                                      int durationMs, int flags)
+        {
+            if (slot < 0 || slot >= kMaxSlots)
+                return false;
+            if (durationMs <= 0)
+                return ClearUsercmdMovementIntent(slot);
+
+            const int clampedDuration = std::clamp(durationMs, 1, kMaxIntentDurationMs);
+            const int64_t expiresAt = NowMs() + clampedDuration;
+            g_intentExpireMs[slot].store(0, std::memory_order_release);
+            g_intentButtonsSet[slot].store(
+                buttonsSet & kMovementIntentButtons, std::memory_order_relaxed);
+            g_intentButtonsClear[slot].store(
+                buttonsClear & kMovementIntentButtons, std::memory_order_relaxed);
+            g_intentAnalogForward[slot].store(ClampAxis(analogForward), std::memory_order_relaxed);
+            g_intentAnalogLeft[slot].store(ClampAxis(analogLeft), std::memory_order_relaxed);
+            g_intentFlags[slot].store(flags, std::memory_order_relaxed);
+            g_intentExpireMs[slot].store(expiresAt, std::memory_order_release);
+            return true;
+        }
+
+        bool ClearUsercmdMovementIntent(int slot)
+        {
+            if (slot < 0 || slot >= kMaxSlots)
+                return false;
+            g_intentExpireMs[slot].store(0, std::memory_order_release);
+            g_intentButtonsSet[slot].store(0, std::memory_order_relaxed);
+            g_intentButtonsClear[slot].store(0, std::memory_order_relaxed);
+            g_intentAnalogForward[slot].store(0.0f, std::memory_order_relaxed);
+            g_intentAnalogLeft[slot].store(0.0f, std::memory_order_relaxed);
+            g_intentFlags[slot].store(0, std::memory_order_relaxed);
+            return true;
+        }
+
+        void ClearAllUsercmdMovementIntents()
+        {
+            for (int slot = 0; slot < kMaxSlots; ++slot)
+                ClearUsercmdMovementIntent(slot);
         }
 
         void *LiveMovementServices(int slot)
@@ -165,6 +390,10 @@ namespace BotController
             bool recording = slot >= 0 && slot < kMaxSlots &&
                              MotionRecorder::IsRecording(slot);
             bool replaying = ReplayActiveAndSafe(slot);
+            UsercmdMovementIntentFrame movementIntent{};
+            bool hasMovementIntent =
+                !replaying && !SlotIsControllingBot(slot) &&
+                ActiveUsercmdMovementIntent(slot, movementIntent);
 
             // Recording weapon tap
             if (recording)
@@ -177,6 +406,8 @@ namespace BotController
             // Replay: seed CMoveData + pawn with this tick's pre snapshot
             if (replaying)
                 MotionRecorder::OnReplayPre(slot, services, moveData);
+            if (hasMovementIntent)
+                ApplyUsercmdMovementIntentToMoveData(services, moveData, movementIntent);
 
             g_origProcessMovement(services, moveData);
 
@@ -219,8 +450,12 @@ namespace BotController
             bool recording = slot >= 0 && slot < kMaxSlots &&
                              MotionRecorder::IsRecording(slot);
             bool replaying = ReplayActiveAndSafe(slot);
+            UsercmdMovementIntentFrame movementIntent{};
+            bool hasMovementIntent =
+                !replaying && !SlotIsControllingBot(slot) &&
+                ActiveUsercmdMovementIntent(slot, movementIntent);
 
-            if (cmd && (recording || replaying))
+            if (cmd && (recording || replaying || hasMovementIntent))
             {
                 // Compiler computes the multiple-inheritance adjust here.
                 auto *pc = reinterpret_cast<PlayerCommand *>(cmd);
@@ -328,6 +563,9 @@ namespace BotController
                             slot, services, *frame.tick, frame.commandView);
                     }
                 }
+
+                if (hasMovementIntent)
+                    ApplyUsercmdMovementIntentToCommand(pc, base, movementIntent);
             }
 
             g_origPlayerRunCommand(services, cmd);
@@ -494,6 +732,7 @@ namespace BotController
                 s.store(nullptr, std::memory_order_release);
             for (auto &taken : g_slotControllingBot)
                 taken.store(false, std::memory_order_release);
+            ClearAllUsercmdMovementIntents();
             g_installed = false;
             g_status = "not_attempted";
         }

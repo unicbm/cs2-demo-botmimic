@@ -63,11 +63,43 @@ internal static partial class BotControllerNative
     public static ulong MissingRequiredCapabilities
         => RequiredCapabilityMask & ~Capabilities;
 
+    public static bool WriteLeftHandDesired { get; set; } = true;
+
+    public static bool HasUsercmdMovementIntentCapability
+        => (Capabilities & CapabilityUsercmdMovementIntent) == CapabilityUsercmdMovementIntent;
+
+    public static bool HasUsercmdMovementIntentExports => ProbeUsercmdMovementIntentExports();
+
+    public static bool HasLeftHandIntentAliasExports => ProbeLeftHandIntentAliasExports();
+
+    public static string UsercmdMovementIntentStatus
+    {
+        get
+        {
+            var hasCapability = HasUsercmdMovementIntentCapability;
+            var hasExport = HasUsercmdMovementIntentExports;
+            if (hasCapability && hasExport)
+                return "available";
+            if (hasCapability)
+                return "missing_export";
+            if (hasExport)
+                return "export_without_cap";
+            return "missing";
+        }
+    }
+
     public static string RuntimeSummary
-        => $"expected_abi={ExpectedAbiVersion} runtime_abi={AbiVersion} compatible={IsCompatible} " +
-           $"caps=0x{Capabilities:X} missing=0x{MissingRequiredCapabilities:X} build={BuildId} " +
-           $"dtr_reader={MinRecFormatVersion}..{RecFormatVersion} platform={RuntimePlatformName} " +
-           $"api={DemoTracerApiVersion}";
+    {
+        get
+        {
+            var abiInfo = AbiInfo;
+            return $"expected_abi={ExpectedAbiVersion} runtime_abi={AbiVersion} abi_minor={abiInfo.AbiMinor} " +
+                   $"compatible={IsCompatible} caps=0x{Capabilities:X} missing=0x{MissingRequiredCapabilities:X} " +
+                   $"build={BuildId} usercmd_movement_intent={UsercmdMovementIntentStatus} " +
+                   $"left_hand_alias={HasLeftHandIntentAliasExports} dtr_reader={MinRecFormatVersion}..{RecFormatVersion} " +
+                   $"platform={RuntimePlatformName} api={DemoTracerApiVersion}";
+        }
+    }
 
     public static bool SetControllerControllingBotOffset(int offset)
     {
@@ -93,6 +125,87 @@ internal static partial class BotControllerNative
         }
     }
 
+    public static bool SetUsercmdMovementIntent(
+        int slot,
+        ulong buttonsSet,
+        ulong buttonsClear,
+        float analogForward,
+        float analogLeft,
+        int durationMs,
+        int flags = 0)
+    {
+        if (!ValidSlot(slot))
+            return false;
+        try
+        {
+            return BotController_SetUsercmdMovementIntent(
+                slot, buttonsSet, buttonsClear, analogForward, analogLeft,
+                durationMs, flags) == 0;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public static bool ClearUsercmdMovementIntent(int slot)
+    {
+        if (!ValidSlot(slot))
+            return false;
+        try
+        {
+            return BotController_ClearUsercmdMovementIntent(slot) == 0;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool ProbeUsercmdMovementIntentExports()
+    {
+        try
+        {
+            _ = BotController_ClearUsercmdMovementIntent(-1);
+            _ = BotController_SetUsercmdMovementIntent(-1, 0, 0, 0.0f, 0.0f, 1, 0);
+            return true;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool ProbeLeftHandIntentAliasExports()
+    {
+        try
+        {
+            _ = BotController_ClearLeftHandIntent(-1);
+            _ = BotController_SetLeftHandIntent(-1, 0, 0, 0.0f, 0.0f, 1, 0);
+            return true;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            return false;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     public static bool LoadReplayFromFile(int slot, string path)
         => LoadReplayFromFile(slot, path, out _);
 
@@ -109,6 +222,8 @@ internal static partial class BotControllerNative
         {
             EnsureNativeLayout();
             var replay = DtrReplayReader.Read(path);
+            if (!WriteLeftHandDesired)
+                StripLeftHandDesired(replay.CommandFrames);
             metadata = ReplayNativeMapper.BuildMetadata(replay);
             if (replay.Ticks.Length == 0)
             {
@@ -180,6 +295,17 @@ internal static partial class BotControllerNative
         {
             metadata = ReplayFileMetadata.Empty;
             return false;
+        }
+    }
+
+    private static void StripLeftHandDesired(NativeReplayCommandFrame[] commandFrames)
+    {
+        for (var i = 0; i < commandFrames.Length; i++)
+        {
+            var frame = commandFrames[i];
+            frame.Fields &= ~CommandFieldLeftHand;
+            frame.LeftHandDesired = 0;
+            commandFrames[i] = frame;
         }
     }
 

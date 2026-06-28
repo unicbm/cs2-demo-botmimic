@@ -148,6 +148,7 @@ namespace BotControllerApi
         public const ulong CapabilityBuyPlan = 1UL << 6;
         public const ulong CapabilityControllerBotOffset = 1UL << 7;
         public const ulong CapabilityExtendedReplay = 1UL << 8;
+        public const ulong CapabilityUsercmdMovementIntent = 1UL << 9;
 
         // Sentinel weapon def meaning "any knife"
         public const int KnifeDef = 9001;
@@ -178,6 +179,32 @@ namespace BotControllerApi
 
         [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
         private static extern int BotController_SetReplayPovMask(ulong mask);
+
+        [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int BotController_SetUsercmdMovementIntent(
+            int slot,
+            ulong buttonsSet,
+            ulong buttonsClear,
+            float analogForward,
+            float analogLeft,
+            int durationMs,
+            int flags);
+
+        [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int BotController_ClearUsercmdMovementIntent(int slot);
+
+        [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int BotController_SetLeftHandIntent(
+            int slot,
+            ulong buttonsSet,
+            ulong buttonsClear,
+            float analogForward,
+            float analogLeft,
+            int durationMs,
+            int flags);
+
+        [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
+        private static extern int BotController_ClearLeftHandIntent(int slot);
 
         [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
         private static extern int BotController_StartRecord(int slot);
@@ -285,6 +312,37 @@ namespace BotControllerApi
             catch
             {
                 return 0;
+            }
+        }
+
+        public static bool HasUsercmdMovementIntentCapability()
+            => (Capabilities() & CapabilityUsercmdMovementIntent) == CapabilityUsercmdMovementIntent;
+
+        public static bool HasUsercmdMovementIntentExports()
+        {
+            try
+            {
+                _ = BotController_ClearUsercmdMovementIntent(-1);
+                _ = BotController_SetUsercmdMovementIntent(-1, 0, 0, 0.0f, 0.0f, 1, 0);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public static bool HasLeftHandIntentAliasExports()
+        {
+            try
+            {
+                _ = BotController_ClearLeftHandIntent(-1);
+                _ = BotController_SetLeftHandIntent(-1, 0, 0, 0.0f, 0.0f, 1, 0);
+                return true;
+            }
+            catch
+            {
+                return false;
             }
         }
 
@@ -410,6 +468,39 @@ namespace BotControllerApi
         // Bit n means replay slot n is currently watched in first-person.
         public static bool SetReplayPovMask(ulong mask)
             => BotController_SetReplayPovMask(mask) == 0;
+
+        // Low-level usercmd/movedata movement lease. Policy and targeting live
+        // in the caller; active DTR replay owns its replay slot.
+        public static bool SetUsercmdMovementIntent(
+            int slot,
+            ulong buttonsSet,
+            ulong buttonsClear,
+            float analogForward,
+            float analogLeft,
+            int durationMs,
+            int flags = 0)
+            => BotController_SetUsercmdMovementIntent(
+                   slot, buttonsSet, buttonsClear, analogForward, analogLeft,
+                   durationMs, flags) == 0;
+
+        public static bool ClearUsercmdMovementIntent(int slot)
+            => BotController_ClearUsercmdMovementIntent(slot) == 0;
+
+        // Compatibility aliases for existing left-hand movement callers.
+        public static bool SetLeftHandIntent(
+            int slot,
+            ulong buttonsSet,
+            ulong buttonsClear,
+            float analogForward,
+            float analogLeft,
+            int durationMs,
+            int flags = 0)
+            => BotController_SetLeftHandIntent(
+                   slot, buttonsSet, buttonsClear, analogForward, analogLeft,
+                   durationMs, flags) == 0;
+
+        public static bool ClearLeftHandIntent(int slot)
+            => BotController_ClearLeftHandIntent(slot) == 0;
 
         // The tick currently being replayed on this slot, for driving weapon/fire
         // C#-side. Returns false if the slot isn't replaying.

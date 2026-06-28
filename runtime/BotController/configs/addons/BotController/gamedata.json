@@ -327,6 +327,27 @@
     },
     "comment": "m_bDucking (0x416). linux: TODO"
   },
+  "CMoveData::ForwardMove": {
+    "offsets": {
+      "windows": 44,
+      "linux": 0
+    },
+    "comment": "m_flForwardMove (44). linux: TODO"
+  },
+  "CMoveData::SideMove": {
+    "offsets": {
+      "windows": 48,
+      "linux": 0
+    },
+    "comment": "m_flSideMove (48). linux: TODO"
+  },
+  "CMoveData::UpMove": {
+    "offsets": {
+      "windows": 52,
+      "linux": 0
+    },
+    "comment": "m_flUpMove (52). linux: TODO"
+  },
   "CMoveData::Velocity": {
     "offsets": {
       "windows": 56,

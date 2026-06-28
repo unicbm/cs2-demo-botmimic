@@ -8,8 +8,7 @@
 
 ```text
 css_plugins reload DemoTracer
-dtr_set handoff death_or_contact slot
-dtr_set allow_partial on
+dtr_config_status
 dtr_go seq "<输出目录>\<demo-id>\manifest.json" 0
 ```
 
@@ -21,6 +20,39 @@ BotHider 存在且管理目标 replay bot slot 时写入 demo 名字和 SteamID6
 source round”，`pool` 表示“按本地经济从回合池选择”。`dtr_go` 会先校验并
 armed plan，再执行 `mp_restartgame 1`，确保接住新的 `round_start`。
 
+## Runtime Config JSON
+
+DemoTracer 会从 `DemoTracer.dll` 同目录读取可选的 `demotracer.config.json`，作为
+服务器本地 runtime 默认值。仓库里提供 `demotracer.config.example.json` 作为干净示例。
+这个 JSON 只控制服务器偏好，不会写进 `.dtr` 或 manifest。
+
+```json
+{
+  "identity": "full",
+  "allow_partial": true,
+  "handoff": {
+    "mode": "death_contact_c4",
+    "scope": "slot",
+    "threat_360": true,
+    "threat_360_range": 420,
+    "threat_360_los": true
+  },
+  "align": {
+    "weapons": true,
+    "projectiles": true,
+    "crosshair": true,
+    "left_hand_desired": true,
+    "cosmetics": false,
+    "stickers": false,
+    "charms": false,
+    "scoreboard": false
+  }
+}
+```
+
+修改文件后执行 `dtr_config_reload`。`dtr_set handoff ...` 这类控制台命令仍然可以
+临时覆盖当前运行状态，直到再次 reload config 或 reload plugin。
+
 ## 默认值
 
 | 设置 | 默认值 | 含义 |
@@ -31,7 +63,8 @@ armed plan，再执行 `mp_restartgame 1`，确保接住新的 `round_start`。
 | `dtr_sticker_align` | `0` | 在饰品对齐下消费额外 opt-in 的武器贴纸证据。 |
 | `dtr_charm_align` | `0` | 在饰品对齐下消费额外 opt-in 的武器挂件/keychain 证据。 |
 | `dtr_crosshair_align` | `1` | 第一人称观察 replay bot 时，把 demo 证据里的准星 code 临时应用到真人观察者。 |
-| `dtr_handoff` | `death_or_contact slot` | 接触或死亡后只释放触发的 replay slot。 |
+| `dtr_left_hand_desired` | `1` | 把 demo 的 `left_hand_desired` usercmd 证据写入 replay command frames。 |
+| `dtr_handoff` | `death_contact_c4 slot` | 接触或死亡后释放触发的 replay slot；C4 安装后释放全部 active replay slot。 |
 | `dtr_partial` | `1` | bot 数量不足时允许部分 replay。 |
 | `dtr_replay_identity` | `full` | BotHider 可用时，通过其管理的 replay bot slot 写入 demo 名字、SteamID64 和 demo 头像覆写。 |
 | `dtr_util_trace` | `0` | 默认不写 utility CSV trace。 |
@@ -302,6 +335,16 @@ flag 之外又加了 `--export-stickers` 生成时，它才会生效。
 这个观察者，并在离开 replay POV 时恢复原准星。缺失或互相矛盾的 demo 证据会跳过。
 这个功能只影响 POV/spectator 观察拟真度，不改变移动、武器、投掷物、replay bot 状态或饰品库存。
 
+### `dtr_left_hand_desired <0|1>`
+
+控制新加载的 `.dtr` v7 command frames 是否保留 `left_hand_desired` 写入。
+
+- `1`：保留 demo 里的左/右手 desired 状态。这是默认值，也是最高保真度行为。
+- `0`：加载 replay frames 到 native playback 前清掉 left-hand desired 写入。它会降低保真度，但显著增高handoff流畅性，适合左手 replay bot 在 handoff 后会切回服务器默认右手视角并触发前摇的场景。
+
+这个设置只影响命令改动之后加载的 replay。已经加载到 slot 上的 round、sequence 或
+pool plan 需要重新加载后才会应用。
+
 ### `dtr_replay_identity <0|1>`
 
 控制 BotHider identity 对齐。
@@ -321,7 +364,7 @@ BotHider 管理，identity 对齐会跳过该 slot，而不会应用到真人玩
 - `1`：有多少安全同阵营 bot slot 就加载多少，并报告跳过的 T/CT 数量。
 - `0`：如果不能分配 manifest 里的所有玩家，就加载失败。
 
-### `dtr_handoff <off|death|contact|death_or_contact> [all|slot]`
+### `dtr_handoff <off|death|contact|death_or_contact|death_contact_c4> [all|slot]`
 
 控制 replay 什么时候把 bot 控制权交回普通 bot 行为。
 
@@ -331,11 +374,15 @@ BotHider 管理，identity 对齐会跳过该 slot，而不会应用到真人玩
 - `death`：replay 控制玩家死亡或击杀时 handoff。
 - `contact`：检测到战斗/接触时 handoff。
 - `death_or_contact`：死亡和接触都触发。
+- `death_contact_c4`：死亡、接触和 C4 安装都触发。这是默认值。
 
 范围：
 
 - `slot`：只释放触发的 slot。这是推荐安全默认值。
 - `all`：一个触发释放所有 replaying slots。只建议实验时使用。
+
+C4 安装是回合阶段 handoff，不是单个对枪触发；即使 scope 是 `slot`，也会释放所有
+active replay slots。
 
 接触检测实现：
 
@@ -345,19 +392,29 @@ BotHider 管理，identity 对齐会跳过该 slot，而不会应用到真人玩
 
 ## 诊断
 
+### `dtr_config_reload`
+
+从插件目录重新读取 `demotracer.config.json` 并应用到当前 runtime 设置。如果文件不存在，
+继续使用内置默认值。
+
+### `dtr_config_status`
+
+输出 config 路径、文件是否存在，以及当前有效 runtime 设置。
+
 ### `dtr_runtime`
 
 输出 runtime version matrix：期望和已加载的 native ABI、capability bitset、
-缺失的 required capability bits、native build id、支持的 `.dtr` reader 版本范围、
-平台，以及 `DemoTracerApi` version。
+缺失的 required capability bits、native build id、可选的 `UsercmdMovementIntent` /
+`LeftHandIntent` export 状态、支持的 `.dtr` reader 版本范围、平台，以及
+`DemoTracerApi` version。
 
 ### `dtr_doctor [manifest.json|pool_manifest.json]`
 
 输出一组紧凑的健康检查：native ABI 是否兼容、capability bitset、native build id、
-支持的 `.dtr` reader 版本范围、平台、`DemoTracerApi` version、当前地图/时间、
-freeze-time ConVar、bot 数量、BotHider managed slot、安全 replay target 数、已加载/
-正在播放的 replay 数量、对齐开关、handoff mode、RayTrace 状态，以及可选的 manifest
-或 pool manifest 摘要。
+可选的 `UsercmdMovementIntent` / `LeftHandIntent` export 状态、支持的 `.dtr` reader
+版本范围、平台、`DemoTracerApi` version、当前地图/时间、freeze-time ConVar、bot 数量、
+BotHider managed slot、安全 replay target 数、已加载/正在播放的 replay 数量、对齐开关、
+handoff mode、RayTrace 状态，以及可选的 manifest 或 pool manifest 摘要。
 
 当 playback 不启动、slot 数少于预期，或要在新服务器上检查 sample pack 时，先看这个。
 

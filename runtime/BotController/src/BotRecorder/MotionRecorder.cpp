@@ -919,6 +919,7 @@ namespace BotController
             p.lastAppliedDef.store(-1, std::memory_order_relaxed);
             g_lastFinalViewCursor[slot] = -1;
             g_serverViewChangeIndex[slot] = 0;
+            InputInjector::ClearUsercmdMovementIntent(slot);
             return true;
         }
 
@@ -945,6 +946,7 @@ namespace BotController
             g_lastFinalViewCursor[slot] = -1;
             g_serverViewChangeIndex[slot] = 0;
             p.loop.store(loop, std::memory_order_relaxed);
+            InputInjector::ClearUsercmdMovementIntent(slot);
             p.playing.store(true, std::memory_order_release);
             return true;
         }
@@ -968,6 +970,7 @@ namespace BotController
             g_lastFinalViewCursor[slot] = -1;
             g_serverViewChangeIndex[slot] = 0;
             p.loop.store(loop, std::memory_order_relaxed);
+            InputInjector::ClearUsercmdMovementIntent(slot);
             p.playing.store(true, std::memory_order_release);
             return true;
         }
@@ -982,6 +985,7 @@ namespace BotController
             p.holdBeforeCursor.store(-1, std::memory_order_relaxed);
             g_lastFinalViewCursor[slot] = -1;
             g_serverViewChangeIndex[slot] = 0;
+            InputInjector::ClearUsercmdMovementIntent(slot);
             return true;
         }
 
@@ -1744,6 +1748,7 @@ namespace BotController
                         return;
                     }
                     p.playing.store(false, std::memory_order_release);
+                    InputInjector::ClearUsercmdMovementIntent(slot);
                     return;
                 }
                 return;
@@ -1814,6 +1819,7 @@ namespace BotController
                 g_lastFinalViewCursor[i] = -1;
                 g_serverViewChangeIndex[i] = 0;
             }
+            InputInjector::ClearAllUsercmdMovementIntents();
             g_replayPovMask.store(0, std::memory_order_relaxed);
         }
     }

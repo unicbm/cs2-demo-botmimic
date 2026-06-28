@@ -10,13 +10,13 @@ namespace DemoTracer;
 
 public sealed partial class DemoTracerPlugin
 {
-    private void HandoffActiveReplays(string reason, int triggerSlot = -1)
+    private void HandoffActiveReplays(string reason, int triggerSlot = -1, bool forceAll = false)
     {
-        if (triggerSlot < 0 && !_handoffAllSlots)
+        if (!forceAll && triggerSlot < 0 && !_handoffAllSlots)
             return;
 
         var stopped = 0;
-        var slots = (!_handoffAllSlots && triggerSlot >= 0)
+        var slots = (!forceAll && !_handoffAllSlots && triggerSlot >= 0)
             ? [triggerSlot]
             : _loadedSlots.ToArray();
         foreach (var slot in slots)
@@ -28,7 +28,7 @@ public sealed partial class DemoTracerPlugin
             ReleaseReplaySlot(slot, reason);
             stopped++;
 
-            if (!_handoffAllSlots)
+            if (!forceAll && !_handoffAllSlots)
                 break;
         }
 

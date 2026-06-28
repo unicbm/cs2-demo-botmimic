@@ -13,6 +13,7 @@ internal static partial class BotControllerNative
     public const int SubtickMoveByteSize = 28;
     public const int ReplayCommandFrameByteSize = 68;
     public const int ReplayMovementExtraByteSize = 48;
+    internal const uint CommandFieldLeftHand = 1U << 7;
     public const int ReplaySlotStateByteSize = 24;
     public const int MaxSlots = 64;
     public const int DemoTracerApiVersion = 2;
@@ -31,6 +32,7 @@ internal static partial class BotControllerNative
     private const ulong CapabilityBuyPlan = 1UL << 6;
     private const ulong CapabilityControllerBotOffset = 1UL << 7;
     internal const ulong CapabilityExtendedReplay = 1UL << 8;
+    internal const ulong CapabilityUsercmdMovementIntent = 1UL << 9;
 
     public const ulong RequiredCapabilityMask =
         CapabilityReplaySlotState |

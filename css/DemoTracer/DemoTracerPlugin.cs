@@ -53,6 +53,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     private const int ReplayStartHealth = 100;
     private const string FreezeTimeConVarName = "mp_freezetime";
     private const string CosmeticRiskNotice = "[DTR WARN] cosmetic alignment consumes opt-in manifest cosmetics evidence and may carry Valve GSLT/server-guideline risk outside local/private replay validation.";
+    private const string LeftHandDesiredFidelityNotice = "[DTR WARN] left_hand_desired=off 会降低保真度，但显著增高handoff流畅性。Reload loaded replays or plans for this setting to apply.";
 
     private readonly List<int> _loadedSlots = new();
     private readonly Dictionary<int, LoadedReplay> _loadedReplays = new();
@@ -115,6 +116,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     private bool _charmAlignEnabled;
     private bool _crosshairAlignEnabled = true;
     private bool _scoreboardAlignEnabled;
+    private bool _leftHandDesiredEnabled = true;
     private bool _weaponAlignFrameQueued;
     private int _cosmeticAppliedCount;
     private int _cosmeticSkippedCount;
@@ -124,7 +126,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     private int _charmSkippedCount;
     private int _scoreboardAppliedCount;
     private int _scoreboardSkippedCount;
-    private HandoffMode _handoffMode = HandoffMode.DeathOrContact;
+    private HandoffMode _handoffMode = HandoffMode.DeathContactC4;
     private bool _handoffAllSlots;
     private bool _handoffThreat360Enabled = true;
     private float _handoffThreat360Range = HandoffThreat360DefaultRange;
@@ -139,6 +141,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
 
     public override void Load(bool hotReload)
     {
+        LoadRuntimeConfig(message => Server.PrintToConsole(message), announceMissing: true);
         LoadCosmeticLegacyPaints();
         HookCosmeticGiveNamedItem();
         RegisterListener<Listeners.OnMapStart>(OnMapStart);
@@ -206,16 +209,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     public void WeaponAlignCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (command.ArgCount >= 2)
-            _weaponAlignEnabled = ParseOnOff(command.GetArg(1), _weaponAlignEnabled);
-        if (!_weaponAlignEnabled)
-        {
-            _pendingWeaponAlign.Clear();
-            _rebuiltInventorySlots.Clear();
-            _lastReplayWeaponDef.Clear();
-            _lastLockedWeaponTarget.Clear();
-            foreach (var slot in _loadedSlots)
-                BotControllerNative.UnlockWeaponSlot(slot);
-        }
+            SetWeaponAlignEnabled(ParseOnOff(command.GetArg(1), _weaponAlignEnabled));
 
         command.ReplyToCommand($"dtr: weapon_align={_weaponAlignEnabled}");
     }
@@ -224,12 +218,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     public void ProjectileAlignCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (command.ArgCount >= 2)
-            _projectileAlignEnabled = ParseOnOff(command.GetArg(1), _projectileAlignEnabled);
-        if (!_projectileAlignEnabled)
-        {
-            _projectileAlignNextBySlot.Clear();
-            _pendingProjectileAlign.Clear();
-        }
+            SetProjectileAlignEnabled(ParseOnOff(command.GetArg(1), _projectileAlignEnabled));
 
         command.ReplyToCommand($"dtr: projectile_align={_projectileAlignEnabled}");
     }
@@ -238,13 +227,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     public void CosmeticAlignCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (command.ArgCount >= 2)
-            _cosmeticAlignEnabled = ParseOnOff(command.GetArg(1), _cosmeticAlignEnabled);
-        if (!_cosmeticAlignEnabled)
-        {
-            ResetCosmeticAlignState();
-            ResetStickerAlignState();
-            ResetCharmAlignState();
-        }
+            SetCosmeticAlignEnabled(ParseOnOff(command.GetArg(1), _cosmeticAlignEnabled));
 
         command.ReplyToCommand($"dtr: cosmetic_align={_cosmeticAlignEnabled}");
         if (_cosmeticAlignEnabled)
@@ -255,9 +238,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     public void StickerAlignCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (command.ArgCount >= 2)
-            _stickerAlignEnabled = ParseOnOff(command.GetArg(1), _stickerAlignEnabled);
-        if (!_stickerAlignEnabled)
-            ResetStickerAlignState();
+            SetStickerAlignEnabled(ParseOnOff(command.GetArg(1), _stickerAlignEnabled));
 
         command.ReplyToCommand($"dtr: sticker_align={_stickerAlignEnabled}");
         if (_stickerAlignEnabled)
@@ -268,9 +249,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     public void CharmAlignCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (command.ArgCount >= 2)
-            _charmAlignEnabled = ParseOnOff(command.GetArg(1), _charmAlignEnabled);
-        if (!_charmAlignEnabled)
-            ResetCharmAlignState();
+            SetCharmAlignEnabled(ParseOnOff(command.GetArg(1), _charmAlignEnabled));
 
         command.ReplyToCommand($"dtr: charm_align={_charmAlignEnabled}");
         if (_charmAlignEnabled)
@@ -281,14 +260,21 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     public void CrosshairAlignCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (command.ArgCount >= 2)
-            _crosshairAlignEnabled = ParseOnOff(command.GetArg(1), _crosshairAlignEnabled);
-        if (!_crosshairAlignEnabled)
-            ResetCrosshairAlignState();
+            SetCrosshairAlignEnabled(ParseOnOff(command.GetArg(1), _crosshairAlignEnabled));
 
         command.ReplyToCommand($"dtr: crosshair_align={_crosshairAlignEnabled}");
     }
 
-    [ConsoleCommand("dtr_handoff", "dtr_handoff <off|death|contact|death_or_contact> [all|slot]")]
+    [ConsoleCommand("dtr_left_hand_desired", "dtr_left_hand_desired <0|1>")]
+    public void LeftHandDesiredCommand(CCSPlayerController? player, CommandInfo command)
+    {
+        if (command.ArgCount >= 2)
+            ApplyLeftHandDesiredMode(ParseOnOff(command.GetArg(1), _leftHandDesiredEnabled), command.ReplyToCommand);
+
+        command.ReplyToCommand($"dtr: left_hand_desired={FormatOnOff(_leftHandDesiredEnabled)}");
+    }
+
+    [ConsoleCommand("dtr_handoff", "dtr_handoff <off|death|contact|death_or_contact|death_contact_c4> [all|slot]")]
     public void HandoffCommand(CCSPlayerController? player, CommandInfo command)
         => SetHandoffMode(command, argOffset: 1);
 
@@ -298,7 +284,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         {
             if (!TryParseHandoffMode(command.GetArg(argOffset), out var mode))
             {
-                command.ReplyToCommand("usage: dtr_handoff <off|death|contact|death_or_contact> [all|slot]");
+                command.ReplyToCommand("usage: dtr_handoff <off|death|contact|death_or_contact|death_contact_c4> [all|slot]");
                 return;
             }
             _handoffMode = mode;
@@ -313,7 +299,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                 _handoffAllSlots = true;
             else
             {
-                command.ReplyToCommand("usage: dtr_handoff <off|death|contact|death_or_contact> [all|slot]");
+                command.ReplyToCommand("usage: dtr_handoff <off|death|contact|death_or_contact|death_contact_c4> [all|slot]");
                 return;
             }
         }
@@ -419,7 +405,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     {
         if (command.ArgCount < 4)
         {
-            command.ReplyToCommand("usage: dtr_set align <weapons|loadout|active_weapon|slot_lock|projectiles|cosmetics|stickers|charms|crosshair|scoreboard> <off|on>");
+            command.ReplyToCommand("usage: dtr_set align <weapons|loadout|active_weapon|slot_lock|projectiles|cosmetics|stickers|charms|crosshair|left_hand|scoreboard> <off|on>");
             return;
         }
 
@@ -433,16 +419,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             case "active-weapon":
             case "slot_lock":
             case "slot-lock":
-                _weaponAlignEnabled = enabled;
-                if (!_weaponAlignEnabled)
-                {
-                    _pendingWeaponAlign.Clear();
-                    _rebuiltInventorySlots.Clear();
-                    _lastReplayWeaponDef.Clear();
-                    _lastLockedWeaponTarget.Clear();
-                    foreach (var slot in _loadedSlots)
-                        BotControllerNative.UnlockWeaponSlot(slot);
-                }
+                SetWeaponAlignEnabled(enabled);
                 command.ReplyToCommand($"[DTR OK] align weapons={FormatOnOff(_weaponAlignEnabled)}");
                 if (command.GetArg(2).Equals("loadout", StringComparison.OrdinalIgnoreCase) ||
                     command.GetArg(2).Equals("active_weapon", StringComparison.OrdinalIgnoreCase) ||
@@ -455,34 +432,21 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                 return;
             case "projectiles":
             case "projectile":
-                _projectileAlignEnabled = enabled;
-                if (!_projectileAlignEnabled)
-                {
-                    _projectileAlignNextBySlot.Clear();
-                    _pendingProjectileAlign.Clear();
-                }
+                SetProjectileAlignEnabled(enabled);
                 command.ReplyToCommand($"[DTR OK] align projectiles={FormatOnOff(_projectileAlignEnabled)}");
                 return;
             case "cosmetics":
             case "cosmetic":
             case "skins":
             case "skin":
-                _cosmeticAlignEnabled = enabled;
-                if (!_cosmeticAlignEnabled)
-                {
-                    ResetCosmeticAlignState();
-                    ResetStickerAlignState();
-                    ResetCharmAlignState();
-                }
+                SetCosmeticAlignEnabled(enabled);
                 command.ReplyToCommand($"[DTR OK] align cosmetics={FormatOnOff(_cosmeticAlignEnabled)}");
                 if (_cosmeticAlignEnabled)
                     command.ReplyToCommand(CosmeticRiskNotice);
                 return;
             case "stickers":
             case "sticker":
-                _stickerAlignEnabled = enabled;
-                if (!_stickerAlignEnabled)
-                    ResetStickerAlignState();
+                SetStickerAlignEnabled(enabled);
                 command.ReplyToCommand($"[DTR OK] align stickers={FormatOnOff(_stickerAlignEnabled)}");
                 if (_stickerAlignEnabled)
                     command.ReplyToCommand(CosmeticRiskNotice);
@@ -491,9 +455,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             case "charm":
             case "keychains":
             case "keychain":
-                _charmAlignEnabled = enabled;
-                if (!_charmAlignEnabled)
-                    ResetCharmAlignState();
+                SetCharmAlignEnabled(enabled);
                 command.ReplyToCommand($"[DTR OK] align charms={FormatOnOff(_charmAlignEnabled)}");
                 if (_charmAlignEnabled)
                     command.ReplyToCommand(CosmeticRiskNotice);
@@ -501,24 +463,100 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             case "crosshair":
             case "crosshairs":
             case "view":
-                _crosshairAlignEnabled = enabled;
-                if (!_crosshairAlignEnabled)
-                    ResetCrosshairAlignState();
+                SetCrosshairAlignEnabled(enabled);
                 command.ReplyToCommand($"[DTR OK] align crosshair={FormatOnOff(_crosshairAlignEnabled)}");
+                return;
+            case "left_hand":
+            case "left-hand":
+            case "lefthand":
+            case "left_hand_desired":
+            case "left-hand-desired":
+            case "lefthanddesired":
+                ApplyLeftHandDesiredMode(enabled, command.ReplyToCommand);
                 return;
             case "scoreboard":
             case "scoreboards":
             case "scores":
             case "stats":
-                _scoreboardAlignEnabled = enabled;
-                if (!_scoreboardAlignEnabled)
-                    ResetScoreboardAlignState();
+                SetScoreboardAlignEnabled(enabled);
                 command.ReplyToCommand($"[DTR OK] align scoreboard={FormatOnOff(_scoreboardAlignEnabled)}");
                 return;
             default:
-                command.ReplyToCommand("usage: dtr_set align <weapons|loadout|active_weapon|slot_lock|projectiles|cosmetics|stickers|charms|crosshair|scoreboard> <off|on>");
+                command.ReplyToCommand("usage: dtr_set align <weapons|loadout|active_weapon|slot_lock|projectiles|cosmetics|stickers|charms|crosshair|left_hand|scoreboard> <off|on>");
                 return;
         }
+    }
+
+    private void ApplyLeftHandDesiredMode(bool enabled, Action<string> reply)
+    {
+        _leftHandDesiredEnabled = enabled;
+        BotControllerNative.WriteLeftHandDesired = enabled;
+        reply($"[DTR OK] align left_hand_desired={FormatOnOff(_leftHandDesiredEnabled)}");
+        if (!_leftHandDesiredEnabled)
+            reply(LeftHandDesiredFidelityNotice);
+    }
+
+    private void SetWeaponAlignEnabled(bool enabled)
+    {
+        _weaponAlignEnabled = enabled;
+        if (_weaponAlignEnabled)
+            return;
+
+        _pendingWeaponAlign.Clear();
+        _rebuiltInventorySlots.Clear();
+        _lastReplayWeaponDef.Clear();
+        _lastLockedWeaponTarget.Clear();
+        foreach (var slot in _loadedSlots)
+            BotControllerNative.UnlockWeaponSlot(slot);
+    }
+
+    private void SetProjectileAlignEnabled(bool enabled)
+    {
+        _projectileAlignEnabled = enabled;
+        if (_projectileAlignEnabled)
+            return;
+
+        _projectileAlignNextBySlot.Clear();
+        _pendingProjectileAlign.Clear();
+    }
+
+    private void SetCosmeticAlignEnabled(bool enabled)
+    {
+        _cosmeticAlignEnabled = enabled;
+        if (_cosmeticAlignEnabled)
+            return;
+
+        ResetCosmeticAlignState();
+        ResetStickerAlignState();
+        ResetCharmAlignState();
+    }
+
+    private void SetStickerAlignEnabled(bool enabled)
+    {
+        _stickerAlignEnabled = enabled;
+        if (!_stickerAlignEnabled)
+            ResetStickerAlignState();
+    }
+
+    private void SetCharmAlignEnabled(bool enabled)
+    {
+        _charmAlignEnabled = enabled;
+        if (!_charmAlignEnabled)
+            ResetCharmAlignState();
+    }
+
+    private void SetCrosshairAlignEnabled(bool enabled)
+    {
+        _crosshairAlignEnabled = enabled;
+        if (!_crosshairAlignEnabled)
+            ResetCrosshairAlignState();
+    }
+
+    private void SetScoreboardAlignEnabled(bool enabled)
+    {
+        _scoreboardAlignEnabled = enabled;
+        if (!_scoreboardAlignEnabled)
+            ResetScoreboardAlignState();
     }
 
     [ConsoleCommand("dtr_partial", "dtr_partial <0|1>")]
@@ -547,8 +585,8 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         if (command.ArgCount < 2)
         {
             command.ReplyToCommand("usage: dtr_set identity <off|name|full>");
-            command.ReplyToCommand("usage: dtr_set align <weapons|loadout|active_weapon|slot_lock|projectiles|cosmetics|stickers|charms|crosshair|scoreboard> <off|on>");
-            command.ReplyToCommand("usage: dtr_set handoff <off|death|contact|death_or_contact> [slot|all]");
+            command.ReplyToCommand("usage: dtr_set align <weapons|loadout|active_weapon|slot_lock|projectiles|cosmetics|stickers|charms|crosshair|left_hand|scoreboard> <off|on>");
+            command.ReplyToCommand("usage: dtr_set handoff <off|death|contact|death_or_contact|death_contact_c4> [slot|all]");
             command.ReplyToCommand("usage: dtr_set allow_partial <off|on>");
             return;
         }
@@ -622,7 +660,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                         ? $"pool server_round={_poolRoundIndex} candidates={_poolManifest?.Candidates.Count ?? 0}"
                         : "none";
             command.ReplyToCommand(
-                $"[DTR OK] status plan={plan} loaded_slots={_loadedSlots.Count} settings identity={ReplayIdentityModeName()} weapons={FormatOnOff(_weaponAlignEnabled)} projectiles={FormatOnOff(_projectileAlignEnabled)} cosmetics={FormatOnOff(_cosmeticAlignEnabled)} stickers={FormatOnOff(_stickerAlignEnabled)} charms={FormatOnOff(_charmAlignEnabled)} crosshair={FormatOnOff(_crosshairAlignEnabled)} scoreboard={FormatOnOff(_scoreboardAlignEnabled)} handoff={FormatHandoffMode(_handoffMode)}:{(_handoffAllSlots ? "all" : "slot")} allow_partial={FormatOnOff(_partialReplayEnabled)} mp_freezetime={(float.IsFinite(freezeTime) ? freezeTime.ToString("F2", CultureInfo.InvariantCulture) : "unknown")} {(string.IsNullOrEmpty(freezeReason) ? "" : freezeReason)} {FormatCosmeticStatusCounts()} {FormatCrosshairStatusCounts()} {FormatScoreboardStatusCounts()}");
+                $"[DTR OK] status plan={plan} loaded_slots={_loadedSlots.Count} settings identity={ReplayIdentityModeName()} weapons={FormatOnOff(_weaponAlignEnabled)} projectiles={FormatOnOff(_projectileAlignEnabled)} cosmetics={FormatOnOff(_cosmeticAlignEnabled)} stickers={FormatOnOff(_stickerAlignEnabled)} charms={FormatOnOff(_charmAlignEnabled)} crosshair={FormatOnOff(_crosshairAlignEnabled)} left_hand_desired={FormatOnOff(_leftHandDesiredEnabled)} scoreboard={FormatOnOff(_scoreboardAlignEnabled)} handoff={FormatHandoffMode(_handoffMode)}:{(_handoffAllSlots ? "all" : "slot")} allow_partial={FormatOnOff(_partialReplayEnabled)} mp_freezetime={(float.IsFinite(freezeTime) ? freezeTime.ToString("F2", CultureInfo.InvariantCulture) : "unknown")} {(string.IsNullOrEmpty(freezeReason) ? "" : freezeReason)} {FormatCosmeticStatusCounts()} {FormatCrosshairStatusCounts()} {FormatScoreboardStatusCounts()}");
             return;
         }
 
@@ -637,7 +675,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             ? $" pool_next={_poolRoundIndex}"
             : string.Empty;
         command.ReplyToCommand(
-            $"dtr: abi={BotControllerNative.AbiVersion} slot={slot} playing={state.Playing} cursor={state.Cursor} total={state.Total} handoff={FormatHandoffMode(_handoffMode)} scope={(_handoffAllSlots ? "all" : "slot")} handoff_360={_handoffThreat360Enabled}:{_handoffThreat360Range.ToString("F0", CultureInfo.InvariantCulture)} los={_handoffThreat360LosEnabled}:{_rayTraceLosProbe.ProbeStatus} partial={_partialReplayEnabled} identity={ReplayIdentityModeName()} projectile_align={_projectileAlignEnabled} cosmetic_align={_cosmeticAlignEnabled} sticker_align={_stickerAlignEnabled} charm_align={_charmAlignEnabled} crosshair_align={_crosshairAlignEnabled} scoreboard_align={_scoreboardAlignEnabled}{sequence}{pool}");
+            $"dtr: abi={BotControllerNative.AbiVersion} slot={slot} playing={state.Playing} cursor={state.Cursor} total={state.Total} handoff={FormatHandoffMode(_handoffMode)} scope={(_handoffAllSlots ? "all" : "slot")} handoff_360={_handoffThreat360Enabled}:{_handoffThreat360Range.ToString("F0", CultureInfo.InvariantCulture)} los={_handoffThreat360LosEnabled}:{_rayTraceLosProbe.ProbeStatus} partial={_partialReplayEnabled} identity={ReplayIdentityModeName()} projectile_align={_projectileAlignEnabled} cosmetic_align={_cosmeticAlignEnabled} sticker_align={_stickerAlignEnabled} charm_align={_charmAlignEnabled} crosshair_align={_crosshairAlignEnabled} left_hand_desired={_leftHandDesiredEnabled} scoreboard_align={_scoreboardAlignEnabled}{sequence}{pool}");
     }
 
     [ConsoleCommand("dtr_runtime", "dtr_runtime")]
@@ -666,7 +704,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         command.ReplyToCommand(
             $"[DTR DOCTOR] bots players T={tPlayers}/CT={ctPlayers} strict_bots={strictBots} bot_hider_managed={managedBots} safe_replay_targets={replayTargets.Count}");
         command.ReplyToCommand(
-            $"[DTR DOCTOR] replay loaded={_loadedSlots.Count} playing={loadedPlaying} identity={ReplayIdentityModeName()} weapons={FormatOnOff(_weaponAlignEnabled)} projectiles={FormatOnOff(_projectileAlignEnabled)} cosmetics={FormatOnOff(_cosmeticAlignEnabled)} stickers={FormatOnOff(_stickerAlignEnabled)} charms={FormatOnOff(_charmAlignEnabled)} crosshair={FormatOnOff(_crosshairAlignEnabled)} scoreboard={FormatOnOff(_scoreboardAlignEnabled)} handoff={FormatHandoffMode(_handoffMode)}:{(_handoffAllSlots ? "all" : "slot")} partial={FormatOnOff(_partialReplayEnabled)} raytrace={_rayTraceLosProbe.ProbeStatus} {FormatCosmeticStatusCounts()} {FormatCrosshairStatusCounts()} {FormatScoreboardStatusCounts()}");
+            $"[DTR DOCTOR] replay loaded={_loadedSlots.Count} playing={loadedPlaying} identity={ReplayIdentityModeName()} weapons={FormatOnOff(_weaponAlignEnabled)} projectiles={FormatOnOff(_projectileAlignEnabled)} cosmetics={FormatOnOff(_cosmeticAlignEnabled)} stickers={FormatOnOff(_stickerAlignEnabled)} charms={FormatOnOff(_charmAlignEnabled)} crosshair={FormatOnOff(_crosshairAlignEnabled)} left_hand_desired={FormatOnOff(_leftHandDesiredEnabled)} scoreboard={FormatOnOff(_scoreboardAlignEnabled)} handoff={FormatHandoffMode(_handoffMode)}:{(_handoffAllSlots ? "all" : "slot")} partial={FormatOnOff(_partialReplayEnabled)} raytrace={_rayTraceLosProbe.ProbeStatus} {FormatCosmeticStatusCounts()} {FormatCrosshairStatusCounts()} {FormatScoreboardStatusCounts()}");
 
         if (command.ArgCount >= 2)
             ReplyDoctorManifest(command, command.GetArg(1));
@@ -787,6 +825,22 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                 HandoffActiveReplays($"player_death_slot{triggerSlot}", triggerSlot);
         }
 
+        return HookResult.Continue;
+    }
+
+    [GameEventHandler]
+    public HookResult OnBombPlanted(EventBombPlanted @event, GameEventInfo info)
+    {
+        if (!HandoffIncludesC4(_handoffMode) || !HasActiveReplaySlots())
+            return HookResult.Continue;
+
+        var triggerSlot = @event.Userid is { IsValid: true } planter && IsReplaySlotPlaying(planter.Slot)
+            ? planter.Slot
+            : -1;
+        HandoffActiveReplays(
+            triggerSlot >= 0 ? $"bomb_planted_slot{triggerSlot}" : "bomb_planted",
+            triggerSlot,
+            forceAll: true);
         return HookResult.Continue;
     }
 
@@ -1004,6 +1058,11 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             case "bomb_pickup":
                 // Safe C4 ownership is aligned before replay start. Do not clone or move C4
                 // during live replay ticks.
+                break;
+
+            case "bomb_planted":
+                // Actual server bomb_planted drives C4 handoff. Demo metadata stays
+                // record-only so a failed or delayed live plant cannot hand off early.
                 break;
         }
     }
@@ -3948,7 +4007,8 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         Off,
         Death,
         Contact,
-        DeathOrContact
+        DeathOrContact,
+        DeathContactC4
     }
 
     private static string EscapeConsoleString(string value)
@@ -4073,20 +4133,29 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             "0" or "off" or "none" => HandoffMode.Off,
             "death" or "kill" => HandoffMode.Death,
             "contact" or "see" or "sight" => HandoffMode.Contact,
-            "1" or "death_or_contact" or "contact_or_death" or "auto" => HandoffMode.DeathOrContact,
+            "death_or_contact" or "contact_or_death" => HandoffMode.DeathOrContact,
+            "1" or "auto" or "default" or
+            "death_contact_c4" or "death_contact_c4planted" or "death_contact_c4_planted" or
+            "death_or_contact_or_c4" or "death_or_contact_or_bomb" or "death_contact_bomb" => HandoffMode.DeathContactC4,
             _ => HandoffMode.Off
         };
         return value.ToLowerInvariant() is "0" or "off" or "none" or
             "death" or "kill" or
             "contact" or "see" or "sight" or
-            "1" or "death_or_contact" or "contact_or_death" or "auto";
+            "death_or_contact" or "contact_or_death" or
+            "1" or "auto" or "default" or
+            "death_contact_c4" or "death_contact_c4planted" or "death_contact_c4_planted" or
+            "death_or_contact_or_c4" or "death_or_contact_or_bomb" or "death_contact_bomb";
     }
 
     private static bool HandoffIncludesDeath(HandoffMode mode)
-        => mode is HandoffMode.Death or HandoffMode.DeathOrContact;
+        => mode is HandoffMode.Death or HandoffMode.DeathOrContact or HandoffMode.DeathContactC4;
 
     private static bool HandoffIncludesContact(HandoffMode mode)
-        => mode is HandoffMode.Contact or HandoffMode.DeathOrContact;
+        => mode is HandoffMode.Contact or HandoffMode.DeathOrContact or HandoffMode.DeathContactC4;
+
+    private static bool HandoffIncludesC4(HandoffMode mode)
+        => mode is HandoffMode.DeathContactC4;
 
     private static string FormatHandoffMode(HandoffMode mode)
         => mode switch
@@ -4095,6 +4164,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             HandoffMode.Death => "death",
             HandoffMode.Contact => "contact",
             HandoffMode.DeathOrContact => "death_or_contact",
+            HandoffMode.DeathContactC4 => "death_contact_c4",
             _ => "off"
         };
 

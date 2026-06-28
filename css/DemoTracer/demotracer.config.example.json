@@ -1,0 +1,21 @@
+{
+  "identity": "full",
+  "allow_partial": true,
+  "handoff": {
+    "mode": "death_contact_c4",
+    "scope": "slot",
+    "threat_360": true,
+    "threat_360_range": 420,
+    "threat_360_los": true
+  },
+  "align": {
+    "weapons": true,
+    "projectiles": true,
+    "crosshair": true,
+    "left_hand_desired": true,
+    "cosmetics": false,
+    "stickers": false,
+    "charms": false,
+    "scoreboard": false
+  }
+}

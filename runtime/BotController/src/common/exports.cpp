@@ -17,7 +17,7 @@
 namespace
 {
     constexpr int kBotControllerAbiMajor = 16;
-    constexpr int kBotControllerAbiMinor = 1;
+    constexpr int kBotControllerAbiMinor = 2;
     constexpr uint64_t kCapabilityReplaySlotState = 1ULL << 0;
     constexpr uint64_t kCapabilityStartReplayAt = 1ULL << 1;
     constexpr uint64_t kCapabilityStartReplayUntil = 1ULL << 2;
@@ -27,6 +27,7 @@ namespace
     constexpr uint64_t kCapabilityBuyPlan = 1ULL << 6;
     constexpr uint64_t kCapabilityControllerBotOffset = 1ULL << 7;
     constexpr uint64_t kCapabilityExtendedReplay = 1ULL << 8;
+    constexpr uint64_t kCapabilityUsercmdMovementIntent = 1ULL << 9;
     constexpr uint64_t kBotControllerCapabilities =
         kCapabilityReplaySlotState |
         kCapabilityStartReplayAt |
@@ -36,7 +37,8 @@ namespace
         kCapabilityPovMask |
         kCapabilityBuyPlan |
         kCapabilityControllerBotOffset |
-        kCapabilityExtendedReplay;
+        kCapabilityExtendedReplay |
+        kCapabilityUsercmdMovementIntent;
 
 #pragma pack(push, 4)
     struct BotControllerAbiInfo
@@ -123,6 +125,46 @@ extern "C" __declspec(dllexport) int BotController_SetReplayPovMask(uint64_t mas
 {
     BotController::MotionRecorder::SetReplayPovMask(mask);
     return 0;
+}
+
+extern "C" __declspec(dllexport) int BotController_SetUsercmdMovementIntent(
+    int slot,
+    uint64_t buttonsSet,
+    uint64_t buttonsClear,
+    float analogForward,
+    float analogLeft,
+    int durationMs,
+    int flags)
+{
+    return BotController::InputInjector::SetUsercmdMovementIntent(
+               slot, buttonsSet, buttonsClear, analogForward, analogLeft,
+               durationMs, flags)
+               ? 0
+               : -1;
+}
+
+extern "C" __declspec(dllexport) int BotController_ClearUsercmdMovementIntent(int slot)
+{
+    return BotController::InputInjector::ClearUsercmdMovementIntent(slot) ? 0 : -1;
+}
+
+extern "C" __declspec(dllexport) int BotController_SetLeftHandIntent(
+    int slot,
+    uint64_t buttonsSet,
+    uint64_t buttonsClear,
+    float analogForward,
+    float analogLeft,
+    int durationMs,
+    int flags)
+{
+    return BotController_SetUsercmdMovementIntent(
+        slot, buttonsSet, buttonsClear, analogForward, analogLeft,
+        durationMs, flags);
+}
+
+extern "C" __declspec(dllexport) int BotController_ClearLeftHandIntent(int slot)
+{
+    return BotController_ClearUsercmdMovementIntent(slot);
 }
 
 // ---- Bot buy plans ----

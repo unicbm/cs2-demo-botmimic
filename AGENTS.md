@@ -71,11 +71,16 @@ or legacy CS:GO paths.
 - Never assign replay control to real human players. Valid targets are strict
   CS2 bots or slots known to be bot-managed by the BotHider/shared-state path.
 - Default replay fidelity settings are identity `full`, weapon/loadout alignment
-  on, projectile alignment on, crosshair alignment on, partial replay on, and
-  handoff `death_or_contact slot`. Cosmetic, sticker, and scoreboard alignment
-  are default-off.
-- `dtr_handoff death_or_contact slot` is the safe default for opening-route
-  replay.
+  on, projectile alignment on, crosshair alignment on, left-hand desired writes
+  on, partial replay on, and handoff `death_contact_c4 slot`. Cosmetic, sticker,
+  and scoreboard alignment are default-off.
+- Runtime default preferences may be loaded from server-local
+  `demotracer.config.json` next to `DemoTracer.dll`. Keep the committed
+  `demotracer.config.example.json` sanitized; do not commit private server
+  configs.
+- `dtr_handoff death_contact_c4 slot` is the safe default for opening-route
+  replay. Death/contact handoff follows the configured scope; C4 planted releases
+  all active replay slots because it is a round-phase handoff.
 - On stop, unload, finish, handoff, or failure, release replay state: stop
   replay, clear input injection, unlock weapon locks, clear pending alignments,
   and reset bot state that would bias later rounds.

@@ -9,8 +9,7 @@ console line.
 
 ```text
 css_plugins reload DemoTracer
-dtr_set handoff death_or_contact slot
-dtr_set allow_partial on
+dtr_config_status
 dtr_go seq "<output-dir>\<demo-id>\manifest.json" 0
 ```
 
@@ -25,6 +24,41 @@ and `pool` for economy-matched pool playback. `dtr_go` validates the plan,
 arms it, then issues `mp_restartgame 1` so playback catches a fresh
 `round_start`.
 
+## Runtime Config JSON
+
+DemoTracer reads optional runtime defaults from `demotracer.config.json` next to
+`DemoTracer.dll`. The repository ships `demotracer.config.example.json` as a
+sanitized starting point. The JSON controls server-local runtime preferences
+only; it is not written into `.dtr` files or manifests.
+
+```json
+{
+  "identity": "full",
+  "allow_partial": true,
+  "handoff": {
+    "mode": "death_contact_c4",
+    "scope": "slot",
+    "threat_360": true,
+    "threat_360_range": 420,
+    "threat_360_los": true
+  },
+  "align": {
+    "weapons": true,
+    "projectiles": true,
+    "crosshair": true,
+    "left_hand_desired": true,
+    "cosmetics": false,
+    "stickers": false,
+    "charms": false,
+    "scoreboard": false
+  }
+}
+```
+
+Use `dtr_config_reload` after editing the file. Console commands such as
+`dtr_set handoff ...` still work as temporary overrides until the config is
+reloaded or the plugin is reloaded.
+
 ## Defaults
 
 | Setting | Default | Meaning |
@@ -35,7 +69,8 @@ arms it, then issues `mp_restartgame 1` so playback catches a fresh
 | `dtr_sticker_align` | `0` | Consume extra opt-in weapon sticker evidence under cosmetic alignment. |
 | `dtr_charm_align` | `0` | Consume extra opt-in weapon charm/keychain evidence under cosmetic alignment. |
 | `dtr_crosshair_align` | `1` | Apply demo-evidence crosshair codes to human viewers while they watch replay bots in-eye. |
-| `dtr_handoff` | `death_or_contact slot` | Release only the contacted/dead replay slot after contact or death. |
+| `dtr_left_hand_desired` | `1` | Write demo `left_hand_desired` usercmd evidence into replay command frames. |
+| `dtr_handoff` | `death_contact_c4 slot` | Release the contacted/dead replay slot after contact or death; C4 planted releases all active replay slots. |
 | `dtr_partial` | `1` | Allow replay with fewer bots than manifest players. |
 | `dtr_replay_identity` | `full` | Write demo name, SteamID64, and demo-provided avatar overrides through BotHider-managed replay bot slots when available. |
 | `dtr_util_trace` | `0` | Utility CSV trace disabled. |
@@ -346,6 +381,21 @@ watching a safe replay bot in-eye. Missing or contradictory demo evidence is
 skipped. This affects POV/spectator fidelity only; it does not change movement,
 weapons, projectiles, replay bot state, or inventory cosmetics.
 
+### `dtr_left_hand_desired <0|1>`
+
+Controls whether newly loaded `.dtr` v7 command frames keep
+`left_hand_desired` writes.
+
+- `1`: preserve demo left-hand/right-hand desired state. This is the default
+  and highest-fidelity behavior.
+- `0`: strip left-hand desired writes before loading replay frames into native
+  playback. This lowers replay fidelity, but significantly improves handoff
+  smoothness when a left-hand replay bot would otherwise switch back to the
+  server default right-hand viewmodel after handoff.
+
+The setting affects replays loaded after the command is changed. Reload the
+round, sequence, or pool plan to apply it to already loaded replay slots.
+
 ### `dtr_replay_identity <0|1>`
 
 Controls BotHider identity alignment.
@@ -369,7 +419,7 @@ players.
   T/CT counts.
 - `0`: fail loading unless all manifest players can be assigned.
 
-### `dtr_handoff <off|death|contact|death_or_contact> [all|slot]`
+### `dtr_handoff <off|death|contact|death_or_contact|death_contact_c4> [all|slot]`
 
 Controls when replay releases bot control back to normal bot behavior.
 
@@ -379,12 +429,17 @@ Modes:
 - `death`: hand off when a replay-controlled player dies or kills.
 - `contact`: hand off on combat/contact detection.
 - `death_or_contact`: use both death and contact triggers.
+- `death_contact_c4`: use death, contact, and C4 planted triggers. This is the
+  default.
 
 Scope:
 
 - `slot`: release only the trigger slot. This is the intended safe default.
 - `all`: release every replaying slot when one trigger fires. Use only for
   experiments.
+
+C4 planted is round-phase handoff, not an individual duel trigger. It releases
+all active replay slots even when scope is `slot`.
 
 Contact implementation:
 
@@ -395,19 +450,32 @@ Contact implementation:
 
 ## Diagnostics
 
+### `dtr_config_reload`
+
+Reloads `demotracer.config.json` from the plugin directory and applies it to the
+current runtime settings. If the file is missing, built-in defaults remain
+active.
+
+### `dtr_config_status`
+
+Prints the config path, whether the file exists, and the effective runtime
+settings.
+
 ### `dtr_runtime`
 
 Prints the runtime version matrix: expected and loaded native ABI, capability
-bitset, missing required capability bits, native build id, supported `.dtr`
-reader range, platform, and `DemoTracerApi` version.
+bitset, missing required capability bits, native build id, optional
+`UsercmdMovementIntent`/`LeftHandIntent` export status, supported `.dtr` reader
+range, platform, and `DemoTracerApi` version.
 
 ### `dtr_doctor [manifest.json|pool_manifest.json]`
 
 Prints a compact health check: native ABI compatibility, capability bitset,
-native build id, supported `.dtr` reader range, platform, `DemoTracerApi`
-version, current map/time, freeze-time ConVar, bot counts, BotHider-managed
-slots, safe replay targets, loaded/playing replay counts, alignment settings,
-handoff mode, RayTrace status, and optional manifest or pool-manifest summary.
+native build id, optional `UsercmdMovementIntent`/`LeftHandIntent` export
+status, supported `.dtr` reader range, platform, `DemoTracerApi` version,
+current map/time, freeze-time ConVar, bot counts, BotHider-managed slots, safe
+replay targets, loaded/playing replay counts, alignment settings, handoff mode,
+RayTrace status, and optional manifest or pool-manifest summary.
 
 Use this first when playback does not start, starts with fewer slots than
 expected, or a sample pack is being checked on a new server.

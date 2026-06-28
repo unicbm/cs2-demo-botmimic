@@ -29,6 +29,32 @@ internal static partial class BotControllerNative
     private static extern int BotController_SetReplayPovMask(ulong mask);
 
     [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int BotController_SetUsercmdMovementIntent(
+        int slot,
+        ulong buttonsSet,
+        ulong buttonsClear,
+        float analogForward,
+        float analogLeft,
+        int durationMs,
+        int flags);
+
+    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int BotController_ClearUsercmdMovementIntent(int slot);
+
+    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int BotController_SetLeftHandIntent(
+        int slot,
+        ulong buttonsSet,
+        ulong buttonsClear,
+        float analogForward,
+        float analogLeft,
+        int durationMs,
+        int flags);
+
+    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
+    private static extern int BotController_ClearLeftHandIntent(int slot);
+
+    [DllImport("BotController", CallingConvention = CallingConvention.Cdecl)]
     private static extern int BotController_LoadReplay(
         int slot,
         [In] NativeReplayTick[] ticks,

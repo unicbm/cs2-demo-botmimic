@@ -40,6 +40,9 @@ namespace BotController::targets
         kServices_DuckSpeed      = Sig::FindPlatformOffset(gd, "CCSPlayer_MovementServices::DuckSpeed", kServices_DuckSpeed);
         kServices_DesiresDuck    = Sig::FindPlatformOffset(gd, "CCSPlayer_MovementServices::DesiresDuck", kServices_DesiresDuck);
         kServices_Ducking        = Sig::FindPlatformOffset(gd, "CCSPlayer_MovementServices::Ducking", kServices_Ducking);
+        kMove_ForwardMove        = Sig::FindPlatformOffset(gd, "CMoveData::ForwardMove", kMove_ForwardMove);
+        kMove_SideMove           = Sig::FindPlatformOffset(gd, "CMoveData::SideMove", kMove_SideMove);
+        kMove_UpMove             = Sig::FindPlatformOffset(gd, "CMoveData::UpMove", kMove_UpMove);
         kMove_Velocity           = Sig::FindPlatformOffset(gd, "CMoveData::Velocity", kMove_Velocity);
         kMove_AbsOrigin          = Sig::FindPlatformOffset(gd, "CMoveData::AbsOrigin", kMove_AbsOrigin);
         kVtIdx_PlayerRunCommand  = Sig::FindPlatformOffset(gd, "vtidx::PlayerRunCommand", kVtIdx_PlayerRunCommand);

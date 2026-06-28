@@ -368,10 +368,22 @@ P/Invoke binding for the native BotController replay runtime. Use it only for
 low-level BotController tools that intentionally work with native replay
 buffers and engine primitives.
 
-Companion CounterStrikeSharp plugins should depend on
-`css/DemoTracerApi/IDemoTracerApi.cs` through the `demotracer:api` plugin
-capability. They should not call BotController native exports, copy
-DemoTracer's internal interop layer, or depend on `.dtr` replay struct layout.
+BotController also exposes optional `BotController_SetUsercmdMovementIntent`
+and `BotController_ClearUsercmdMovementIntent` native exports for short-lived
+WASD/duck/jump-style usercmd movement leases. `BotController_SetLeftHandIntent`
+and `BotController_ClearLeftHandIntent` are compatibility aliases for older
+left-hand movement callers. These are low-level input primitives, not
+DemoTracer companion API or movement policy. The runtime applies only movement
+button bits (WASD, duck, jump) and ignores attack/weapon/aim-style input. Active
+DTR replay owns its replay slot; loading, starting, stopping, finishing, or
+clearing replay state clears any movement intent on that slot.
+
+Companion CounterStrikeSharp plugins that integrate with DemoTracer replay state
+should depend on `css/DemoTracerApi/IDemoTracerApi.cs` through the
+`demotracer:api` plugin capability. They should not copy DemoTracer's internal
+interop layer or depend on `.dtr` replay struct layout. Direct BotController
+native calls are reserved for low-level runtime integrations that intentionally
+target BotController engine primitives, such as usercmd movement intent.
 
 ## Convert One Demo
 
@@ -553,10 +565,7 @@ In the server console:
 
 ```text
 css_plugins reload DemoTracer
-dtr_set align weapons on
-dtr_set align projectiles on
-dtr_set handoff death_or_contact slot
-dtr_set allow_partial on
+dtr_config_status
 dtr_go seq "<output-dir>\<demo-id>\manifest.json" 0
 ```
 
@@ -567,6 +576,11 @@ dtr_go seq "<output-dir>\<demo-id>\manifest.json" 0
 Replay identity is `full` by default. When BotHider is managing the replay bot
 slots, loading a manifest writes demo names, SteamID64 values, and any matching
 demo-provided avatar PNG overrides.
+
+Runtime defaults can be kept in `demotracer.config.json` next to
+`DemoTracer.dll`. Start from `demotracer.config.example.json`, then run
+`dtr_config_reload` after editing it. Console commands such as `dtr_set handoff`
+still work as temporary overrides for the currently running plugin.
 
 When full-round playback starts, DemoTracer treats the selected replay bots as
 being reset to the replay round start: alive replay bots are restored to 100 HP,
@@ -611,6 +625,12 @@ metadata to safe replay bots.
 stable demo-observed `crosshair_code` to a human viewer while they are watching
 a safe replay bot in-eye, then restores the viewer's original crosshair when
 they leave that replay POV.
+
+`dtr_set align left_hand off` disables replay writes of `.dtr`
+`left_hand_desired` command frames for newly loaded replays. This lowers replay
+fidelity, but significantly improves handoff smoothness when a left-hand replay
+bot would otherwise switch back to the server default right-hand viewmodel after
+handoff.
 
 To start a sequence from a later source round:
 
