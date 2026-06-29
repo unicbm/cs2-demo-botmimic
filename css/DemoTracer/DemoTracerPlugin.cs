@@ -57,6 +57,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     private const string LeftHandDesiredFidelityNotice = "[DTR WARN] left_hand_desired=off 会降低保真度，但显著增高handoff流畅性。Reload loaded replays or plans for this setting to apply.";
 
     private readonly List<int> _loadedSlots = new();
+    private readonly HashSet<int> _demoTracerOwnedSlots = new();
     private readonly Dictionary<int, LoadedReplay> _loadedReplays = new();
     private readonly Dictionary<int, int> _lastEnsuredWeaponDef = new();
     private readonly Dictionary<int, int> _lastReplayWeaponDef = new();
@@ -201,6 +202,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     private bool IsDisconnectingReplaySlot(int slot)
     {
         if (_loadedSlots.Contains(slot) ||
+            _demoTracerOwnedSlots.Contains(slot) ||
             _loadedReplays.ContainsKey(slot) ||
             _lastPlayingSlots.Contains(slot) ||
             _queuedNadeStartTokens.ContainsKey(slot) ||
@@ -3101,12 +3103,15 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                     return false;
 
                 startIndex = FreezePrerollStartIndex(replay, freezeTimeSeconds ?? 0.0f);
-                return startIndex < replay.PlayStartTickIndex &&
-                       BotControllerNative.StartReplayUntil(
-                           slot,
-                           loop,
-                           startIndex,
-                           replay.PlayStartTickIndex);
+                var startedUntil = startIndex < replay.PlayStartTickIndex &&
+                                   BotControllerNative.StartReplayUntil(
+                                       slot,
+                                       loop,
+                                       startIndex,
+                                       replay.PlayStartTickIndex);
+                if (startedUntil)
+                    _demoTracerOwnedSlots.Add(slot);
+                return startedUntil;
             }
 
             startIndex = anchor switch
@@ -3115,7 +3120,10 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                 _ => 0,
             };
         }
-        return BotControllerNative.StartReplayAt(slot, loop, startIndex);
+        var started = BotControllerNative.StartReplayAt(slot, loop, startIndex);
+        if (started)
+            _demoTracerOwnedSlots.Add(slot);
+        return started;
     }
 
     private void ScheduleFreezePrerollStart(string label)
@@ -3368,6 +3376,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         }
         StopUntrackedNativeReplaySlots(trackedSlots, "unload_all");
         _loadedSlots.Clear();
+        _demoTracerOwnedSlots.Clear();
         _loadedReplays.Clear();
         _lastEnsuredWeaponDef.Clear();
         _lastReplayWeaponDef.Clear();
@@ -3416,6 +3425,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         try
         {
             var hadReplayState = _loadedSlots.Count > 0 ||
+                                 _demoTracerOwnedSlots.Count > 0 ||
                                  _loadedReplays.Count > 0 ||
                                  _lastPlayingSlots.Count > 0 ||
                                  _queuedNadeStartTokens.Count > 0 ||
@@ -3440,6 +3450,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             _lastReplayPovMask = 0;
 
             _loadedSlots.Clear();
+            _demoTracerOwnedSlots.Clear();
             _loadedReplays.Clear();
             _lastEnsuredWeaponDef.Clear();
             _lastReplayWeaponDef.Clear();
@@ -3488,6 +3499,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     private bool HasReplayLifecycleState(bool includeNative = false)
     {
         if (_loadedSlots.Count > 0 ||
+            _demoTracerOwnedSlots.Count > 0 ||
             _loadedReplays.Count > 0 ||
             _lastPlayingSlots.Count > 0 ||
             _queuedNadeStartTokens.Count > 0 ||
@@ -3643,6 +3655,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         _projectileAlignNextBySlot.Remove(slot);
         _replayHifiEventNextBySlot.Remove(slot);
         _queuedNadeStartTokens.Remove(slot);
+        _demoTracerOwnedSlots.Remove(slot);
         _rebuiltInventorySlots.Remove(slot);
         _loadoutSyncedSlots.Remove(slot);
         _pendingBulletHits.Remove(slot);
@@ -3712,10 +3725,33 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         return state.Playing || _queuedNadeStartTokens.ContainsKey(slot);
     }
 
+    private bool IsDemoTracerBot(int slot)
+    {
+        if (slot < 0)
+            return false;
+
+        if (_demoTracerOwnedSlots.Contains(slot) ||
+            _queuedNadeStartTokens.ContainsKey(slot))
+        {
+            return true;
+        }
+
+        if (_armed || _armedPrepared || _sequenceActive || _poolActive)
+        {
+            var player = Utilities.GetPlayerFromSlot(slot);
+            if (player is { IsValid: true } && IsReplayTargetBot(player))
+                return true;
+        }
+
+        var state = BotControllerNative.GetReplayState(slot);
+        return state.Playing;
+    }
+
     private void RememberLoadedSlot(int slot)
     {
         if (!_loadedSlots.Contains(slot))
             _loadedSlots.Add(slot);
+        _demoTracerOwnedSlots.Add(slot);
     }
 
     private void ForgetLoadedReplayMetadata(int slot)

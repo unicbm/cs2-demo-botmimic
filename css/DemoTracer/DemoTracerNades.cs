@@ -139,7 +139,7 @@ public sealed partial class DemoTracerPlugin
             _plugin = plugin;
         }
 
-        public int ApiVersion => 2;
+        public int ApiVersion => BotControllerNative.DemoTracerApiVersion;
 
         public bool TryLoadNadeManifest(
             string manifestPath,
@@ -197,6 +197,9 @@ public sealed partial class DemoTracerPlugin
 
         public bool IsSlotBusy(int slot)
             => _plugin.IsReplaySlotBusy(slot);
+
+        public bool IsDemoTracerBot(int slot)
+            => _plugin.IsDemoTracerBot(slot);
 
         private static DemoTracerNadeManifest ToApiManifest(NadeManifest manifest)
         {

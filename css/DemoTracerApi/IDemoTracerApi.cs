@@ -26,6 +26,8 @@ public interface IDemoTracerApi
         out DemoTracerNadeRunResult result);
 
     bool IsSlotBusy(int slot);
+
+    bool IsDemoTracerBot(int slot);
 }
 
 public sealed class DemoTracerNadeManifest
