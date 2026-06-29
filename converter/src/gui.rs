@@ -99,7 +99,6 @@ struct GuiSettings {
     export_cosmetics: bool,
     export_stickers: bool,
     export_charms: bool,
-    simple_mode: bool,
     advanced_open: bool,
     activity_open: bool,
 }
@@ -119,7 +118,6 @@ impl Default for GuiSettings {
             export_cosmetics: false,
             export_stickers: false,
             export_charms: false,
-            simple_mode: true,
             advanced_open: false,
             activity_open: false,
         }
@@ -383,9 +381,21 @@ impl DemoTracerGui {
             .add_filter("CS2 demo", &["dem"])
             .pick_file()
         {
-            self.settings.demo_path = path.display().to_string();
-            self.save_settings();
+            self.set_demo_path(path);
         }
+    }
+
+    fn set_demo_path(&mut self, path: PathBuf) {
+        let next = path.display().to_string();
+        if self.settings.demo_path != next {
+            self.parsed = None;
+            self.analysis = None;
+            self.round_selection.clear();
+            self.result = None;
+            self.error = None;
+        }
+        self.settings.demo_path = next;
+        self.save_settings();
     }
 
     fn browse_output(&mut self) {
@@ -402,8 +412,7 @@ impl DemoTracerGui {
                 continue;
             };
             if is_demo_file(&path) {
-                self.settings.demo_path = path.display().to_string();
-                self.save_settings();
+                self.set_demo_path(path);
             } else if path.is_dir() {
                 self.settings.output_dir = path.display().to_string();
                 self.save_settings();
@@ -639,20 +648,9 @@ impl DemoTracerGui {
             .inner_margin(egui::Margin::symmetric(12, 8))
             .show(ui, |ui| {
                 let total = ui.available_width();
-                let demo_width = if self.settings.simple_mode {
-                    (total * 0.52).clamp(280.0, 640.0)
-                } else {
-                    (total * 0.34).clamp(220.0, 420.0)
-                };
+                let demo_width = (total * 0.34).clamp(220.0, 420.0);
                 let output_width = (total * 0.24).clamp(160.0, 320.0);
                 ui.horizontal_wrapped(|ui| {
-                    let simple_changed = ui
-                        .checkbox(&mut self.settings.simple_mode, tr(lang, "simple_mode"))
-                        .changed();
-                    if simple_changed {
-                        self.save_settings();
-                    }
-                    ui.separator();
                     ui.label(RichText::new(tr(lang, "demo")).strong());
                     ui.add_sized(
                         [demo_width, 30.0],
@@ -661,16 +659,14 @@ impl DemoTracerGui {
                     if ui.button(tr(lang, "browse")).clicked() {
                         self.browse_demo();
                     }
-                    if !self.settings.simple_mode {
-                        ui.separator();
-                        ui.label(RichText::new(tr(lang, "output")).strong());
-                        ui.add_sized(
-                            [output_width, 30.0],
-                            egui::TextEdit::singleline(&mut self.settings.output_dir),
-                        );
-                        if ui.button(tr(lang, "folder")).clicked() {
-                            self.browse_output();
-                        }
+                    ui.separator();
+                    ui.label(RichText::new(tr(lang, "output")).strong());
+                    ui.add_sized(
+                        [output_width, 30.0],
+                        egui::TextEdit::singleline(&mut self.settings.output_dir),
+                    );
+                    if ui.button(tr(lang, "folder")).clicked() {
+                        self.browse_output();
                     }
                     ui.separator();
                     ui.add_enabled_ui(!self.is_running(), |ui| {
@@ -697,26 +693,6 @@ impl DemoTracerGui {
                     });
                     if ui.button(tr(lang, "open_result")).clicked() {
                         self.open_result_folder();
-                    }
-                    if self.settings.simple_mode {
-                        ui.separator();
-                        let cosmetics_changed = ui
-                            .checkbox(
-                                &mut self.settings.export_cosmetics,
-                                tr(lang, "export_cosmetics_simple"),
-                            )
-                            .changed();
-                        if cosmetics_changed {
-                            self.cosmetic_acknowledged = false;
-                            self.cosmetic_confirmation.clear();
-                            if self.settings.export_cosmetics {
-                                self.show_cosmetic_disclaimer = true;
-                            } else {
-                                self.settings.export_stickers = false;
-                                self.settings.export_charms = false;
-                            }
-                            self.save_settings();
-                        }
                     }
                 });
             });
@@ -1175,19 +1151,6 @@ impl DemoTracerGui {
             .inner_margin(egui::Margin::symmetric(10, 8))
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    if self.settings.simple_mode {
-                        ui.label(RichText::new(tr(lang, "output")).strong());
-                        changed |= ui
-                            .add_sized(
-                                [260.0, 28.0],
-                                egui::TextEdit::singleline(&mut self.settings.output_dir),
-                            )
-                            .changed();
-                        if ui.button(tr(lang, "folder")).clicked() {
-                            self.browse_output();
-                        }
-                        ui.separator();
-                    }
                     egui::ComboBox::from_label(tr(lang, "side"))
                         .selected_text(side_label(self.settings.side, lang))
                         .show_ui(ui, |ui| {
@@ -2139,7 +2102,6 @@ fn tr(lang: UiLanguage, key: &str) -> &'static str {
             "analyze" => "解析",
             "convert" => "转换",
             "open_result" => "打开 output",
-            "simple_mode" => "极简模式",
             "rounds" => "回合",
             "round" => "回合",
             "status" => "状态",
@@ -2195,7 +2157,6 @@ fn tr(lang: UiLanguage, key: &str) -> &'static str {
             "freeze_preroll" => "freeze pre-roll",
             "sync_scoreboard" => "同步比分",
             "export_cosmetics" => "导出饰品",
-            "export_cosmetics_simple" => "导出饰品证据（GSLT 风险）",
             "export_stickers" => "导出贴纸",
             "export_charms" => "导出挂坠",
             "risk_confirmed" => "风险已确认",
@@ -2240,7 +2201,6 @@ fn tr(lang: UiLanguage, key: &str) -> &'static str {
             "analyze" => "Analyze",
             "convert" => "Convert",
             "open_result" => "Open output",
-            "simple_mode" => "Simple mode",
             "rounds" => "Rounds",
             "round" => "Round",
             "status" => "Status",
@@ -2296,7 +2256,6 @@ fn tr(lang: UiLanguage, key: &str) -> &'static str {
             "freeze_preroll" => "freeze pre-roll",
             "sync_scoreboard" => "Sync scoreboard",
             "export_cosmetics" => "Export cosmetics",
-            "export_cosmetics_simple" => "Export cosmetic evidence (GSLT risk)",
             "export_stickers" => "Export stickers",
             "export_charms" => "Export charms",
             "risk_confirmed" => "risk confirmed",
@@ -2810,7 +2769,6 @@ mod tests {
 
         assert_eq!(settings.language, LanguageChoice::System);
         assert_eq!(settings.theme, ThemeChoice::System);
-        assert!(settings.simple_mode);
         assert!(!settings.advanced_open);
         assert!(!settings.activity_open);
         assert!(!settings.sync_scoreboard);

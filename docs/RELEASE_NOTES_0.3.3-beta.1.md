@@ -3,7 +3,7 @@
 ## Highlights
 
 - 新增三层 runtime 命令体系：`dtr_align`、`dtr_match`、`dtr_cosmetics`
-- GUI 新增极简模式：先选 DEM，默认双方阵营、10 秒 freeze pre-roll、排除可疑回合
+- GUI 保持完整工作台模式，删除额外模式切换
 - GUI 不再生成 `dtr_set align scoreboard off`
 - `kickid` 或单个 replay slot 断开时，不再清空全部 DTR replay 状态
 - Runtime 配置新增 `fidelity`、`match`、`cosmetics` 三段；旧 `align` 继续兼容
@@ -41,9 +41,9 @@ dtr_cosmetics full
 
 `dtr_cosmetics` 默认关闭。它只消费显式导出的 demo 饰品证据，并可能带来 GSLT/server guideline 风险。
 
-## GUI 极简模式
+## GUI 更新
 
-打开 GUI 后先选择 `.dem` 文件。默认导出双方阵营，默认 10 秒 freeze pre-roll，默认排除 suspicious rounds。普通用户只需要点转换，再复制生成的 `dtr_go ...` 命令。
+GUI 仍使用完整工作台：选择 `.dem`、解析回合、按需调整回合和导出选项，再转换并复制生成的 `dtr_go ...` 命令。
 
 饰品导出仍然默认关闭。开启时需要确认风险。GUI 会把普通 replay 命令和带饰品 replay 命令分开显示。
 
@@ -88,7 +88,7 @@ dtr_cosmetics ...
 ## Highlights
 
 - Added a clearer runtime command layout: `dtr_align`, `dtr_match`, and `dtr_cosmetics`.
-- The GUI now focuses on the simplest path first: choose a DEM file, export recommended rounds, copy a stable `dtr_go ...` command.
+- The GUI keeps the full workbench flow and removes the extra mode toggle.
 - The GUI no longer emits `dtr_set align scoreboard off`.
 - Disconnecting or `kickid`-ing one replay slot no longer clears all DTR replay state.
 - Runtime config now supports `fidelity`, `match`, and `cosmetics` sections while keeping legacy `align` compatibility.
