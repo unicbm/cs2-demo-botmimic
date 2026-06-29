@@ -99,6 +99,7 @@ struct GuiSettings {
     export_cosmetics: bool,
     export_stickers: bool,
     export_charms: bool,
+    simple_mode: bool,
     advanced_open: bool,
     activity_open: bool,
 }
@@ -118,6 +119,7 @@ impl Default for GuiSettings {
             export_cosmetics: false,
             export_stickers: false,
             export_charms: false,
+            simple_mode: true,
             advanced_open: false,
             activity_open: false,
         }
@@ -637,9 +639,20 @@ impl DemoTracerGui {
             .inner_margin(egui::Margin::symmetric(12, 8))
             .show(ui, |ui| {
                 let total = ui.available_width();
-                let demo_width = (total * 0.34).clamp(220.0, 420.0);
+                let demo_width = if self.settings.simple_mode {
+                    (total * 0.52).clamp(280.0, 640.0)
+                } else {
+                    (total * 0.34).clamp(220.0, 420.0)
+                };
                 let output_width = (total * 0.24).clamp(160.0, 320.0);
                 ui.horizontal_wrapped(|ui| {
+                    let simple_changed = ui
+                        .checkbox(&mut self.settings.simple_mode, tr(lang, "simple_mode"))
+                        .changed();
+                    if simple_changed {
+                        self.save_settings();
+                    }
+                    ui.separator();
                     ui.label(RichText::new(tr(lang, "demo")).strong());
                     ui.add_sized(
                         [demo_width, 30.0],
@@ -648,14 +661,16 @@ impl DemoTracerGui {
                     if ui.button(tr(lang, "browse")).clicked() {
                         self.browse_demo();
                     }
-                    ui.separator();
-                    ui.label(RichText::new(tr(lang, "output")).strong());
-                    ui.add_sized(
-                        [output_width, 30.0],
-                        egui::TextEdit::singleline(&mut self.settings.output_dir),
-                    );
-                    if ui.button(tr(lang, "folder")).clicked() {
-                        self.browse_output();
+                    if !self.settings.simple_mode {
+                        ui.separator();
+                        ui.label(RichText::new(tr(lang, "output")).strong());
+                        ui.add_sized(
+                            [output_width, 30.0],
+                            egui::TextEdit::singleline(&mut self.settings.output_dir),
+                        );
+                        if ui.button(tr(lang, "folder")).clicked() {
+                            self.browse_output();
+                        }
                     }
                     ui.separator();
                     ui.add_enabled_ui(!self.is_running(), |ui| {
@@ -682,6 +697,26 @@ impl DemoTracerGui {
                     });
                     if ui.button(tr(lang, "open_result")).clicked() {
                         self.open_result_folder();
+                    }
+                    if self.settings.simple_mode {
+                        ui.separator();
+                        let cosmetics_changed = ui
+                            .checkbox(
+                                &mut self.settings.export_cosmetics,
+                                tr(lang, "export_cosmetics_simple"),
+                            )
+                            .changed();
+                        if cosmetics_changed {
+                            self.cosmetic_acknowledged = false;
+                            self.cosmetic_confirmation.clear();
+                            if self.settings.export_cosmetics {
+                                self.show_cosmetic_disclaimer = true;
+                            } else {
+                                self.settings.export_stickers = false;
+                                self.settings.export_charms = false;
+                            }
+                            self.save_settings();
+                        }
                     }
                 });
             });
@@ -925,6 +960,10 @@ impl DemoTracerGui {
                 let sync_scoreboard = self.settings.sync_scoreboard;
                 let round_command = result.console_round_command(first_round, sync_scoreboard);
                 let seq_command = result.console_seq_command(first_round, sync_scoreboard);
+                let risky_round_command =
+                    result.console_risky_round_command(first_round, sync_scoreboard);
+                let risky_seq_command =
+                    result.console_risky_seq_command(first_round, sync_scoreboard);
                 let players = result.players.clone();
 
                 egui::Frame::new()
@@ -1031,10 +1070,18 @@ impl DemoTracerGui {
                 let mut copy_round_command = false;
                 let mut copy_seq_command = false;
                 let mut copy_manifest = false;
+                let mut copy_risky_round_command = false;
+                let mut copy_risky_seq_command = false;
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(tr(lang, "cs2_console")).strong());
                     copy_round_command = ui.button(tr(lang, "copy_round_command")).clicked();
                     copy_seq_command = ui.button(tr(lang, "copy_seq_command")).clicked();
+                    if risky_round_command.is_some() {
+                        copy_risky_round_command =
+                            ui.button(tr(lang, "copy_risky_round_command")).clicked();
+                        copy_risky_seq_command =
+                            ui.button(tr(lang, "copy_risky_seq_command")).clicked();
+                    }
                     copy_manifest = ui.button(tr(lang, "copy_manifest")).clicked();
                 });
                 if open_output {
@@ -1049,6 +1096,18 @@ impl DemoTracerGui {
                 if copy_seq_command {
                     ui.ctx().copy_text(seq_command.clone());
                     self.push_log(tr(lang, "copied_seq_command").to_string());
+                }
+                if copy_risky_round_command {
+                    if let Some(command) = &risky_round_command {
+                        ui.ctx().copy_text(command.clone());
+                        self.push_log(tr(lang, "copied_risky_command").to_string());
+                    }
+                }
+                if copy_risky_seq_command {
+                    if let Some(command) = &risky_seq_command {
+                        ui.ctx().copy_text(command.clone());
+                        self.push_log(tr(lang, "copied_risky_command").to_string());
+                    }
                 }
                 if copy_manifest {
                     ui.ctx().copy_text(manifest_text.clone());
@@ -1068,6 +1127,21 @@ impl DemoTracerGui {
                         .code_editor()
                         .interactive(false),
                 );
+                if let Some(command) = risky_seq_command {
+                    ui.add_space(6.0);
+                    warning_strip(
+                        ui,
+                        tr(lang, "risky_runtime_command"),
+                        tr(lang, "risky_runtime_command_body"),
+                    );
+                    let mut risky_text = command;
+                    ui.add(
+                        egui::TextEdit::singleline(&mut risky_text)
+                            .desired_width(ui.available_width())
+                            .code_editor()
+                            .interactive(false),
+                    );
+                }
             });
     }
 
@@ -1101,6 +1175,19 @@ impl DemoTracerGui {
             .inner_margin(egui::Margin::symmetric(10, 8))
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
+                    if self.settings.simple_mode {
+                        ui.label(RichText::new(tr(lang, "output")).strong());
+                        changed |= ui
+                            .add_sized(
+                                [260.0, 28.0],
+                                egui::TextEdit::singleline(&mut self.settings.output_dir),
+                            )
+                            .changed();
+                        if ui.button(tr(lang, "folder")).clicked() {
+                            self.browse_output();
+                        }
+                        ui.separator();
+                    }
                     egui::ComboBox::from_label(tr(lang, "side"))
                         .selected_text(side_label(self.settings.side, lang))
                         .show_ui(ui, |ui| {
@@ -1513,6 +1600,7 @@ struct ConversionResultView {
     players: Vec<PlayerSummary>,
     cosmetic_files: usize,
     sticker_files: usize,
+    charm_files: usize,
 }
 
 impl ConversionResultView {
@@ -1549,6 +1637,19 @@ impl ConversionResultView {
                 })
             })
             .count();
+        let charm_files = report
+            .manifest
+            .files
+            .iter()
+            .filter(|file| {
+                file.cosmetics.as_ref().is_some_and(|cosmetics| {
+                    cosmetics
+                        .weapons
+                        .iter()
+                        .any(|weapon| !weapon.charms.is_empty())
+                })
+            })
+            .count();
         Self {
             root: report.root,
             manifest_path: report.manifest_path,
@@ -1560,21 +1661,95 @@ impl ConversionResultView {
             players,
             cosmetic_files,
             sticker_files,
+            charm_files,
         }
     }
 
     fn console_round_command(&self, first_round: Option<u32>, sync_scoreboard: bool) -> String {
-        let round = first_round.unwrap_or(0);
-        let manifest = console_quote_path(&self.manifest_path);
-        let scoreboard = if sync_scoreboard { "on" } else { "off" };
-        format!("dtr_set align scoreboard {scoreboard}; dtr_go round \"{manifest}\" {round}")
+        self.console_round_command_with_options(first_round, sync_scoreboard, None)
     }
 
     fn console_seq_command(&self, first_round: Option<u32>, sync_scoreboard: bool) -> String {
+        self.console_seq_command_with_options(first_round, sync_scoreboard, None)
+    }
+
+    fn console_risky_round_command(
+        &self,
+        first_round: Option<u32>,
+        sync_scoreboard: bool,
+    ) -> Option<String> {
+        let preset = self.cosmetic_runtime_preset()?;
+        Some(self.console_round_command_with_options(first_round, sync_scoreboard, Some(preset)))
+    }
+
+    fn console_risky_seq_command(
+        &self,
+        first_round: Option<u32>,
+        sync_scoreboard: bool,
+    ) -> Option<String> {
+        let preset = self.cosmetic_runtime_preset()?;
+        Some(self.console_seq_command_with_options(first_round, sync_scoreboard, Some(preset)))
+    }
+
+    fn console_round_command_with_options(
+        &self,
+        first_round: Option<u32>,
+        sync_scoreboard: bool,
+        cosmetic_preset: Option<&str>,
+    ) -> String {
         let round = first_round.unwrap_or(0);
         let manifest = console_quote_path(&self.manifest_path);
-        let scoreboard = if sync_scoreboard { "on" } else { "off" };
-        format!("dtr_set align scoreboard {scoreboard}; dtr_go seq \"{manifest}\" {round}")
+        self.console_command_with_prefixes(
+            format!("dtr_go round \"{manifest}\" {round}"),
+            sync_scoreboard,
+            cosmetic_preset,
+        )
+    }
+
+    fn console_seq_command_with_options(
+        &self,
+        first_round: Option<u32>,
+        sync_scoreboard: bool,
+        cosmetic_preset: Option<&str>,
+    ) -> String {
+        let round = first_round.unwrap_or(0);
+        let manifest = console_quote_path(&self.manifest_path);
+        self.console_command_with_prefixes(
+            format!("dtr_go seq \"{manifest}\" {round}"),
+            sync_scoreboard,
+            cosmetic_preset,
+        )
+    }
+
+    fn console_command_with_prefixes(
+        &self,
+        command: String,
+        sync_scoreboard: bool,
+        cosmetic_preset: Option<&str>,
+    ) -> String {
+        let mut prefixes = Vec::new();
+        if let Some(preset) = cosmetic_preset {
+            prefixes.push(format!("dtr_cosmetics {preset}"));
+        }
+        if sync_scoreboard {
+            prefixes.push("dtr_match scoreboard".to_string());
+        }
+        if prefixes.is_empty() {
+            command
+        } else {
+            format!("{}; {command}", prefixes.join("; "))
+        }
+    }
+
+    fn cosmetic_runtime_preset(&self) -> Option<&'static str> {
+        if self.cosmetic_files == 0 {
+            return None;
+        }
+        if self.sticker_files > 0 || self.charm_files > 0 {
+            Some("full")
+        } else {
+            Some("basic")
+        }
     }
 }
 
@@ -1964,6 +2139,7 @@ fn tr(lang: UiLanguage, key: &str) -> &'static str {
             "analyze" => "解析",
             "convert" => "转换",
             "open_result" => "打开 output",
+            "simple_mode" => "极简模式",
             "rounds" => "回合",
             "round" => "回合",
             "status" => "状态",
@@ -2000,11 +2176,16 @@ fn tr(lang: UiLanguage, key: &str) -> &'static str {
             "copy_command" => "复制指令",
             "copy_round_command" => "复制 round",
             "copy_seq_command" => "复制 seq",
+            "copy_risky_round_command" => "复制饰品 round",
+            "copy_risky_seq_command" => "复制饰品 seq",
             "copy_manifest" => "复制 manifest",
             "copied_command" => "已复制 CS2 指令",
             "copied_round_command" => "已复制 round 指令",
             "copied_seq_command" => "已复制 seq 指令",
+            "copied_risky_command" => "已复制带饰品风险指令",
             "copied_manifest" => "已复制 manifest 路径",
+            "risky_runtime_command" => "带饰品 runtime 指令",
+            "risky_runtime_command_body" => "这条指令会在服务器开启 dtr_cosmetics，需自行评估 GSLT 风险。",
             "advanced" => "高级选项",
             "activity" => "Activity",
             "no_activity" => "无事件",
@@ -2014,6 +2195,7 @@ fn tr(lang: UiLanguage, key: &str) -> &'static str {
             "freeze_preroll" => "freeze pre-roll",
             "sync_scoreboard" => "同步比分",
             "export_cosmetics" => "导出饰品",
+            "export_cosmetics_simple" => "导出饰品证据（GSLT 风险）",
             "export_stickers" => "导出贴纸",
             "export_charms" => "导出挂坠",
             "risk_confirmed" => "风险已确认",
@@ -2058,6 +2240,7 @@ fn tr(lang: UiLanguage, key: &str) -> &'static str {
             "analyze" => "Analyze",
             "convert" => "Convert",
             "open_result" => "Open output",
+            "simple_mode" => "Simple mode",
             "rounds" => "Rounds",
             "round" => "Round",
             "status" => "Status",
@@ -2094,11 +2277,16 @@ fn tr(lang: UiLanguage, key: &str) -> &'static str {
             "copy_command" => "Copy command",
             "copy_round_command" => "Copy round",
             "copy_seq_command" => "Copy seq",
+            "copy_risky_round_command" => "Copy cosmetic round",
+            "copy_risky_seq_command" => "Copy cosmetic seq",
             "copy_manifest" => "Copy manifest",
             "copied_command" => "Copied CS2 command",
             "copied_round_command" => "Copied round command",
             "copied_seq_command" => "Copied seq command",
+            "copied_risky_command" => "Copied risky cosmetic command",
             "copied_manifest" => "Copied manifest path",
+            "risky_runtime_command" => "Cosmetic runtime command",
+            "risky_runtime_command_body" => "This enables dtr_cosmetics on the server; assess GSLT risk before using it.",
             "advanced" => "Advanced Options",
             "activity" => "Activity",
             "no_activity" => "No activity",
@@ -2108,6 +2296,7 @@ fn tr(lang: UiLanguage, key: &str) -> &'static str {
             "freeze_preroll" => "freeze pre-roll",
             "sync_scoreboard" => "Sync scoreboard",
             "export_cosmetics" => "Export cosmetics",
+            "export_cosmetics_simple" => "Export cosmetic evidence (GSLT risk)",
             "export_stickers" => "Export stickers",
             "export_charms" => "Export charms",
             "risk_confirmed" => "risk confirmed",
@@ -2621,6 +2810,7 @@ mod tests {
 
         assert_eq!(settings.language, LanguageChoice::System);
         assert_eq!(settings.theme, ThemeChoice::System);
+        assert!(settings.simple_mode);
         assert!(!settings.advanced_open);
         assert!(!settings.activity_open);
         assert!(!settings.sync_scoreboard);
@@ -2665,7 +2855,7 @@ mod tests {
 
     #[test]
     fn console_commands_are_split_by_mode() {
-        let result = ConversionResultView {
+        let mut result = ConversionResultView {
             root: PathBuf::from("out/demo"),
             manifest_path: PathBuf::from("out/demo/manifest.json"),
             files_written: 0,
@@ -2676,19 +2866,35 @@ mod tests {
             players: Vec::new(),
             cosmetic_files: 0,
             sticker_files: 0,
+            charm_files: 0,
         };
 
         assert_eq!(
             result.console_round_command(Some(7), false),
-            "dtr_set align scoreboard off; dtr_go round \"out/demo/manifest.json\" 7"
+            "dtr_go round \"out/demo/manifest.json\" 7"
         );
         assert_eq!(
             result.console_seq_command(Some(7), false),
-            "dtr_set align scoreboard off; dtr_go seq \"out/demo/manifest.json\" 7"
+            "dtr_go seq \"out/demo/manifest.json\" 7"
         );
         assert_eq!(
             result.console_seq_command(Some(7), true),
-            "dtr_set align scoreboard on; dtr_go seq \"out/demo/manifest.json\" 7"
+            "dtr_match scoreboard; dtr_go seq \"out/demo/manifest.json\" 7"
+        );
+        assert_eq!(result.console_risky_seq_command(Some(7), false), None);
+
+        result.cosmetic_files = 10;
+        assert_eq!(
+            result.console_risky_seq_command(Some(7), false),
+            Some("dtr_cosmetics basic; dtr_go seq \"out/demo/manifest.json\" 7".to_string())
+        );
+        result.sticker_files = 1;
+        assert_eq!(
+            result.console_risky_seq_command(Some(7), true),
+            Some(
+                "dtr_cosmetics full; dtr_match scoreboard; dtr_go seq \"out/demo/manifest.json\" 7"
+                    .to_string()
+            )
         );
     }
 

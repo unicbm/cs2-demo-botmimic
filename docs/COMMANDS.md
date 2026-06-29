@@ -42,34 +42,31 @@ only; it is not written into `.dtr` files or manifests.
     "threat_360_range": 420,
     "threat_360_los": true
   },
-  "align": {
-    "weapons": true,
-    "projectiles": true,
-    "crosshair": true,
-    "left_hand_desired": true,
-    "cosmetics": false,
-    "stickers": false,
-    "charms": false,
-    "scoreboard": false
+  "fidelity": {
+    "preset": "default"
+  },
+  "match": {
+    "preset": "off"
+  },
+  "cosmetics": {
+    "preset": "off"
   }
 }
 ```
 
 Use `dtr_config_reload` after editing the file. Console commands such as
 `dtr_set handoff ...` still work as temporary overrides until the config is
-reloaded or the plugin is reloaded.
+reloaded or the plugin is reloaded. Legacy `"align"` config blocks are still
+accepted, but new `"fidelity"`, `"match"`, and `"cosmetics"` sections override
+matching legacy fields.
 
 ## Defaults
 
 | Setting | Default | Meaning |
 | --- | --- | --- |
-| `dtr_weapon_align` | `1` | Align loadout, buy behavior, active weapon, and weapon slot locks. |
-| `dtr_projectile_align` | `1` | Align grenade projectile initial vectors from `.dtr` v4+ data. |
-| `dtr_cosmetic_align` | `0` | Consume opt-in manifest cosmetic evidence and apply weapon skin, knife, and glove cosmetics to replay bots. |
-| `dtr_sticker_align` | `0` | Consume extra opt-in weapon sticker evidence under cosmetic alignment. |
-| `dtr_charm_align` | `0` | Consume extra opt-in weapon charm/keychain evidence under cosmetic alignment. |
-| `dtr_crosshair_align` | `1` | Apply demo-evidence crosshair codes to human viewers while they watch replay bots in-eye. |
-| `dtr_left_hand_desired` | `1` | Write demo `left_hand_desired` usercmd evidence into replay command frames. |
+| `dtr_align default` | on | Replay fidelity: weapons/loadout, projectiles, crosshair, and left-hand desired writes. |
+| `dtr_match off` | off | Match presentation sync, including scoreboard/KDA/MVP/team score. |
+| `dtr_cosmetics off` | off | High-risk cosmetic evidence replay for skins, knives, gloves, names, stickers, and charms. |
 | `dtr_handoff` | `death_contact_c4 slot` | Release the contacted/dead replay slot after contact or death; C4 planted releases all active replay slots. |
 | `dtr_partial` | `1` | Allow replay with fewer bots than manifest players. |
 | `dtr_replay_identity` | `full` | Write demo name, SteamID64, and demo-provided avatar overrides through BotHider-managed replay bot slots when available. |
@@ -238,7 +235,85 @@ clips; the current cycle parser does not expose a separate `opening` filter. It
 does not move the bot between lineup starts; choose clips whose start positions
 are suitable for your current test setup.
 
-## Fidelity And Handoff Controls
+## Replay Fidelity: `dtr_align`
+
+`dtr_align` controls replay-fidelity behavior only. Scoreboard sync lives under
+`dtr_match`; cosmetics live under `dtr_cosmetics`.
+
+```text
+dtr_align
+dtr_align status
+dtr_align default
+dtr_align full
+dtr_align handoff_safe
+dtr_align off
+dtr_align weapons <on|off>
+dtr_align projectiles <on|off>
+dtr_align crosshair <on|off>
+dtr_align left_hand <on|off>
+```
+
+Presets:
+
+- `default` / `full`: weapons, projectiles, crosshair, and left-hand desired
+  writes are on.
+- `handoff_safe`: keeps weapons/projectiles/crosshair on, but turns
+  `left_hand` off for smoother handoff.
+- `off`: disables replay-fidelity alignment switches; useful for debugging,
+  not normal playback.
+
+Aliases such as `loadout`, `active_weapon`, and `slot_lock` are accepted and
+currently share the `weapons` implementation.
+
+## Match Presentation: `dtr_match`
+
+`dtr_match` controls local match presentation. It does not change replay
+movement, weapons, projectiles, or cosmetics.
+
+```text
+dtr_match
+dtr_match status
+dtr_match off
+dtr_match scoreboard
+dtr_match scoreboard <on|off>
+dtr_match full
+```
+
+`dtr_match scoreboard` syncs best-effort scoreboard/KDA/MVP/team score fields.
+It is default-off.
+
+## Cosmetic Evidence / Risk: `dtr_cosmetics`
+
+`dtr_cosmetics` consumes explicitly exported demo cosmetic evidence. It is
+default-off and may carry Valve GSLT/server-guideline risk outside private local
+validation.
+
+```text
+dtr_cosmetics
+dtr_cosmetics status
+dtr_cosmetics off
+dtr_cosmetics weapons
+dtr_cosmetics basic
+dtr_cosmetics full
+dtr_cosmetics weapons <on|off>
+dtr_cosmetics knives <on|off>
+dtr_cosmetics gloves <on|off>
+dtr_cosmetics names <on|off>
+dtr_cosmetics stickers <on|off>
+dtr_cosmetics charms <on|off>
+```
+
+Presets:
+
+- `weapons`: weapon paint and weapon custom names only.
+- `basic`: weapons, knives, gloves, and custom names; no stickers or charms.
+- `full`: `basic` plus stickers and charms.
+
+## Handoff / Partial / Identity And Legacy Aliases
+
+The old `dtr_set align ...` and direct `dtr_*_align` commands remain accepted
+for existing scripts during the beta migration window. New users should prefer
+`dtr_align`, `dtr_match`, and `dtr_cosmetics`.
 
 ### `dtr_weapon_align <0|1>`
 
@@ -308,12 +383,14 @@ Implementation when enabled:
   where the demo exposes it. If
   demoparser exposes glove item def/paint/wear but no glove seed, the converter
   writes deterministic seed `0` for that glove.
-- Weapon stickers are not part of this command alone. They require
-  `--export-stickers` during conversion and `dtr_sticker_align 1` or
-  `dtr_set align stickers on` at runtime.
-- Weapon charms/keychains are not part of this command alone. They require
-  `--export-charms` during conversion and `dtr_charm_align 1` or
-  `dtr_set align charms on` at runtime.
+- Weapon stickers are not part of this legacy command alone. They require
+  `--export-stickers` during conversion and `dtr_cosmetics stickers on` at
+  runtime. Legacy aliases `dtr_sticker_align 1` and
+  `dtr_set align stickers on` still work.
+- Weapon charms/keychains are not part of this legacy command alone. They
+  require `--export-charms` during conversion and `dtr_cosmetics charms on` at
+  runtime. Legacy aliases `dtr_charm_align 1` and
+  `dtr_set align charms on` still work.
 - Applies only to safe replay bot slots after weapon/loadout alignment has
   confirmed the replay inventory path.
 - Never picks random cosmetics, never reads a server profile/database, and never

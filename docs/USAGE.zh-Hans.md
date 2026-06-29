@@ -257,8 +257,8 @@ custom name 应用到安全 replay bot。它不会随机分配饰品，不会读
 也不会应用探员。它可以应用 demo 观测到的 StatTrak/暗金武器质量 (`quality=9`)；
 如果 demo 没暴露 StatTrak 计数器，runtime 会写显示用 `0`，让 CS2 选择带计数器的
 StatTrak 模型，但这不代表伪造了 demo 击杀数。武器贴纸需要额外的
-`--export-stickers` 转换 flag 和 runtime 的 `dtr_set align stickers on`。武器挂件/keychain
-需要额外的 `--export-charms` 转换 flag 和 runtime 的 `dtr_set align charms on`。
+`--export-stickers` 转换 flag 和 runtime 的 `dtr_cosmetics stickers on`。武器挂件/keychain
+需要额外的 `--export-charms` 转换 flag 和 runtime 的 `dtr_cosmetics charms on`。
 
 这个功能面向本地/私有 replay 验证。listen/practice server 未必有专用服那样的 GSLT
 暴露面，但只写 bot 不是规则豁免；如果真人玩家可以观察、接管或使用这些 bot 物品外观，

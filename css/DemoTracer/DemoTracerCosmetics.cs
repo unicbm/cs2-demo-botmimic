@@ -363,7 +363,7 @@ public sealed partial class DemoTracerPlugin
 
     private void ApplyLoadedReplayCosmeticsForSlot(int slot, LoadedReplay replay)
     {
-        if (!_cosmeticAlignEnabled ||
+        if (!AnyCosmeticFeatureEnabled() ||
             replay.UtilityOnly ||
             !HasCosmeticEvidence(replay.Cosmetics) ||
             !IsReplaySlotStillSafe(slot))
@@ -378,24 +378,33 @@ public sealed partial class DemoTracerPlugin
 
         var applied = 0;
         var skipped = 0;
-        foreach (var cosmetic in replay.Cosmetics.Weapons)
+        if (WeaponCosmeticFeatureEnabled())
         {
-            if (TryFindReplayWeaponByDefIndex(pawn, cosmetic.WeaponDefIndex, out var weapon) &&
-                TryApplyWeaponCosmetic(player, weapon, cosmetic))
+            foreach (var cosmetic in replay.Cosmetics.Weapons)
             {
-                applied++;
-                ScheduleReplayWeaponCosmeticRetry(slot, cosmetic, framesRemaining: 3);
-            }
-            else
-            {
-                skipped++;
+                if (TryFindReplayWeaponByDefIndex(pawn, cosmetic.WeaponDefIndex, out var weapon) &&
+                    TryApplyWeaponCosmetic(player, weapon, cosmetic))
+                {
+                    applied++;
+                    ScheduleReplayWeaponCosmeticRetry(slot, cosmetic, framesRemaining: 3);
+                }
+                else
+                {
+                    skipped++;
+                }
             }
         }
 
-        if (replay.Cosmetics.Knife != null)
+        if (_cosmeticKnivesEnabled && replay.Cosmetics.Knife != null)
         {
             if (TryFindReplayKnife(pawn, out var knife) &&
-                TryApplyItemCosmetic(player, knife, replay.Cosmetics.Knife, allowSubclassChange: true))
+                TryApplyItemCosmetic(
+                    player,
+                    knife,
+                    replay.Cosmetics.Knife,
+                    allowSubclassChange: true,
+                    applyPaint: true,
+                    applyCustomName: _cosmeticNamesEnabled))
             {
                 applied++;
             }
@@ -405,7 +414,7 @@ public sealed partial class DemoTracerPlugin
             }
         }
 
-        if (replay.Cosmetics.Glove != null)
+        if (_cosmeticGlovesEnabled && replay.Cosmetics.Glove != null)
         {
             if (TryApplyGloveCosmetic(player, pawn, replay.Cosmetics.Glove))
                 applied++;
@@ -422,7 +431,7 @@ public sealed partial class DemoTracerPlugin
                 $"dtr: cosmetic aligned slot={slot} player={replay.PlayerName} applied={applied} skipped={skipped}");
         }
 
-        if (replay.Cosmetics.Weapons.Count > 0)
+        if (WeaponCosmeticFeatureEnabled() && replay.Cosmetics.Weapons.Count > 0)
             ScheduleReplayCosmeticHeartbeat(slot);
     }
 
@@ -445,7 +454,7 @@ public sealed partial class DemoTracerPlugin
             return;
         }
 
-        if (!_cosmeticAlignEnabled ||
+        if (!WeaponCosmeticFeatureEnabled() ||
             !_weaponAlignEnabled ||
             !_loadedReplays.TryGetValue(slot, out var replay) ||
             replay.UtilityOnly ||
@@ -489,7 +498,7 @@ public sealed partial class DemoTracerPlugin
 
         Server.NextFrame(() =>
         {
-            if (!_cosmeticAlignEnabled || !_weaponAlignEnabled || !IsReplaySlotStillSafe(slot))
+            if (!WeaponCosmeticFeatureEnabled() || !_weaponAlignEnabled || !IsReplaySlotStillSafe(slot))
                 return;
 
             var refreshedPlayer = Utilities.GetPlayerFromSlot(slot);
@@ -510,7 +519,7 @@ public sealed partial class DemoTracerPlugin
 
     private void ApplyReplayWeaponCosmeticForSlot(int slot, int weaponDefIndex)
     {
-        if (!_cosmeticAlignEnabled ||
+        if (!WeaponCosmeticFeatureEnabled() ||
             !_loadedReplays.TryGetValue(slot, out var replay) ||
             replay.UtilityOnly ||
             !HasCosmeticEvidence(replay.Cosmetics) ||
@@ -544,7 +553,7 @@ public sealed partial class DemoTracerPlugin
     {
         try
         {
-            if (!_cosmeticAlignEnabled || !_weaponAlignEnabled)
+            if (!WeaponCosmeticFeatureEnabled() || !_weaponAlignEnabled)
                 return HookResult.Continue;
 
             var itemServices = hook.GetParam<CCSPlayer_ItemServices>(0);
@@ -559,7 +568,7 @@ public sealed partial class DemoTracerPlugin
             var handle = weapon.Handle;
             Server.NextFrame(() =>
             {
-                if (!_cosmeticAlignEnabled || !_weaponAlignEnabled || !IsReplaySlotStillSafe(slot))
+                if (!WeaponCosmeticFeatureEnabled() || !_weaponAlignEnabled || !IsReplaySlotStillSafe(slot))
                     return;
 
                 try
@@ -654,7 +663,7 @@ public sealed partial class DemoTracerPlugin
 
     private void TryApplySpawnedReplayWeaponCosmetic(CEntityInstance entity)
     {
-        if (!_cosmeticAlignEnabled || !_weaponAlignEnabled)
+        if (!WeaponCosmeticFeatureEnabled() || !_weaponAlignEnabled)
             return;
         var name = entity.DesignerName;
         if (string.IsNullOrWhiteSpace(name) ||
@@ -666,7 +675,7 @@ public sealed partial class DemoTracerPlugin
         var handle = entity.Handle;
         Server.NextFrame(() =>
         {
-            if (!_cosmeticAlignEnabled || !_weaponAlignEnabled)
+            if (!WeaponCosmeticFeatureEnabled() || !_weaponAlignEnabled)
                 return;
 
             CBasePlayerWeapon weapon;
@@ -716,7 +725,7 @@ public sealed partial class DemoTracerPlugin
 
                 Server.NextFrame(() =>
                 {
-                    if (!_cosmeticAlignEnabled || !IsReplaySlotStillSafe(slot))
+                    if (!WeaponCosmeticFeatureEnabled() || !IsReplaySlotStillSafe(slot))
                         return;
                     var retryPlayer = Utilities.GetPlayerFromSlot(slot);
                     if (retryPlayer is { IsValid: true, PawnIsAlive: true } && weapon.IsValid)
@@ -819,39 +828,48 @@ public sealed partial class DemoTracerPlugin
         if (!TryGetWeaponClassByDefIndex(cosmetic.WeaponDefIndex, out _))
             return false;
 
-        var applied = TryApplyItemCosmetic(
-            player,
-            weapon,
-            new ReplayItemCosmetic
-            {
-                ItemDefIndex = cosmetic.WeaponDefIndex,
-                PaintKit = cosmetic.PaintKit,
-                Seed = cosmetic.Seed,
-                Wear = cosmetic.Wear,
-                CustomName = cosmetic.CustomName
-            },
-            allowSubclassChange: false);
-        if (!applied)
+        var appliedItem = false;
+        if (_cosmeticWeaponsEnabled || _cosmeticNamesEnabled)
         {
-            if (countStickerStats)
+            appliedItem = TryApplyItemCosmetic(
+                player,
+                weapon,
+                new ReplayItemCosmetic
+                {
+                    ItemDefIndex = _cosmeticWeaponsEnabled ? cosmetic.WeaponDefIndex : null,
+                    PaintKit = cosmetic.PaintKit,
+                    Seed = cosmetic.Seed,
+                    Wear = cosmetic.Wear,
+                    CustomName = cosmetic.CustomName
+                },
+                allowSubclassChange: false,
+                applyPaint: _cosmeticWeaponsEnabled,
+                applyCustomName: _cosmeticNamesEnabled);
+            if (!appliedItem)
             {
-                RecordStickerSkipped(cosmetic.Stickers.Count);
-                RecordCharmSkipped(cosmetic.Charms.Count);
+                if (countStickerStats)
+                {
+                    RecordStickerSkipped(cosmetic.Stickers.Count);
+                    RecordCharmSkipped(cosmetic.Charms.Count);
+                }
+                return false;
             }
-            return false;
         }
 
-        ApplyWeaponStattrakEvidence(weapon, cosmetic);
+        if (_cosmeticWeaponsEnabled)
+            ApplyWeaponStattrakEvidence(weapon, cosmetic);
         ApplyWeaponStickers(weapon, cosmetic, countStickerStats);
         ApplyWeaponCharms(weapon, cosmetic, countStickerStats);
-        return true;
+        return appliedItem || _stickerAlignEnabled || _charmAlignEnabled;
     }
 
     private bool TryApplyItemCosmetic(
         CCSPlayerController player,
         CBasePlayerWeapon weapon,
         ReplayItemCosmetic cosmetic,
-        bool allowSubclassChange)
+        bool allowSubclassChange,
+        bool applyPaint,
+        bool applyCustomName)
     {
         try
         {
@@ -865,22 +883,25 @@ public sealed partial class DemoTracerPlugin
 
             item.EntityQuality = allowSubclassChange ? 3 : 0;
             item.AccountID = (uint)player.SteamID;
-            item.AttributeList.Attributes.RemoveAll();
-            item.NetworkedDynamicAttributes.Attributes.RemoveAll();
             UpdateReplayEconItemId(item);
-            weapon.FallbackPaintKit = (int)Math.Min(cosmetic.PaintKit, int.MaxValue);
-            weapon.FallbackSeed = (int)Math.Min(cosmetic.Seed, int.MaxValue);
-            weapon.FallbackWear = cosmetic.Wear;
-            MarkWeaponPaintStateChanged(weapon);
-            if (!string.IsNullOrWhiteSpace(cosmetic.CustomName))
+            if (applyPaint)
+            {
+                item.AttributeList.Attributes.RemoveAll();
+                item.NetworkedDynamicAttributes.Attributes.RemoveAll();
+                weapon.FallbackPaintKit = (int)Math.Min(cosmetic.PaintKit, int.MaxValue);
+                weapon.FallbackSeed = (int)Math.Min(cosmetic.Seed, int.MaxValue);
+                weapon.FallbackWear = cosmetic.Wear;
+                MarkWeaponPaintStateChanged(weapon);
+                _ = TrySetTextureAttributes(item.NetworkedDynamicAttributes.Handle, cosmetic);
+                _ = TrySetTextureAttributes(item.AttributeList.Handle, cosmetic);
+                var bodygroup = IsLegacyCosmeticPaint(
+                    item.ItemDefinitionIndex,
+                    (int)Math.Min(cosmetic.PaintKit, int.MaxValue)) ? 1 : 0;
+                weapon.AcceptInput("SetBodygroup", value: $"body,{bodygroup}");
+            }
+            if (applyCustomName && !string.IsNullOrWhiteSpace(cosmetic.CustomName))
                 item.CustomName = cosmetic.CustomName;
-            _ = TrySetTextureAttributes(item.NetworkedDynamicAttributes.Handle, cosmetic);
-            _ = TrySetTextureAttributes(item.AttributeList.Handle, cosmetic);
             Utilities.SetStateChanged(weapon, "CEconEntity", "m_AttributeManager");
-            var bodygroup = IsLegacyCosmeticPaint(
-                item.ItemDefinitionIndex,
-                (int)Math.Min(cosmetic.PaintKit, int.MaxValue)) ? 1 : 0;
-            weapon.AcceptInput("SetBodygroup", value: $"body,{bodygroup}");
             return true;
         }
         catch (Exception ex)
@@ -937,7 +958,7 @@ public sealed partial class DemoTracerPlugin
     {
         try
         {
-            if (!_cosmeticAlignEnabled || !IsReplaySlotStillSafe(slot))
+            if (!_cosmeticGlovesEnabled || !IsReplaySlotStillSafe(slot))
                 return;
 
             var player = Utilities.GetPlayerFromSlot(slot);

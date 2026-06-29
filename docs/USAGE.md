@@ -274,8 +274,8 @@ databases, or apply agents. It can apply demo-observed StatTrak item quality
 not exposed, runtime writes a display counter of `0` so CS2 can select the
 StatTrak counter model; this does not invent a demo kill count. Weapon stickers
 require the extra `--export-stickers` converter flag and
-`dtr_set align stickers on` at runtime. Weapon charms/keychains require the
-extra `--export-charms` converter flag and `dtr_set align charms on` at runtime.
+`dtr_cosmetics stickers on` at runtime. Weapon charms/keychains require the
+extra `--export-charms` converter flag and `dtr_cosmetics charms on` at runtime.
 
 This feature is intended for local/private replay validation. A local listen
 server may not have the same GSLT exposure as a dedicated server, but bot-only

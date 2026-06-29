@@ -8,14 +8,13 @@
     "threat_360_range": 420,
     "threat_360_los": true
   },
-  "align": {
-    "weapons": true,
-    "projectiles": true,
-    "crosshair": true,
-    "left_hand_desired": true,
-    "cosmetics": false,
-    "stickers": false,
-    "charms": false,
-    "scoreboard": false
+  "fidelity": {
+    "preset": "default"
+  },
+  "match": {
+    "preset": "off"
+  },
+  "cosmetics": {
+    "preset": "off"
   }
 }

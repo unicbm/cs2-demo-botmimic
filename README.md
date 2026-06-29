@@ -588,19 +588,19 @@ dead replay bots are respawned before playback, and weapon/loadout sync only
 removes weapons that DemoTracer itself actively drops while replacing a bot's
 slot. It does not sweep unrelated world pickups.
 
-`dtr_projectile_align 1` uses demo projectile metadata where post-spawn
+`dtr_align projectiles on` uses demo projectile metadata where post-spawn
 alignment is stable. Fire grenades keep CS2's native projectile and inferno
 behavior, because mutating molotov/incendiary projectiles after spawn can break
 valid burns.
 
-`dtr_set align cosmetics on` is an optional, default-off replay-fidelity mode.
+`dtr_cosmetics basic` is an optional, default-off high-risk cosmetic replay mode.
 It has no effect unless the manifest was exported with the explicit cosmetic
 flags above. When evidence exists, it only applies demo-observed weapon paint,
 knife, glove metadata, and stable weapon/knife custom names to safe replay
 bots. It does not randomize cosmetics, does not read profile databases, and
-does not apply stickers unless sticker export and `dtr_set align stickers on`
+does not apply stickers unless sticker export and `dtr_cosmetics stickers on`
 are also enabled. It does not apply charms unless charm export and
-`dtr_set align charms on` are also enabled. It can apply demo-observed StatTrak
+`dtr_cosmetics charms on` are also enabled. It can apply demo-observed StatTrak
 item quality (`quality=9`) for exported weapon cosmetics. When a demo StatTrak
 counter is not exposed, runtime writes a display counter of `0` so CS2 can
 select the StatTrak counter model; this does not invent a demo kill count. It
@@ -610,23 +610,23 @@ possess, inspect, or otherwise use bots carrying
 simulated cosmetics, treat the server as exposed to cosmetic/inventory policy
 risk.
 
-`dtr_set align stickers on` is an additional default-off sub-mode under
-cosmetic alignment. It requires `dtr_set align cosmetics on` and a manifest
+`dtr_cosmetics stickers on` is an additional default-off sub-mode under
+cosmetic replay. It requires `dtr_cosmetics basic` and a manifest
 exported with `--export-stickers`; it applies only stable demo-observed weapon
 sticker slot/id/wear/offset metadata to safe replay bots.
 
-`dtr_set align charms on` is another default-off sub-mode under cosmetic
-alignment. It requires `dtr_set align cosmetics on` and a manifest exported with
+`dtr_cosmetics charms on` is another default-off sub-mode under cosmetic
+replay. It requires `dtr_cosmetics basic` and a manifest exported with
 `--export-charms`; it applies only stable demo-observed weapon charm/keychain
 slot 0 id, offset, optional seed, optional highlight, and optional charm sticker
 metadata to safe replay bots.
 
-`dtr_set align crosshair on` is on by default. It applies only a
+`dtr_align crosshair on` is on by default. It applies only a
 stable demo-observed `crosshair_code` to a human viewer while they are watching
 a safe replay bot in-eye, then restores the viewer's original crosshair when
 they leave that replay POV.
 
-`dtr_set align left_hand off` disables replay writes of `.dtr`
+`dtr_align left_hand off` disables replay writes of `.dtr`
 `left_hand_desired` command frames for newly loaded replays. This lowers replay
 fidelity, but significantly improves handoff smoothness when a left-hand replay
 bot would otherwise switch back to the server default right-hand viewmodel after

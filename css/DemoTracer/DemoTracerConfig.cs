@@ -10,6 +10,8 @@ namespace DemoTracer;
 public sealed partial class DemoTracerPlugin
 {
     private const string RuntimeConfigFileName = "demotracer.config.json";
+    private bool _runtimeConfigHadLegacyAlign;
+    private bool _runtimeConfigHadNewSections;
 
     private static readonly JsonSerializerOptions RuntimeConfigJsonOptions = new()
     {
@@ -46,6 +48,9 @@ public sealed partial class DemoTracerPlugin
         {
             if (announceMissing)
                 reply($"[DTR OK] config not found; using built-in defaults. path=\"{path}\"");
+            _runtimeConfigHadLegacyAlign = false;
+            _runtimeConfigHadNewSections = false;
+            ResetRuntimeConfigDefaults();
             ApplyRuntimeConfigSideEffects();
             return;
         }
@@ -76,6 +81,12 @@ public sealed partial class DemoTracerPlugin
 
     private void ApplyRuntimeConfig(DemoTracerRuntimeConfig config, Action<string> reply)
     {
+        ResetRuntimeConfigDefaults();
+        _runtimeConfigHadLegacyAlign = config.Align != null;
+        _runtimeConfigHadNewSections = config.Fidelity != null || config.Match != null || config.Cosmetics != null;
+        if (_runtimeConfigHadLegacyAlign && _runtimeConfigHadNewSections)
+            reply("[DTR WARN] config contains legacy align and new fidelity/match/cosmetics sections; new sections override matching legacy fields.");
+
         if (!string.IsNullOrWhiteSpace(config.Identity))
         {
             if (TryParseReplayIdentityMode(config.Identity, out var identityMode))
@@ -88,8 +99,29 @@ public sealed partial class DemoTracerPlugin
             _partialReplayEnabled = config.AllowPartial.Value;
 
         ApplyRuntimeAlignConfig(config.Align, reply);
+        ApplyRuntimeFidelityConfig(config.Fidelity, reply);
+        ApplyRuntimeMatchConfig(config.Match, reply);
+        ApplyRuntimeCosmeticsConfig(config.Cosmetics, reply);
         ApplyRuntimeHandoffConfig(config.Handoff, reply);
         ApplyRuntimeConfigSideEffects();
+    }
+
+    private void ResetRuntimeConfigDefaults()
+    {
+        _replayIdentityMode = ReplayIdentityMode.Full;
+        _partialReplayEnabled = true;
+        _handoffMode = HandoffMode.DeathContactC4;
+        _handoffAllSlots = false;
+        _handoffThreat360Enabled = true;
+        _handoffThreat360Range = HandoffThreat360DefaultRange;
+        _handoffThreat360LosEnabled = true;
+
+        SetWeaponAlignEnabled(true);
+        SetProjectileAlignEnabled(true);
+        SetCrosshairAlignEnabled(true);
+        _leftHandDesiredEnabled = true;
+        ApplyCosmeticPreset(CosmeticPreset.Off);
+        SetScoreboardAlignEnabled(false);
     }
 
     private void ApplyRuntimeAlignConfig(DemoTracerAlignConfig? align, Action<string> reply)
@@ -117,6 +149,139 @@ public sealed partial class DemoTracerPlugin
         }
         if (align.Scoreboard.HasValue)
             SetScoreboardAlignEnabled(align.Scoreboard.Value);
+    }
+
+    private void ApplyRuntimeFidelityConfig(DemoTracerFidelityConfig? fidelity, Action<string> reply)
+    {
+        if (fidelity == null)
+            return;
+
+        if (!string.IsNullOrWhiteSpace(fidelity.Preset))
+        {
+            switch (fidelity.Preset.Trim().ToLowerInvariant())
+            {
+                case "default":
+                case "full":
+                    SetWeaponAlignEnabled(true);
+                    SetProjectileAlignEnabled(true);
+                    SetCrosshairAlignEnabled(true);
+                    _leftHandDesiredEnabled = true;
+                    break;
+                case "handoff_safe":
+                case "handoff-safe":
+                case "handoff":
+                    SetWeaponAlignEnabled(true);
+                    SetProjectileAlignEnabled(true);
+                    SetCrosshairAlignEnabled(true);
+                    _leftHandDesiredEnabled = false;
+                    reply(LeftHandDesiredFidelityNotice);
+                    break;
+                case "off":
+                case "none":
+                    SetWeaponAlignEnabled(false);
+                    SetProjectileAlignEnabled(false);
+                    SetCrosshairAlignEnabled(false);
+                    _leftHandDesiredEnabled = false;
+                    reply(LeftHandDesiredFidelityNotice);
+                    break;
+                default:
+                    reply($"[DTR WARN] ignored config fidelity.preset=\"{fidelity.Preset}\"");
+                    break;
+            }
+        }
+
+        if (fidelity.Weapons.HasValue)
+            SetWeaponAlignEnabled(fidelity.Weapons.Value);
+        if (fidelity.Projectiles.HasValue)
+            SetProjectileAlignEnabled(fidelity.Projectiles.Value);
+        if (fidelity.Crosshair.HasValue)
+            SetCrosshairAlignEnabled(fidelity.Crosshair.Value);
+        if (fidelity.LeftHandDesired.HasValue)
+        {
+            _leftHandDesiredEnabled = fidelity.LeftHandDesired.Value;
+            if (!_leftHandDesiredEnabled)
+                reply(LeftHandDesiredFidelityNotice);
+        }
+    }
+
+    private void ApplyRuntimeMatchConfig(DemoTracerMatchConfig? match, Action<string> reply)
+    {
+        if (match == null)
+            return;
+
+        if (!string.IsNullOrWhiteSpace(match.Preset))
+        {
+            switch (match.Preset.Trim().ToLowerInvariant())
+            {
+                case "off":
+                case "none":
+                    SetScoreboardAlignEnabled(false);
+                    break;
+                case "scoreboard":
+                case "full":
+                case "all":
+                    SetScoreboardAlignEnabled(true);
+                    break;
+                default:
+                    reply($"[DTR WARN] ignored config match.preset=\"{match.Preset}\"");
+                    break;
+            }
+        }
+
+        if (match.Scoreboard.HasValue)
+            SetScoreboardAlignEnabled(match.Scoreboard.Value);
+    }
+
+    private void ApplyRuntimeCosmeticsConfig(DemoTracerCosmeticsConfig? cosmetics, Action<string> reply)
+    {
+        if (cosmetics == null)
+            return;
+
+        if (!string.IsNullOrWhiteSpace(cosmetics.Preset))
+        {
+            switch (cosmetics.Preset.Trim().ToLowerInvariant())
+            {
+                case "off":
+                case "none":
+                    ApplyCosmeticPreset(CosmeticPreset.Off);
+                    break;
+                case "weapons":
+                case "weapon":
+                    ApplyCosmeticPreset(CosmeticPreset.Weapons);
+                    break;
+                case "basic":
+                    ApplyCosmeticPreset(CosmeticPreset.Basic);
+                    break;
+                case "full":
+                case "all":
+                    ApplyCosmeticPreset(CosmeticPreset.Full);
+                    break;
+                default:
+                    reply($"[DTR WARN] ignored config cosmetics.preset=\"{cosmetics.Preset}\"");
+                    break;
+            }
+        }
+
+        if (cosmetics.Weapons.HasValue)
+            _cosmeticWeaponsEnabled = cosmetics.Weapons.Value;
+        if (cosmetics.Knives.HasValue)
+            _cosmeticKnivesEnabled = cosmetics.Knives.Value;
+        if (cosmetics.Gloves.HasValue)
+            _cosmeticGlovesEnabled = cosmetics.Gloves.Value;
+        if (cosmetics.Names.HasValue)
+            _cosmeticNamesEnabled = cosmetics.Names.Value;
+        if (cosmetics.Stickers.HasValue)
+            SetStickerAlignEnabled(cosmetics.Stickers.Value);
+        if (cosmetics.Charms.HasValue)
+            SetCharmAlignEnabled(cosmetics.Charms.Value);
+
+        RefreshCosmeticAlignEnabled();
+        if (!_cosmeticAlignEnabled)
+        {
+            ResetCosmeticAlignState();
+            ResetStickerAlignState();
+            ResetCharmAlignState();
+        }
     }
 
     private void ApplyRuntimeHandoffConfig(DemoTracerHandoffConfig? handoff, Action<string> reply)
@@ -172,8 +337,11 @@ public sealed partial class DemoTracerPlugin
 
     private void ReplyRuntimeSettings(Action<string> reply, string prefix)
     {
-        reply(
-            $"{prefix} identity={ReplayIdentityModeName()} weapons={FormatOnOff(_weaponAlignEnabled)} projectiles={FormatOnOff(_projectileAlignEnabled)} cosmetics={FormatOnOff(_cosmeticAlignEnabled)} stickers={FormatOnOff(_stickerAlignEnabled)} charms={FormatOnOff(_charmAlignEnabled)} crosshair={FormatOnOff(_crosshairAlignEnabled)} left_hand_desired={FormatOnOff(_leftHandDesiredEnabled)} scoreboard={FormatOnOff(_scoreboardAlignEnabled)} handoff={FormatHandoffMode(_handoffMode)}:{(_handoffAllSlots ? "all" : "slot")} handoff_360={FormatOnOff(_handoffThreat360Enabled)} range={_handoffThreat360Range.ToString("F0", CultureInfo.InvariantCulture)} los={FormatOnOff(_handoffThreat360LosEnabled)} allow_partial={FormatOnOff(_partialReplayEnabled)}");
+        reply($"{prefix} schema=v2 legacy_align={FormatOnOff(_runtimeConfigHadLegacyAlign)} new_sections={FormatOnOff(_runtimeConfigHadNewSections)}");
+        reply($"{prefix} playback identity={ReplayIdentityModeName()} allow_partial={FormatOnOff(_partialReplayEnabled)} handoff={FormatHandoffMode(_handoffMode)}:{(_handoffAllSlots ? "all" : "slot")} handoff_360={FormatOnOff(_handoffThreat360Enabled)} range={_handoffThreat360Range.ToString("F0", CultureInfo.InvariantCulture)} los={FormatOnOff(_handoffThreat360LosEnabled)}");
+        reply($"{prefix} fidelity preset={AlignPresetName()} weapons={FormatOnOff(_weaponAlignEnabled)} projectiles={FormatOnOff(_projectileAlignEnabled)} crosshair={FormatOnOff(_crosshairAlignEnabled)} left_hand={FormatOnOff(_leftHandDesiredEnabled)}");
+        reply($"{prefix} match preset={(_scoreboardAlignEnabled ? "scoreboard" : "off")} scoreboard={FormatOnOff(_scoreboardAlignEnabled)}");
+        reply($"{prefix} cosmetics preset={CosmeticPresetName()} risk={FormatOnOff(_cosmeticAlignEnabled)} weapons={FormatOnOff(_cosmeticWeaponsEnabled)} knives={FormatOnOff(_cosmeticKnivesEnabled)} gloves={FormatOnOff(_cosmeticGlovesEnabled)} names={FormatOnOff(_cosmeticNamesEnabled)} stickers={FormatOnOff(_stickerAlignEnabled)} charms={FormatOnOff(_charmAlignEnabled)}");
     }
 
     private static bool TryParseReplayIdentityMode(string value, out ReplayIdentityMode mode)
@@ -204,6 +372,15 @@ public sealed partial class DemoTracerPlugin
 
         [JsonPropertyName("align")]
         public DemoTracerAlignConfig? Align { get; set; }
+
+        [JsonPropertyName("fidelity")]
+        public DemoTracerFidelityConfig? Fidelity { get; set; }
+
+        [JsonPropertyName("match")]
+        public DemoTracerMatchConfig? Match { get; set; }
+
+        [JsonPropertyName("cosmetics")]
+        public DemoTracerCosmeticsConfig? Cosmetics { get; set; }
     }
 
     public sealed class DemoTracerHandoffConfig
@@ -249,5 +426,56 @@ public sealed partial class DemoTracerPlugin
 
         [JsonPropertyName("scoreboard")]
         public bool? Scoreboard { get; set; }
+    }
+
+    public sealed class DemoTracerFidelityConfig
+    {
+        [JsonPropertyName("preset")]
+        public string? Preset { get; set; }
+
+        [JsonPropertyName("weapons")]
+        public bool? Weapons { get; set; }
+
+        [JsonPropertyName("projectiles")]
+        public bool? Projectiles { get; set; }
+
+        [JsonPropertyName("crosshair")]
+        public bool? Crosshair { get; set; }
+
+        [JsonPropertyName("left_hand_desired")]
+        public bool? LeftHandDesired { get; set; }
+    }
+
+    public sealed class DemoTracerMatchConfig
+    {
+        [JsonPropertyName("preset")]
+        public string? Preset { get; set; }
+
+        [JsonPropertyName("scoreboard")]
+        public bool? Scoreboard { get; set; }
+    }
+
+    public sealed class DemoTracerCosmeticsConfig
+    {
+        [JsonPropertyName("preset")]
+        public string? Preset { get; set; }
+
+        [JsonPropertyName("weapons")]
+        public bool? Weapons { get; set; }
+
+        [JsonPropertyName("knives")]
+        public bool? Knives { get; set; }
+
+        [JsonPropertyName("gloves")]
+        public bool? Gloves { get; set; }
+
+        [JsonPropertyName("names")]
+        public bool? Names { get; set; }
+
+        [JsonPropertyName("stickers")]
+        public bool? Stickers { get; set; }
+
+        [JsonPropertyName("charms")]
+        public bool? Charms { get; set; }
     }
 }

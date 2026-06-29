@@ -305,37 +305,37 @@ dtr_go seq "<输出目录>\<demo-id>\manifest.json" 0
 播放；武器/loadout 同步只会吞掉 DemoTracer 自己为了替换 bot slot 而主动丢出的
 武器，不会扫描或清理场上无关的可拾取实体。
 
-`dtr_projectile_align 1` 会在“出生后修正稳定”的情况下使用 demo 投掷物元数据。
+`dtr_align projectiles on` 会在“出生后修正稳定”的情况下使用 demo 投掷物元数据。
 火（molotov/incendiary）保留 CS2 原生 projectile 和 inferno 行为，因为出生后修改
 火瓶实体可能破坏本来有效的燃烧。
 
-`dtr_set align cosmetics on` 是可选且默认关闭的 replay fidelity 模式。只有 manifest
+`dtr_cosmetics basic` 是可选且默认关闭的高风险饰品 replay 模式。只有 manifest
 是用上面的显式饰品导出 flag 生成，并且里面确实有 `cosmetics` 证据时，它才会生效。
 生效时也只把 demo 观测到的武器 paint、刀、手套元数据，以及稳定的武器/刀具 custom
 name 应用到安全 replay bot；它不会随机分配饰品，不读取 profile/database，也不会应用
 贴纸，除非 manifest 是用 `--export-stickers` 导出且 runtime 也开启了
-`dtr_set align stickers on`；也不会应用挂件，除非 manifest 是用
-`--export-charms` 导出且 runtime 也开启了 `dtr_set align charms on`。它可以应用
+`dtr_cosmetics stickers on`；也不会应用挂件，除非 manifest 是用
+`--export-charms` 导出且 runtime 也开启了 `dtr_cosmetics charms on`。它可以应用
 demo 观测到的 StatTrak/暗金武器质量 (`quality=9`)；如果 demo 没暴露 StatTrak
 计数器，runtime 会写显示用 `0`，让 CS2 选择带计数器的 StatTrak 模型，但这不代表
 伪造了 demo 击杀数。它也不会应用探员。只写 bot
 不是规则豁免：如果真人玩家可以观察、接管、持有、检视或以其他
 方式使用这些 bot 物品外观，就应该按饰品/库存模拟风险处理。
 
-`dtr_set align stickers on` 是饰品对齐下面额外的默认关闭子模式。它要求
-`dtr_set align cosmetics on`，并且 manifest 必须包含 `--export-stickers` 导出的证据；
+`dtr_cosmetics stickers on` 是饰品 replay 下面额外的默认关闭子模式。它要求
+`dtr_cosmetics basic`，并且 manifest 必须包含 `--export-stickers` 导出的证据；
 它只把稳定 demo 观测到的武器贴纸 slot/id/wear/offset/rotation/scale 元数据应用到安全 replay bot。
 
-`dtr_set align charms on` 是饰品对齐下面额外的默认关闭子模式。它要求
-`dtr_set align cosmetics on`，并且 manifest 必须包含 `--export-charms` 导出的证据；
+`dtr_cosmetics charms on` 是饰品 replay 下面额外的默认关闭子模式。它要求
+`dtr_cosmetics basic`，并且 manifest 必须包含 `--export-charms` 导出的证据；
 它只把稳定 demo 观测到的武器挂件/keychain slot 0 id、offset、可选 seed、
 可选 highlight 和可选 charm sticker id 应用到安全 replay bot。
 
-`dtr_set align crosshair on` 默认开启。它只把 demo 中稳定观测到的
+`dtr_align crosshair on` 默认开启。它只把 demo 中稳定观测到的
 `crosshair_code` 临时应用到正在第一人称观察安全 replay bot 的真人观察者，并在
 离开 replay POV 时恢复原准星。
 
-`dtr_set align left_hand off` 会让新加载的 replay 不再写入 `.dtr` 的
+`dtr_align left_hand off` 会让新加载的 replay 不再写入 `.dtr` 的
 `left_hand_desired` command frame 证据。它会降低保真度，但显著增高handoff流畅性；
 如果左手 replay bot 在 handoff 后切回服务器默认右手视角会触发前摇，可以使用这个
 开关。已经加载的 replay 需要重新加载后才会应用。

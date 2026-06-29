@@ -164,12 +164,12 @@ public sealed partial class DemoTracerPlugin
             _scoreboardSyncedSlots.Add(slot);
             _scoreboardAppliedCount++;
             Server.PrintToConsole(
-                $"dtr: scoreboard align applied slot={slot} player={player.PlayerName} score={FormatScoreboardValue(scoreboard.Score)} k={FormatScoreboardValue(scoreboard.Kills)} d={FormatScoreboardValue(scoreboard.Deaths)} a={FormatScoreboardValue(scoreboard.Assists)} mvp={FormatScoreboardValue(scoreboard.MVPs)}");
+                $"dtr: match scoreboard applied slot={slot} player={player.PlayerName} score={FormatScoreboardValue(scoreboard.Score)} k={FormatScoreboardValue(scoreboard.Kills)} d={FormatScoreboardValue(scoreboard.Deaths)} a={FormatScoreboardValue(scoreboard.Assists)} mvp={FormatScoreboardValue(scoreboard.MVPs)}");
         }
         catch (Exception ex)
         {
             _scoreboardSkippedCount++;
-            Server.PrintToConsole($"dtr: scoreboard align skipped slot={slot}: {ex.Message}");
+            Server.PrintToConsole($"dtr: match scoreboard skipped slot={slot}: {ex.Message}");
         }
     }
 

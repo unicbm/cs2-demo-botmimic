@@ -15,7 +15,7 @@ namespace DemoTracer;
 public sealed partial class DemoTracerPlugin : BasePlugin
 {
     public override string ModuleName => "CS2 DemoTracer";
-    public override string ModuleVersion => "0.3.2";
+    public override string ModuleVersion => "0.3.3-beta.1";
     public override string ModuleAuthor => "unicbm";
     public override string ModuleDescription => "Trace CS2 demos into bot-executable route replays.";
 
@@ -113,6 +113,10 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     private bool _weaponAlignEnabled = true;
     private bool _projectileAlignEnabled = true;
     private bool _cosmeticAlignEnabled;
+    private bool _cosmeticWeaponsEnabled;
+    private bool _cosmeticKnivesEnabled;
+    private bool _cosmeticGlovesEnabled;
+    private bool _cosmeticNamesEnabled;
     private bool _stickerAlignEnabled;
     private bool _charmAlignEnabled;
     private bool _crosshairAlignEnabled = true;
@@ -187,7 +191,37 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         if (!HasReplayLifecycleState(includeNative: true))
             return;
 
-        ClearReplayStateForLifecycle($"client_disconnect:{playerSlot}");
+        if (!IsDisconnectingReplaySlot(playerSlot))
+            return;
+
+        ClearDisconnectedReplaySlot(playerSlot, $"client_disconnect:{playerSlot}");
+    }
+
+    private bool IsDisconnectingReplaySlot(int slot)
+    {
+        if (_loadedSlots.Contains(slot) ||
+            _loadedReplays.ContainsKey(slot) ||
+            _lastPlayingSlots.Contains(slot) ||
+            _queuedNadeStartTokens.ContainsKey(slot) ||
+            IsNadeCycleSlot(slot))
+        {
+            return true;
+        }
+
+        return BotControllerNative.IsCompatible &&
+               BotControllerNative.GetReplayState(slot).Playing;
+    }
+
+    private void ClearDisconnectedReplaySlot(int slot, string reason)
+    {
+        if (IsNadeCycleSlot(slot) && StopNadeCycle(reason, stopCurrent: true))
+            return;
+
+        BotControllerNative.StopReplay(slot);
+        ReleaseReplaySlot(slot, reason);
+        BotControllerNative.UnloadReplay(slot);
+        _loadedSlots.Remove(slot);
+        ForgetLoadedReplayMetadata(slot);
     }
 
     private static void ConfigureNativeSafetyOffsets()
@@ -212,6 +246,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         if (command.ArgCount >= 2)
             SetWeaponAlignEnabled(ParseOnOff(command.GetArg(1), _weaponAlignEnabled));
 
+        command.ReplyToCommand("[DTR WARN] legacy command: use dtr_align weapons <on|off>");
         command.ReplyToCommand($"dtr: weapon_align={_weaponAlignEnabled}");
     }
 
@@ -221,6 +256,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         if (command.ArgCount >= 2)
             SetProjectileAlignEnabled(ParseOnOff(command.GetArg(1), _projectileAlignEnabled));
 
+        command.ReplyToCommand("[DTR WARN] legacy command: use dtr_align projectiles <on|off>");
         command.ReplyToCommand($"dtr: projectile_align={_projectileAlignEnabled}");
     }
 
@@ -230,6 +266,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         if (command.ArgCount >= 2)
             SetCosmeticAlignEnabled(ParseOnOff(command.GetArg(1), _cosmeticAlignEnabled));
 
+        command.ReplyToCommand("[DTR WARN] legacy command: cosmetics moved out of align. Use dtr_cosmetics basic|full");
         command.ReplyToCommand($"dtr: cosmetic_align={_cosmeticAlignEnabled}");
         if (_cosmeticAlignEnabled)
             command.ReplyToCommand(CosmeticRiskNotice);
@@ -241,6 +278,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         if (command.ArgCount >= 2)
             SetStickerAlignEnabled(ParseOnOff(command.GetArg(1), _stickerAlignEnabled));
 
+        command.ReplyToCommand("[DTR WARN] legacy command: use dtr_cosmetics stickers <on|off>");
         command.ReplyToCommand($"dtr: sticker_align={_stickerAlignEnabled}");
         if (_stickerAlignEnabled)
             command.ReplyToCommand(CosmeticRiskNotice);
@@ -252,6 +290,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         if (command.ArgCount >= 2)
             SetCharmAlignEnabled(ParseOnOff(command.GetArg(1), _charmAlignEnabled));
 
+        command.ReplyToCommand("[DTR WARN] legacy command: use dtr_cosmetics charms <on|off>");
         command.ReplyToCommand($"dtr: charm_align={_charmAlignEnabled}");
         if (_charmAlignEnabled)
             command.ReplyToCommand(CosmeticRiskNotice);
@@ -263,6 +302,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         if (command.ArgCount >= 2)
             SetCrosshairAlignEnabled(ParseOnOff(command.GetArg(1), _crosshairAlignEnabled));
 
+        command.ReplyToCommand("[DTR WARN] legacy command: use dtr_align crosshair <on|off>");
         command.ReplyToCommand($"dtr: crosshair_align={_crosshairAlignEnabled}");
     }
 
@@ -272,7 +312,184 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         if (command.ArgCount >= 2)
             ApplyLeftHandDesiredMode(ParseOnOff(command.GetArg(1), _leftHandDesiredEnabled), command.ReplyToCommand);
 
+        command.ReplyToCommand("[DTR WARN] legacy command: use dtr_align left_hand <on|off>");
         command.ReplyToCommand($"dtr: left_hand_desired={FormatOnOff(_leftHandDesiredEnabled)}");
+    }
+
+    [ConsoleCommand("dtr_align", "dtr_align [status|default|full|handoff_safe|off|weapons|projectiles|left_hand|crosshair] [on|off]")]
+    public void AlignCommand(CCSPlayerController? player, CommandInfo command)
+    {
+        if (command.ArgCount < 2 ||
+            command.GetArg(1).Equals("status", StringComparison.OrdinalIgnoreCase))
+        {
+            ReplyAlignStatus(command.ReplyToCommand);
+            return;
+        }
+
+        var mode = command.GetArg(1).ToLowerInvariant();
+        switch (mode)
+        {
+            case "default":
+            case "full":
+                ApplyReplayFidelityPreset(
+                    weapons: true,
+                    projectiles: true,
+                    leftHandDesired: true,
+                    crosshair: true,
+                    command.ReplyToCommand);
+                return;
+            case "handoff_safe":
+            case "handoff-safe":
+            case "handoff":
+                ApplyReplayFidelityPreset(
+                    weapons: true,
+                    projectiles: true,
+                    leftHandDesired: false,
+                    crosshair: true,
+                    command.ReplyToCommand);
+                return;
+            case "off":
+            case "none":
+            case "movement":
+            case "movement_only":
+            case "movement-only":
+                ApplyReplayFidelityPreset(
+                    weapons: false,
+                    projectiles: false,
+                    leftHandDesired: false,
+                    crosshair: false,
+                    command.ReplyToCommand);
+                return;
+            default:
+                if (command.ArgCount < 3)
+                {
+                    ReplyUnknownAlignTarget(command.GetArg(1), command.ReplyToCommand);
+                    return;
+                }
+                if (SetAlignComponent(command.GetArg(1), ParseOnOff(command.GetArg(2), false), command.ReplyToCommand))
+                {
+                    ReplyAlignStatus(command.ReplyToCommand);
+                    return;
+                }
+                ReplyUnknownAlignTarget(command.GetArg(1), command.ReplyToCommand);
+                return;
+        }
+    }
+
+    [ConsoleCommand("dtr_match", "dtr_match [status|off|scoreboard|scoreboard <on|off>|full]")]
+    public void MatchCommand(CCSPlayerController? player, CommandInfo command)
+    {
+        if (command.ArgCount < 2 ||
+            command.GetArg(1).Equals("status", StringComparison.OrdinalIgnoreCase))
+        {
+            ReplyMatchStatus(command.ReplyToCommand);
+            return;
+        }
+
+        var mode = command.GetArg(1).ToLowerInvariant();
+        switch (mode)
+        {
+            case "off":
+            case "none":
+                ApplyMatchPreset(scoreboard: false);
+                ReplyMatchStatus(command.ReplyToCommand);
+                return;
+            case "full":
+            case "all":
+            case "scoreboard":
+            case "scoreboards":
+            case "scores":
+            case "stats":
+                var enabled = command.ArgCount >= 3
+                    ? ParseOnOff(command.GetArg(2), _scoreboardAlignEnabled)
+                    : true;
+                ApplyMatchPreset(scoreboard: enabled);
+                ReplyMatchStatus(command.ReplyToCommand);
+                return;
+            default:
+                command.ReplyToCommand($"[DTR ERR] unknown dtr_match target: {mode}");
+                command.ReplyToCommand("usage: dtr_match [status|off|scoreboard|scoreboard <on|off>|full]");
+                command.ReplyToCommand("hint: replay fidelity settings moved to dtr_align");
+                return;
+        }
+    }
+
+    [ConsoleCommand("dtr_cosmetics", "dtr_cosmetics [status|off|weapons|basic|full|weapons|knives|gloves|names|stickers|charms] [on|off]")]
+    public void CosmeticsCommand(CCSPlayerController? player, CommandInfo command)
+    {
+        if (command.ArgCount < 2 ||
+            command.GetArg(1).Equals("status", StringComparison.OrdinalIgnoreCase))
+        {
+            ReplyCosmeticsStatus(command.ReplyToCommand);
+            return;
+        }
+
+        var mode = command.GetArg(1).ToLowerInvariant();
+        switch (mode)
+        {
+            case "off":
+            case "none":
+                ApplyCosmeticPreset(CosmeticPreset.Off);
+                ReplyCosmeticsStatus(command.ReplyToCommand);
+                return;
+            case "weapons":
+            case "weapon":
+            case "skins":
+            case "skin":
+                if (command.ArgCount >= 3)
+                {
+                    SetCosmeticComponent(mode, ParseOnOff(command.GetArg(2), _cosmeticWeaponsEnabled), command.ReplyToCommand);
+                }
+                else
+                {
+                    ApplyCosmeticPreset(CosmeticPreset.Weapons);
+                }
+                ReplyCosmeticsStatus(command.ReplyToCommand);
+                if (_cosmeticAlignEnabled)
+                    command.ReplyToCommand(CosmeticRiskNotice);
+                return;
+            case "basic":
+                ApplyCosmeticPreset(CosmeticPreset.Basic);
+                ReplyCosmeticsStatus(command.ReplyToCommand);
+                command.ReplyToCommand(CosmeticRiskNotice);
+                return;
+            case "full":
+            case "all":
+                ApplyCosmeticPreset(CosmeticPreset.Full);
+                ReplyCosmeticsStatus(command.ReplyToCommand);
+                command.ReplyToCommand(CosmeticRiskNotice);
+                return;
+            case "knives":
+            case "knife":
+            case "gloves":
+            case "glove":
+            case "names":
+            case "name":
+            case "custom_name":
+            case "custom-name":
+            case "stickers":
+            case "sticker":
+            case "charms":
+            case "charm":
+            case "keychains":
+            case "keychain":
+                if (command.ArgCount < 3)
+                {
+                    command.ReplyToCommand($"usage: dtr_cosmetics {mode} <on|off>");
+                    return;
+                }
+                SetCosmeticComponent(mode, ParseOnOff(command.GetArg(2), false), command.ReplyToCommand);
+                ReplyCosmeticsStatus(command.ReplyToCommand);
+                if (_cosmeticAlignEnabled)
+                    command.ReplyToCommand(CosmeticRiskNotice);
+                return;
+            default:
+                command.ReplyToCommand($"[DTR ERR] unknown dtr_cosmetics preset: {mode}");
+                command.ReplyToCommand("usage: dtr_cosmetics [status|off|weapons|basic|full]");
+                command.ReplyToCommand("usage: dtr_cosmetics <weapons|knives|gloves|names|stickers|charms> <on|off>");
+                command.ReplyToCommand("hint: scoreboard moved to dtr_match");
+                return;
+        }
     }
 
     [ConsoleCommand("dtr_handoff", "dtr_handoff <off|death|contact|death_or_contact|death_contact_c4> [all|slot]")]
@@ -308,7 +525,6 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         command.ReplyToCommand(
             $"[DTR OK] handoff={FormatHandoffMode(_handoffMode)} scope={(_handoffAllSlots ? "all" : "slot")}");
     }
-
     [ConsoleCommand("dtr_handoff_360", "dtr_handoff_360 [0|1] [range] [los|nolos]")]
     public void Handoff360Command(CCSPlayerController? player, CommandInfo command)
     {
@@ -411,7 +627,143 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         }
 
         var enabled = ParseOnOff(command.GetArg(3), false);
-        switch (command.GetArg(2).ToLowerInvariant())
+        var target = command.GetArg(2);
+        switch (target.ToLowerInvariant())
+        {
+            case "weapons":
+            case "weapon":
+            case "loadout":
+            case "active_weapon":
+            case "active-weapon":
+            case "slot_lock":
+            case "slot-lock":
+                command.ReplyToCommand($"[DTR WARN] legacy command: use dtr_align {target} <on|off>");
+                SetAlignComponent(target, enabled, command.ReplyToCommand);
+                ReplyAlignStatus(command.ReplyToCommand);
+                return;
+            case "projectiles":
+            case "projectile":
+                command.ReplyToCommand("[DTR WARN] legacy command: use dtr_align projectiles <on|off>");
+                SetAlignComponent(target, enabled, command.ReplyToCommand);
+                ReplyAlignStatus(command.ReplyToCommand);
+                return;
+            case "cosmetics":
+            case "cosmetic":
+            case "skins":
+            case "skin":
+                command.ReplyToCommand("[DTR WARN] legacy command: cosmetics moved out of align. Use dtr_cosmetics basic|full");
+                SetCosmeticAlignEnabled(enabled);
+                ReplyCosmeticsStatus(command.ReplyToCommand);
+                if (_cosmeticAlignEnabled)
+                    command.ReplyToCommand(CosmeticRiskNotice);
+                return;
+            case "stickers":
+            case "sticker":
+            case "charms":
+            case "charm":
+            case "keychains":
+            case "keychain":
+                command.ReplyToCommand($"[DTR WARN] legacy command: use dtr_cosmetics {target} <on|off>");
+                SetCosmeticComponent(target, enabled, command.ReplyToCommand);
+                ReplyCosmeticsStatus(command.ReplyToCommand);
+                if (_cosmeticAlignEnabled)
+                    command.ReplyToCommand(CosmeticRiskNotice);
+                return;
+            case "crosshair":
+            case "crosshairs":
+            case "view":
+                command.ReplyToCommand("[DTR WARN] legacy command: use dtr_align crosshair <on|off>");
+                SetAlignComponent(target, enabled, command.ReplyToCommand);
+                ReplyAlignStatus(command.ReplyToCommand);
+                return;
+            case "left_hand":
+            case "left-hand":
+            case "lefthand":
+            case "left_hand_desired":
+            case "left-hand-desired":
+            case "lefthanddesired":
+                command.ReplyToCommand("[DTR WARN] legacy command: use dtr_align left_hand <on|off>");
+                SetAlignComponent(target, enabled, command.ReplyToCommand);
+                ReplyAlignStatus(command.ReplyToCommand);
+                return;
+            case "scoreboard":
+            case "scoreboards":
+            case "scores":
+            case "stats":
+                command.ReplyToCommand("[DTR WARN] legacy command: scoreboard moved out of align. Use dtr_match scoreboard <on|off>");
+                ApplyMatchPreset(scoreboard: enabled);
+                ReplyMatchStatus(command.ReplyToCommand);
+                return;
+            default:
+                command.ReplyToCommand("usage: dtr_set align <weapons|loadout|active_weapon|slot_lock|projectiles|cosmetics|stickers|charms|crosshair|left_hand|scoreboard> <off|on>");
+                return;
+        }
+    }
+
+    private enum CosmeticPreset
+    {
+        Off,
+        Weapons,
+        Basic,
+        Full,
+    }
+
+    private void ReplyAlignStatus(Action<string> reply)
+    {
+        reply($"[DTR ALIGN] preset={AlignPresetName()}");
+        reply($"[DTR ALIGN] weapons={FormatOnOff(_weaponAlignEnabled)} projectiles={FormatOnOff(_projectileAlignEnabled)} crosshair={FormatOnOff(_crosshairAlignEnabled)} left_hand={FormatOnOff(_leftHandDesiredEnabled)}");
+        reply("[DTR ALIGN] note: cosmetics moved to dtr_cosmetics; scoreboard moved to dtr_match");
+    }
+
+    private static void ReplyAlignUsage(Action<string> reply)
+    {
+        reply("usage: dtr_align [status|default|full|handoff_safe|off]");
+        reply("usage: dtr_align <weapons|projectiles|crosshair|left_hand> <on|off>");
+    }
+
+    private void ReplyUnknownAlignTarget(string target, Action<string> reply)
+    {
+        reply($"[DTR ERR] unknown dtr_align target: {target}");
+        ReplyAlignUsage(reply);
+        if (target.Equals("scoreboard", StringComparison.OrdinalIgnoreCase))
+            reply("hint: scoreboard is match presentation: dtr_match scoreboard on");
+        if (target.Equals("cosmetics", StringComparison.OrdinalIgnoreCase) ||
+            target.Equals("skins", StringComparison.OrdinalIgnoreCase) ||
+            target.Equals("stickers", StringComparison.OrdinalIgnoreCase) ||
+            target.Equals("charms", StringComparison.OrdinalIgnoreCase))
+        {
+            reply("hint: cosmetics are high-risk: dtr_cosmetics basic|full");
+        }
+    }
+
+    private string AlignPresetName()
+    {
+        if (_weaponAlignEnabled && _projectileAlignEnabled && _crosshairAlignEnabled && _leftHandDesiredEnabled)
+            return "default";
+        if (_weaponAlignEnabled && _projectileAlignEnabled && _crosshairAlignEnabled && !_leftHandDesiredEnabled)
+            return "handoff_safe";
+        if (!_weaponAlignEnabled && !_projectileAlignEnabled && !_crosshairAlignEnabled && !_leftHandDesiredEnabled)
+            return "off";
+        return "custom";
+    }
+
+    private void ApplyReplayFidelityPreset(
+        bool weapons,
+        bool projectiles,
+        bool leftHandDesired,
+        bool crosshair,
+        Action<string> reply)
+    {
+        SetWeaponAlignEnabled(weapons);
+        SetProjectileAlignEnabled(projectiles);
+        ApplyLeftHandDesiredMode(leftHandDesired, reply);
+        SetCrosshairAlignEnabled(crosshair);
+        ReplyAlignStatus(reply);
+    }
+
+    private bool SetAlignComponent(string component, bool enabled, Action<string> reply)
+    {
+        switch (component.ToLowerInvariant())
         {
             case "weapons":
             case "weapon":
@@ -421,71 +773,186 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             case "slot_lock":
             case "slot-lock":
                 SetWeaponAlignEnabled(enabled);
-                command.ReplyToCommand($"[DTR OK] align weapons={FormatOnOff(_weaponAlignEnabled)}");
-                if (command.GetArg(2).Equals("loadout", StringComparison.OrdinalIgnoreCase) ||
-                    command.GetArg(2).Equals("active_weapon", StringComparison.OrdinalIgnoreCase) ||
-                    command.GetArg(2).Equals("slot_lock", StringComparison.OrdinalIgnoreCase) ||
-                    command.GetArg(2).Equals("active-weapon", StringComparison.OrdinalIgnoreCase) ||
-                    command.GetArg(2).Equals("slot-lock", StringComparison.OrdinalIgnoreCase))
+                reply($"[DTR OK] dtr_align weapons={FormatOnOff(_weaponAlignEnabled)}");
+                if (component.Equals("loadout", StringComparison.OrdinalIgnoreCase) ||
+                    component.Equals("active_weapon", StringComparison.OrdinalIgnoreCase) ||
+                    component.Equals("slot_lock", StringComparison.OrdinalIgnoreCase) ||
+                    component.Equals("active-weapon", StringComparison.OrdinalIgnoreCase) ||
+                    component.Equals("slot-lock", StringComparison.OrdinalIgnoreCase))
                 {
-                    command.ReplyToCommand("[DTR WARN] loadout/active_weapon/slot_lock currently share the weapons align implementation.");
+                    reply("[DTR WARN] loadout/active_weapon/slot_lock currently share the weapons align implementation.");
                 }
-                return;
+                return true;
             case "projectiles":
             case "projectile":
+            case "nades":
+            case "grenades":
                 SetProjectileAlignEnabled(enabled);
-                command.ReplyToCommand($"[DTR OK] align projectiles={FormatOnOff(_projectileAlignEnabled)}");
-                return;
-            case "cosmetics":
-            case "cosmetic":
-            case "skins":
-            case "skin":
-                SetCosmeticAlignEnabled(enabled);
-                command.ReplyToCommand($"[DTR OK] align cosmetics={FormatOnOff(_cosmeticAlignEnabled)}");
-                if (_cosmeticAlignEnabled)
-                    command.ReplyToCommand(CosmeticRiskNotice);
-                return;
-            case "stickers":
-            case "sticker":
-                SetStickerAlignEnabled(enabled);
-                command.ReplyToCommand($"[DTR OK] align stickers={FormatOnOff(_stickerAlignEnabled)}");
-                if (_stickerAlignEnabled)
-                    command.ReplyToCommand(CosmeticRiskNotice);
-                return;
-            case "charms":
-            case "charm":
-            case "keychains":
-            case "keychain":
-                SetCharmAlignEnabled(enabled);
-                command.ReplyToCommand($"[DTR OK] align charms={FormatOnOff(_charmAlignEnabled)}");
-                if (_charmAlignEnabled)
-                    command.ReplyToCommand(CosmeticRiskNotice);
-                return;
-            case "crosshair":
-            case "crosshairs":
-            case "view":
-                SetCrosshairAlignEnabled(enabled);
-                command.ReplyToCommand($"[DTR OK] align crosshair={FormatOnOff(_crosshairAlignEnabled)}");
-                return;
+                reply($"[DTR OK] dtr_align projectiles={FormatOnOff(_projectileAlignEnabled)}");
+                return true;
             case "left_hand":
             case "left-hand":
             case "lefthand":
             case "left_hand_desired":
             case "left-hand-desired":
             case "lefthanddesired":
-                ApplyLeftHandDesiredMode(enabled, command.ReplyToCommand);
-                return;
-            case "scoreboard":
-            case "scoreboards":
-            case "scores":
-            case "stats":
-                SetScoreboardAlignEnabled(enabled);
-                command.ReplyToCommand($"[DTR OK] align scoreboard={FormatOnOff(_scoreboardAlignEnabled)}");
-                return;
+                ApplyLeftHandDesiredMode(enabled, reply);
+                return true;
+            case "crosshair":
+            case "crosshairs":
+            case "view":
+                SetCrosshairAlignEnabled(enabled);
+                reply($"[DTR OK] dtr_align crosshair={FormatOnOff(_crosshairAlignEnabled)}");
+                return true;
             default:
-                command.ReplyToCommand("usage: dtr_set align <weapons|loadout|active_weapon|slot_lock|projectiles|cosmetics|stickers|charms|crosshair|left_hand|scoreboard> <off|on>");
-                return;
+                return false;
         }
+    }
+
+    private void ReplyCosmeticsStatus(Action<string> reply)
+    {
+        reply($"[DTR COSMETICS] preset={CosmeticPresetName()} risk={FormatOnOff(_cosmeticAlignEnabled)}");
+        reply($"[DTR COSMETICS] weapons={FormatOnOff(_cosmeticWeaponsEnabled)} knives={FormatOnOff(_cosmeticKnivesEnabled)} gloves={FormatOnOff(_cosmeticGlovesEnabled)} names={FormatOnOff(_cosmeticNamesEnabled)} stickers={FormatOnOff(_stickerAlignEnabled)} charms={FormatOnOff(_charmAlignEnabled)}");
+        reply($"[DTR COSMETICS] {FormatCosmeticStatusCounts()}");
+    }
+
+    private void ApplyMatchPreset(bool scoreboard)
+    {
+        SetScoreboardAlignEnabled(scoreboard);
+    }
+
+    private void ReplyMatchStatus(Action<string> reply)
+    {
+        reply($"[DTR MATCH] preset={(_scoreboardAlignEnabled ? "scoreboard" : "off")}");
+        reply($"[DTR MATCH] scoreboard={FormatOnOff(_scoreboardAlignEnabled)} {FormatScoreboardStatusCounts()}");
+    }
+
+    private void ApplyCosmeticPreset(CosmeticPreset preset)
+    {
+        switch (preset)
+        {
+            case CosmeticPreset.Off:
+                _cosmeticWeaponsEnabled = false;
+                _cosmeticKnivesEnabled = false;
+                _cosmeticGlovesEnabled = false;
+                _cosmeticNamesEnabled = false;
+                _stickerAlignEnabled = false;
+                _charmAlignEnabled = false;
+                break;
+            case CosmeticPreset.Weapons:
+                _cosmeticWeaponsEnabled = true;
+                _cosmeticKnivesEnabled = false;
+                _cosmeticGlovesEnabled = false;
+                _cosmeticNamesEnabled = true;
+                _stickerAlignEnabled = false;
+                _charmAlignEnabled = false;
+                break;
+            case CosmeticPreset.Basic:
+                _cosmeticWeaponsEnabled = true;
+                _cosmeticKnivesEnabled = true;
+                _cosmeticGlovesEnabled = true;
+                _cosmeticNamesEnabled = true;
+                _stickerAlignEnabled = false;
+                _charmAlignEnabled = false;
+                break;
+            case CosmeticPreset.Full:
+                _cosmeticWeaponsEnabled = true;
+                _cosmeticKnivesEnabled = true;
+                _cosmeticGlovesEnabled = true;
+                _cosmeticNamesEnabled = true;
+                _stickerAlignEnabled = true;
+                _charmAlignEnabled = true;
+                break;
+        }
+
+        RefreshCosmeticAlignEnabled();
+        if (!_cosmeticAlignEnabled)
+        {
+            ResetCosmeticAlignState();
+            ResetStickerAlignState();
+            ResetCharmAlignState();
+        }
+    }
+
+    private bool SetCosmeticComponent(string component, bool enabled, Action<string> reply)
+    {
+        switch (component.ToLowerInvariant())
+        {
+            case "weapons":
+            case "weapon":
+            case "skins":
+            case "skin":
+                _cosmeticWeaponsEnabled = enabled;
+                break;
+            case "knives":
+            case "knife":
+                _cosmeticKnivesEnabled = enabled;
+                break;
+            case "gloves":
+            case "glove":
+                _cosmeticGlovesEnabled = enabled;
+                break;
+            case "names":
+            case "name":
+            case "custom_name":
+            case "custom-name":
+                _cosmeticNamesEnabled = enabled;
+                break;
+            case "stickers":
+            case "sticker":
+                SetStickerAlignEnabled(enabled);
+                return true;
+            case "charms":
+            case "charm":
+            case "keychains":
+            case "keychain":
+                SetCharmAlignEnabled(enabled);
+                return true;
+            default:
+                reply($"[DTR ERR] unknown dtr_cosmetics component: {component}");
+                return false;
+        }
+
+        RefreshCosmeticAlignEnabled();
+        if (!_cosmeticAlignEnabled)
+            ResetCosmeticAlignState();
+        return true;
+    }
+
+    private string CosmeticPresetName()
+    {
+        if (!AnyCosmeticFeatureEnabled())
+            return "off";
+        if (_cosmeticWeaponsEnabled && !_cosmeticKnivesEnabled && !_cosmeticGlovesEnabled &&
+            _cosmeticNamesEnabled && !_stickerAlignEnabled && !_charmAlignEnabled)
+        {
+            return "weapons";
+        }
+        if (_cosmeticWeaponsEnabled && _cosmeticKnivesEnabled && _cosmeticGlovesEnabled &&
+            _cosmeticNamesEnabled && !_stickerAlignEnabled && !_charmAlignEnabled)
+        {
+            return "basic";
+        }
+        if (_cosmeticWeaponsEnabled && _cosmeticKnivesEnabled && _cosmeticGlovesEnabled &&
+            _cosmeticNamesEnabled && _stickerAlignEnabled && _charmAlignEnabled)
+        {
+            return "full";
+        }
+        return "custom";
+    }
+
+    private bool AnyBaseCosmeticsEnabled()
+        => _cosmeticWeaponsEnabled || _cosmeticKnivesEnabled || _cosmeticGlovesEnabled || _cosmeticNamesEnabled;
+
+    private bool AnyCosmeticFeatureEnabled()
+        => AnyBaseCosmeticsEnabled() || _stickerAlignEnabled || _charmAlignEnabled;
+
+    private bool WeaponCosmeticFeatureEnabled()
+        => _cosmeticWeaponsEnabled || _cosmeticNamesEnabled || _stickerAlignEnabled || _charmAlignEnabled;
+
+    private void RefreshCosmeticAlignEnabled()
+    {
+        _cosmeticAlignEnabled = AnyCosmeticFeatureEnabled();
     }
 
     private void ApplyLeftHandDesiredMode(bool enabled, Action<string> reply)
@@ -523,10 +990,13 @@ public sealed partial class DemoTracerPlugin : BasePlugin
 
     private void SetCosmeticAlignEnabled(bool enabled)
     {
-        _cosmeticAlignEnabled = enabled;
-        if (_cosmeticAlignEnabled)
+        if (enabled)
+        {
+            ApplyCosmeticPreset(CosmeticPreset.Basic);
             return;
+        }
 
+        ApplyCosmeticPreset(CosmeticPreset.Off);
         ResetCosmeticAlignState();
         ResetStickerAlignState();
         ResetCharmAlignState();
@@ -535,6 +1005,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     private void SetStickerAlignEnabled(bool enabled)
     {
         _stickerAlignEnabled = enabled;
+        RefreshCosmeticAlignEnabled();
         if (!_stickerAlignEnabled)
             ResetStickerAlignState();
     }
@@ -542,6 +1013,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     private void SetCharmAlignEnabled(bool enabled)
     {
         _charmAlignEnabled = enabled;
+        RefreshCosmeticAlignEnabled();
         if (!_charmAlignEnabled)
             ResetCharmAlignState();
     }
