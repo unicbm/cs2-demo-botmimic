@@ -928,6 +928,11 @@ impl<'a> SecondPassParser<'a> {
                 Ok(Variant::I32(def)) if def >= 0 => def as u32,
                 _ => continue,
             };
+            let item_id_high = self.weapon_prop_u32(self.prop_controller.special_ids.item_id_high, &eid);
+            let item_id_low = self.weapon_prop_u32(self.prop_controller.special_ids.item_id_low, &eid);
+            let item_account_id =
+                self.weapon_prop_u32(self.prop_controller.special_ids.item_account_id, &eid);
+            let original_owner_xuid = self.weapon_original_owner_from_eid(&eid);
 
             let paint_kit = match self.find_weapon_skin_id(&eid) {
                 Ok(Variant::U32(value)) => value,
@@ -982,6 +987,10 @@ impl<'a> SecondPassParser<'a> {
 
             cosmetics.push(InventoryWeaponCosmetic {
                 item_def_index,
+                item_id_high,
+                item_id_low,
+                item_account_id,
+                original_owner_xuid,
                 paint_kit,
                 paint_seed,
                 paint_wear,
@@ -1176,6 +1185,20 @@ impl<'a> SecondPassParser<'a> {
         };
         let combined = (high_bits as u64) << 32 | (low_bits as u64);
         Ok(Variant::String(combined.to_string()))
+    }
+
+    fn weapon_prop_u32(&self, prop_id: Option<u32>, weapon_entity_id: &i32) -> Option<u32> {
+        let prop_id = prop_id?;
+        self.get_prop_from_ent(&prop_id, weapon_entity_id)
+            .ok()
+            .and_then(variant_to_nonnegative_u32)
+    }
+
+    fn weapon_original_owner_from_eid(&self, weapon_entity_id: &i32) -> Option<u64> {
+        let low = self.weapon_prop_u32(self.prop_controller.special_ids.orig_own_low, weapon_entity_id)?;
+        let high = self.weapon_prop_u32(self.prop_controller.special_ids.orig_own_high, weapon_entity_id)?;
+        let combined = (u64::from(high) << 32) | u64::from(low);
+        (combined != 0).then_some(combined)
     }
 
     pub fn find_weapon_skin(&self, weapon_entity_id: &i32) -> Result<Variant, PropCollectionError> {

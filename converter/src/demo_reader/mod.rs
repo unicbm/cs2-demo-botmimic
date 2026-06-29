@@ -57,6 +57,11 @@ mod demoparser_impl {
             "item_def_idx",
             "inventory_as_ids",
             "inventory_weapon_cosmetics",
+            "music_kit_id",
+            "active_weapon_original_owner",
+            "item_id_high",
+            "item_id_low",
+            "item_account_id",
             "weapon_skin_id",
             "weapon_paint_seed",
             "weapon_float",
@@ -236,9 +241,24 @@ mod demoparser_impl {
                     idx,
                 )
                 .unwrap_or_default(),
+                music_kit_id: get_u32(&columns, "music_kit_id", idx).filter(|value| *value != 0),
                 active_weapon_paint_kit: get_u32(&columns, "weapon_skin_id", idx),
                 active_weapon_paint_seed: get_u32(&columns, "weapon_paint_seed", idx),
                 active_weapon_paint_wear: get_f32(&columns, "weapon_float", idx),
+                active_weapon_original_owner_steam_id: get_string(
+                    &columns,
+                    "active_weapon_original_owner",
+                    idx,
+                )
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|value| *value != 0),
+                active_weapon_item_account_id: get_u32(&columns, "item_account_id", idx)
+                    .filter(|value| *value != 0),
+                active_weapon_item_id: combine_item_id(
+                    get_u32(&columns, "item_id_high", idx),
+                    get_u32(&columns, "item_id_low", idx),
+                )
+                .filter(|value| *value != 0),
                 active_weapon_custom_name: get_string(&columns, "custom_name", idx)
                     .and_then(normalize_custom_name),
                 active_weapon_stickers: get_weapon_stickers(&columns, "weapon_stickers", idx)
@@ -1101,6 +1121,10 @@ mod demoparser_impl {
                     .collect::<Vec<_>>();
                 Some(ParsedInventoryWeaponCosmetic {
                     item_def_index,
+                    item_id_high: weapon.item_id_high,
+                    item_id_low: weapon.item_id_low,
+                    item_account_id: weapon.item_account_id,
+                    original_owner_xuid: weapon.original_owner_xuid,
                     paint_kit: weapon.paint_kit,
                     paint_seed: weapon.paint_seed,
                     paint_wear: weapon.paint_wear,
@@ -1121,6 +1145,10 @@ mod demoparser_impl {
             })
             .collect::<Vec<_>>();
         (!parsed.is_empty()).then_some(parsed)
+    }
+
+    fn combine_item_id(high: Option<u32>, low: Option<u32>) -> Option<u64> {
+        Some((u64::from(high?) << 32) | u64::from(low?))
     }
 
     fn normalize_crosshair_code(value: String) -> Option<String> {

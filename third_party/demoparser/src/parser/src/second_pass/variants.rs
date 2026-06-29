@@ -40,6 +40,10 @@ pub struct Sticker {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct InventoryWeaponCosmetic {
     pub item_def_index: u32,
+    pub item_id_high: Option<u32>,
+    pub item_id_low: Option<u32>,
+    pub item_account_id: Option<u32>,
+    pub original_owner_xuid: Option<u64>,
     pub paint_kit: u32,
     pub paint_seed: u32,
     pub paint_wear: f32,

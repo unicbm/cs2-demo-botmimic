@@ -398,6 +398,7 @@ fn export_demo_to_memory_inner(
                 hifi_event_count: rec.high_fidelity.events.len(),
                 inventory_snapshot_count: rec.high_fidelity.inventory_snapshots.len(),
                 loadout: replay_loadout(play_start_row),
+                music_kit_id: stable_music_kit_id(&player_rows),
                 cosmetics: if options.export_cosmetics {
                     replay_cosmetics_at(
                         &player_rows,
@@ -1663,6 +1664,9 @@ fn replay_active_cosmetics(
 ) -> Option<ReplayCosmetics> {
     let mut weapon_specs: BTreeMap<i32, BTreeSet<CosmeticPaintSpec>> = BTreeMap::new();
     let mut weapon_custom_names: BTreeMap<i32, BTreeSet<String>> = BTreeMap::new();
+    let mut weapon_original_owners: BTreeMap<i32, BTreeSet<u64>> = BTreeMap::new();
+    let mut weapon_account_ids: BTreeMap<i32, BTreeSet<u32>> = BTreeMap::new();
+    let mut weapon_item_ids: BTreeMap<i32, BTreeSet<u64>> = BTreeMap::new();
     let mut weapon_stickers: BTreeMap<i32, BTreeSet<Vec<CosmeticStickerSpec>>> = BTreeMap::new();
     let mut weapon_stickers_missing = BTreeSet::new();
     let mut knife_specs = BTreeSet::new();
@@ -1701,6 +1705,24 @@ fn replay_active_cosmetics(
                 }
                 if let Some(name) = active_cosmetic_custom_name(row) {
                     weapon_custom_names.entry(def).or_default().insert(name);
+                }
+                if let Some(owner) = row
+                    .active_weapon_original_owner_steam_id
+                    .filter(|value| *value != 0)
+                {
+                    weapon_original_owners.entry(def).or_default().insert(owner);
+                }
+                if let Some(account_id) = row
+                    .active_weapon_item_account_id
+                    .filter(|value| *value != 0)
+                {
+                    weapon_account_ids
+                        .entry(def)
+                        .or_default()
+                        .insert(account_id);
+                }
+                if let Some(item_id) = row.active_weapon_item_id.filter(|value| *value != 0) {
+                    weapon_item_ids.entry(def).or_default().insert(item_id);
                 }
                 if export_stickers {
                     match active_cosmetic_sticker_set(row) {
@@ -1743,6 +1765,12 @@ fn replay_active_cosmetics(
             wear: f32::from_bits(spec.wear_bits),
             quality: None,
             stattrak_counter: None,
+            original_owner_steam_id: stable_weapon_u64_value(
+                &weapon_original_owners,
+                weapon_def_index,
+            ),
+            item_account_id: stable_weapon_u32_value(&weapon_account_ids, weapon_def_index),
+            item_id: stable_weapon_u64_value(&weapon_item_ids, weapon_def_index),
             custom_name: stable_weapon_custom_name(&weapon_custom_names, weapon_def_index),
             stickers: stable_weapon_stickers(
                 &weapon_stickers,
@@ -1852,6 +1880,9 @@ fn inventory_weapon_cosmetics_for_row(
     let mut weapon_custom_names: BTreeMap<i32, BTreeSet<String>> = BTreeMap::new();
     let mut weapon_qualities: BTreeMap<i32, BTreeSet<i32>> = BTreeMap::new();
     let mut weapon_stattrak_counters: BTreeMap<i32, BTreeSet<i32>> = BTreeMap::new();
+    let mut weapon_original_owners: BTreeMap<i32, BTreeSet<u64>> = BTreeMap::new();
+    let mut weapon_account_ids: BTreeMap<i32, BTreeSet<u32>> = BTreeMap::new();
+    let mut weapon_item_ids: BTreeMap<i32, BTreeSet<u64>> = BTreeMap::new();
     let mut weapon_stickers: BTreeMap<i32, BTreeSet<Vec<CosmeticStickerSpec>>> = BTreeMap::new();
     let mut weapon_charms: BTreeMap<i32, BTreeSet<Vec<CosmeticCharmSpec>>> = BTreeMap::new();
     let weapon_stickers_missing = BTreeSet::new();
@@ -1879,6 +1910,20 @@ fn inventory_weapon_cosmetics_for_row(
                 .or_default()
                 .insert(counter);
         }
+        if let Some(owner) = item.original_owner_xuid.filter(|value| *value != 0) {
+            weapon_original_owners.entry(def).or_default().insert(owner);
+        }
+        if let Some(account_id) = item.item_account_id.filter(|value| *value != 0) {
+            weapon_account_ids
+                .entry(def)
+                .or_default()
+                .insert(account_id);
+        }
+        if let Some(item_id) =
+            combine_item_id(item.item_id_high, item.item_id_low).filter(|value| *value != 0)
+        {
+            weapon_item_ids.entry(def).or_default().insert(item_id);
+        }
         if export_stickers {
             if let Some(stickers) = cosmetic_sticker_set_from_slice(&item.stickers) {
                 weapon_stickers.entry(def).or_default().insert(stickers);
@@ -1904,6 +1949,12 @@ fn inventory_weapon_cosmetics_for_row(
             wear: f32::from_bits(spec.wear_bits),
             quality: stable_weapon_i32_value(&weapon_qualities, weapon_def_index),
             stattrak_counter: stable_weapon_i32_value(&weapon_stattrak_counters, weapon_def_index),
+            original_owner_steam_id: stable_weapon_u64_value(
+                &weapon_original_owners,
+                weapon_def_index,
+            ),
+            item_account_id: stable_weapon_u32_value(&weapon_account_ids, weapon_def_index),
+            item_id: stable_weapon_u64_value(&weapon_item_ids, weapon_def_index),
             custom_name: stable_weapon_custom_name(&weapon_custom_names, weapon_def_index),
             stickers: stable_weapon_stickers(
                 &weapon_stickers,
@@ -1977,6 +2028,48 @@ fn stable_weapon_i32_value(
     } else {
         None
     }
+}
+
+fn stable_weapon_u32_value(
+    values: &BTreeMap<i32, BTreeSet<u32>>,
+    weapon_def_index: i32,
+) -> Option<u32> {
+    let values = values.get(&weapon_def_index)?;
+    if values.len() == 1 {
+        values.iter().next().copied()
+    } else {
+        None
+    }
+}
+
+fn stable_weapon_u64_value(
+    values: &BTreeMap<i32, BTreeSet<u64>>,
+    weapon_def_index: i32,
+) -> Option<u64> {
+    let values = values.get(&weapon_def_index)?;
+    if values.len() == 1 {
+        values.iter().next().copied()
+    } else {
+        None
+    }
+}
+
+fn stable_music_kit_id(rows: &[&ParsedPlayerTick]) -> Option<u32> {
+    let mut values = BTreeSet::new();
+    for row in rows {
+        if let Some(value) = row.music_kit_id.filter(|value| *value != 0) {
+            values.insert(value);
+        }
+    }
+    if values.len() == 1 {
+        values.iter().next().copied()
+    } else {
+        None
+    }
+}
+
+fn combine_item_id(high: Option<u32>, low: Option<u32>) -> Option<u64> {
+    Some((u64::from(high?) << 32) | u64::from(low?))
 }
 
 fn stable_knife_custom_name(
@@ -2611,6 +2704,68 @@ mod tests {
             cosmetics.glove.as_ref().unwrap().wear.to_bits(),
             0.2_f32.to_bits()
         );
+    }
+
+    #[test]
+    fn manifest_includes_stable_music_kit_id() {
+        let mut parsed = sample_demo();
+        parsed.rows = vec![
+            ParsedPlayerTick {
+                music_kit_id: Some(42),
+                ..sample_row(100)
+            },
+            ParsedPlayerTick {
+                music_kit_id: Some(42),
+                ..sample_row(164)
+            },
+        ];
+
+        let memory = export_memory(parsed);
+
+        assert_eq!(memory.manifest.files[0].music_kit_id, Some(42));
+    }
+
+    #[test]
+    fn inventory_weapon_cosmetics_export_provenance_identity() {
+        let mut weapon = inventory_weapon_cosmetic(16, 926, 42, 0.123, None, Vec::new());
+        weapon.original_owner_xuid = Some(76561197989430253);
+        weapon.item_account_id = Some(29164525);
+        weapon.item_id_high = Some(8);
+        weapon.item_id_low = Some(9);
+
+        let mut parsed = sample_demo();
+        parsed.rows = vec![
+            ParsedPlayerTick {
+                item_def_idx: 16,
+                inventory_as_ids: vec![16, 61],
+                inventory_weapon_cosmetics: vec![weapon],
+                active_weapon_paint_kit: Some(309),
+                active_weapon_paint_seed: Some(7),
+                active_weapon_paint_wear: Some(0.4),
+                ..sample_row(100)
+            },
+            ParsedPlayerTick {
+                item_def_idx: 16,
+                inventory_as_ids: vec![16, 61],
+                active_weapon_paint_kit: Some(309),
+                active_weapon_paint_seed: Some(7),
+                active_weapon_paint_wear: Some(0.4),
+                ..sample_row(164)
+            },
+        ];
+
+        let memory = export_memory_with_cosmetics(parsed);
+        let weapon = &memory.manifest.files[0]
+            .cosmetics
+            .as_ref()
+            .expect("expected cosmetic evidence")
+            .weapons
+            .first()
+            .expect("expected weapon cosmetic evidence");
+
+        assert_eq!(weapon.original_owner_steam_id, Some(76561197989430253));
+        assert_eq!(weapon.item_account_id, Some(29164525));
+        assert_eq!(weapon.item_id, Some((8_u64 << 32) | 9));
     }
 
     #[test]
@@ -4003,6 +4158,10 @@ mod tests {
     ) -> ParsedInventoryWeaponCosmetic {
         ParsedInventoryWeaponCosmetic {
             item_def_index,
+            item_id_high: None,
+            item_id_low: None,
+            item_account_id: None,
+            original_owner_xuid: None,
             paint_kit,
             paint_seed,
             paint_wear,
@@ -4159,9 +4318,13 @@ mod tests {
             item_def_idx: 7,
             inventory_as_ids: vec![7],
             inventory_weapon_cosmetics: Vec::new(),
+            music_kit_id: None,
             active_weapon_paint_kit: None,
             active_weapon_paint_seed: None,
             active_weapon_paint_wear: None,
+            active_weapon_original_owner_steam_id: None,
+            active_weapon_item_account_id: None,
+            active_weapon_item_id: None,
             active_weapon_custom_name: None,
             active_weapon_stickers: Vec::new(),
             glove_item_def_index: None,

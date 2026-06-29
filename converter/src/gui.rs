@@ -2895,6 +2895,7 @@ mod tests {
             hifi_event_count: 0,
             inventory_snapshot_count: 0,
             loadout: crate::model::ReplayLoadout::default(),
+            music_kit_id: None,
             cosmetics: None,
             view: None,
             scoreboard: None,

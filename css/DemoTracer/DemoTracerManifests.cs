@@ -241,6 +241,9 @@ public sealed partial class DemoTracerPlugin
         [JsonPropertyName("loadout")]
         public ReplayLoadoutSnapshot? Loadout { get; set; }
 
+        [JsonPropertyName("music_kit_id")]
+        public uint? MusicKitId { get; set; }
+
         [JsonPropertyName("cosmetics")]
         public ReplayCosmetics? Cosmetics { get; set; }
 
@@ -352,6 +355,15 @@ public sealed partial class DemoTracerPlugin
         [JsonPropertyName("stattrak_counter")]
         public int? StattrakCounter { get; set; }
 
+        [JsonPropertyName("original_owner_steam_id")]
+        public ulong? OriginalOwnerSteamId { get; set; }
+
+        [JsonPropertyName("item_account_id")]
+        public uint? ItemAccountId { get; set; }
+
+        [JsonPropertyName("item_id")]
+        public ulong? ItemId { get; set; }
+
         [JsonPropertyName("custom_name")]
         public string? CustomName { get; set; }
 
@@ -426,6 +438,15 @@ public sealed partial class DemoTracerPlugin
 
         [JsonPropertyName("wear")]
         public float Wear { get; set; }
+
+        [JsonPropertyName("original_owner_steam_id")]
+        public ulong? OriginalOwnerSteamId { get; set; }
+
+        [JsonPropertyName("item_account_id")]
+        public uint? ItemAccountId { get; set; }
+
+        [JsonPropertyName("item_id")]
+        public ulong? ItemId { get; set; }
 
         [JsonPropertyName("custom_name")]
         public string? CustomName { get; set; }

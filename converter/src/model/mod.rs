@@ -526,6 +526,10 @@ pub struct ParsedWeaponSticker {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ParsedInventoryWeaponCosmetic {
     pub item_def_index: i32,
+    pub item_id_high: Option<u32>,
+    pub item_id_low: Option<u32>,
+    pub item_account_id: Option<u32>,
+    pub original_owner_xuid: Option<u64>,
     pub paint_kit: u32,
     pub paint_seed: u32,
     pub paint_wear: f32,
@@ -575,9 +579,13 @@ pub struct ParsedPlayerTick {
     pub item_def_idx: i32,
     pub inventory_as_ids: Vec<i32>,
     pub inventory_weapon_cosmetics: Vec<ParsedInventoryWeaponCosmetic>,
+    pub music_kit_id: Option<u32>,
     pub active_weapon_paint_kit: Option<u32>,
     pub active_weapon_paint_seed: Option<u32>,
     pub active_weapon_paint_wear: Option<f32>,
+    pub active_weapon_original_owner_steam_id: Option<u64>,
+    pub active_weapon_item_account_id: Option<u32>,
+    pub active_weapon_item_id: Option<u64>,
     pub active_weapon_custom_name: Option<String>,
     pub active_weapon_stickers: Vec<ParsedWeaponSticker>,
     pub glove_item_def_index: Option<i32>,
@@ -903,6 +911,8 @@ pub struct ConvertedFile {
     #[serde(default)]
     pub loadout: ReplayLoadout,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub music_kit_id: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cosmetics: Option<ReplayCosmetics>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub view: Option<ReplayView>,
@@ -986,6 +996,12 @@ pub struct ReplayWeaponCosmetic {
     pub quality: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stattrak_counter: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_owner_steam_id: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_account_id: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_id: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub custom_name: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

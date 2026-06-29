@@ -4,6 +4,7 @@ using CounterStrikeSharp.API.Modules.Memory;
 using CounterStrikeSharp.API.Modules.Memory.DynamicFunctions;
 using CounterStrikeSharp.API.Modules.Timers;
 using System.Globalization;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 
@@ -137,6 +138,9 @@ public sealed partial class DemoTracerPlugin
                 Wear = weapon.Wear,
                 Quality = NormalizeStattrakQuality(weapon.Quality),
                 StattrakCounter = NormalizeStattrakCounter(weapon.StattrakCounter),
+                OriginalOwnerSteamId = NormalizeOptionalULong(weapon.OriginalOwnerSteamId),
+                ItemAccountId = NormalizeOptionalUInt(weapon.ItemAccountId),
+                ItemId = NormalizeOptionalULong(weapon.ItemId),
                 CustomName = NormalizeCosmeticCustomName(weapon.CustomName),
                 Stickers = NormalizeWeaponStickers(weapon.Stickers),
                 Charms = NormalizeWeaponCharms(weapon.Charms)
@@ -172,6 +176,9 @@ public sealed partial class DemoTracerPlugin
             PaintKit = source.PaintKit,
             Seed = source.Seed,
             Wear = source.Wear,
+            OriginalOwnerSteamId = NormalizeOptionalULong(source.OriginalOwnerSteamId),
+            ItemAccountId = NormalizeOptionalUInt(source.ItemAccountId),
+            ItemId = NormalizeOptionalULong(source.ItemId),
             CustomName = NormalizeCosmeticCustomName(source.CustomName)
         };
 
@@ -273,6 +280,9 @@ public sealed partial class DemoTracerPlugin
     }
 
     private static uint? NormalizeOptionalUInt(uint? value)
+        => value is > 0 ? value : null;
+
+    private static ulong? NormalizeOptionalULong(ulong? value)
         => value is > 0 ? value : null;
 
     private static string? NormalizeCosmeticCustomName(string? value)
@@ -840,6 +850,9 @@ public sealed partial class DemoTracerPlugin
                     PaintKit = cosmetic.PaintKit,
                     Seed = cosmetic.Seed,
                     Wear = cosmetic.Wear,
+                    OriginalOwnerSteamId = cosmetic.OriginalOwnerSteamId,
+                    ItemAccountId = cosmetic.ItemAccountId,
+                    ItemId = cosmetic.ItemId,
                     CustomName = cosmetic.CustomName
                 },
                 allowSubclassChange: false,
@@ -882,8 +895,7 @@ public sealed partial class DemoTracerPlugin
             }
 
             item.EntityQuality = allowSubclassChange ? 3 : 0;
-            item.AccountID = (uint)player.SteamID;
-            UpdateReplayEconItemId(item);
+            ApplyReplayEconIdentity(player, weapon, item, cosmetic);
             if (applyPaint)
             {
                 item.AttributeList.Attributes.RemoveAll();
@@ -1004,6 +1016,7 @@ public sealed partial class DemoTracerPlugin
         return true;
     }
 
+    private const ulong SteamId64AccountBase = 76_561_197_960_265_728;
     private static ulong _nextReplayEconItemId = 10_000_000_000;
 
     private static void MarkWeaponPaintStateChanged(CBasePlayerWeapon weapon)
@@ -1028,9 +1041,153 @@ public sealed partial class DemoTracerPlugin
     private static void UpdateReplayEconItemId(CEconItemView item)
     {
         var itemId = _nextReplayEconItemId++;
+        SetReplayEconItemId(item, itemId);
+    }
+
+    private static void SetReplayEconItemId(CEconItemView item, ulong itemId)
+    {
         item.ItemID = itemId;
         item.ItemIDLow = (uint)(itemId & 0xFFFFFFFF);
         item.ItemIDHigh = (uint)(itemId >> 32);
+    }
+
+    private static void ApplyReplayEconIdentity(
+        CCSPlayerController player,
+        CBasePlayerWeapon weapon,
+        CEconItemView item,
+        ReplayItemCosmetic cosmetic)
+    {
+        var ownerSteamId = NormalizeOptionalULong(cosmetic.OriginalOwnerSteamId);
+        item.AccountID = cosmetic.ItemAccountId
+                         ?? AccountIdFromSteamId(ownerSteamId)
+                         ?? (uint)player.SteamID;
+        if (cosmetic.ItemId is { } itemId && itemId != 0)
+            SetReplayEconItemId(item, itemId);
+        else
+            UpdateReplayEconItemId(item);
+        TrySetOriginalOwnerXuid(weapon, ownerSteamId);
+    }
+
+    private static uint? AccountIdFromSteamId(ulong? steamId)
+    {
+        if (steamId is not { } value || value == 0)
+            return null;
+        if (value >= SteamId64AccountBase)
+        {
+            var accountId = value - SteamId64AccountBase;
+            return accountId <= uint.MaxValue ? (uint)accountId : null;
+        }
+        return value <= uint.MaxValue ? (uint)value : null;
+    }
+
+    private static void TrySetOriginalOwnerXuid(CBasePlayerWeapon weapon, ulong? ownerSteamId)
+    {
+        if (ownerSteamId is not { } value || value == 0)
+            return;
+
+        var low = (uint)(value & 0xFFFFFFFF);
+        var high = (uint)(value >> 32);
+        var setLow = TrySetOriginalOwnerSchemaValue(weapon, "m_OriginalOwnerXuidLow", low) ||
+                     TrySetIntegralMember(weapon, "OriginalOwnerXuidLow", low);
+        var setHigh = TrySetOriginalOwnerSchemaValue(weapon, "m_OriginalOwnerXuidHigh", high) ||
+                      TrySetIntegralMember(weapon, "OriginalOwnerXuidHigh", high);
+        if (!setLow && !setHigh)
+            return;
+
+        TrySetStateChanged(weapon, "CEconEntity", "m_OriginalOwnerXuidLow");
+        TrySetStateChanged(weapon, "CEconEntity", "m_OriginalOwnerXuidHigh");
+    }
+
+    private static bool TrySetOriginalOwnerSchemaValue(
+        CBasePlayerWeapon weapon,
+        string fieldName,
+        uint value)
+    {
+        if (weapon.Handle == IntPtr.Zero)
+            return false;
+        try
+        {
+            Schema.SetSchemaValue(weapon.Handle, "CEconEntity", fieldName, value);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool TrySetIntegralMember(object target, string name, ulong value)
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+        try
+        {
+            var property = target.GetType().GetProperty(name, flags);
+            if (property?.CanWrite == true &&
+                TryConvertIntegralValue(value, property.PropertyType, out var propertyValue))
+            {
+                property.SetValue(target, propertyValue);
+                return true;
+            }
+
+            var field = target.GetType().GetField(name, flags);
+            if (field != null && TryConvertIntegralValue(value, field.FieldType, out var fieldValue))
+            {
+                field.SetValue(target, fieldValue);
+                return true;
+            }
+        }
+        catch
+        {
+            return false;
+        }
+        return false;
+    }
+
+    private static bool TryConvertIntegralValue(
+        ulong value,
+        Type targetType,
+        out object converted)
+    {
+        converted = 0U;
+        if (targetType == typeof(uint))
+        {
+            if (value > uint.MaxValue)
+                return false;
+            converted = (uint)value;
+            return true;
+        }
+        if (targetType == typeof(ulong))
+        {
+            converted = value;
+            return true;
+        }
+        if (targetType == typeof(int))
+        {
+            if (value > int.MaxValue)
+                return false;
+            converted = (int)value;
+            return true;
+        }
+        if (targetType == typeof(long))
+        {
+            if (value > long.MaxValue)
+                return false;
+            converted = (long)value;
+            return true;
+        }
+        return false;
+    }
+
+    private static void TrySetStateChanged(CBasePlayerWeapon weapon, string className, string fieldName)
+    {
+        try
+        {
+            Utilities.SetStateChanged(weapon, className, fieldName);
+        }
+        catch
+        {
+            // Some server/API versions expose the field but reject state-change marking.
+        }
     }
 
     private static MemoryFunctionVoid<nint, string, float>? CreateAttributeSetter()

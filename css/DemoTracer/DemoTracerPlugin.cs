@@ -76,6 +76,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     private readonly Dictionary<int, PendingBulletDamage> _pendingBulletDamages = new();
     private readonly Dictionary<int, PendingThreat360> _pendingThreat360 = new();
     private readonly Dictionary<uint, UtilityProjectileTrace> _utilityTraceProjectiles = new();
+    private readonly HashSet<int> _musicKitSyncedSlots = new();
     private readonly HashSet<int> _cosmeticSyncedSlots = new();
     private readonly HashSet<int> _scoreboardSyncedSlots = new();
     private readonly Dictionary<int, string?> _viewerOriginalCrosshairCodes = new();
@@ -2635,6 +2636,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                 file.FirstWeaponDefIndex ?? -1,
                 file.PreloadWeaponDefIndices,
                 file.Loadout,
+                NormalizeMusicKitId(file.MusicKitId),
                 file.Cosmetics,
                 file.View,
                 file.Scoreboard,
@@ -2841,6 +2843,8 @@ public sealed partial class DemoTracerPlugin : BasePlugin
 
     private void PreloadLoadedReplays()
     {
+        ApplyLoadedReplayMusicKits();
+
         if (_weaponAlignEnabled)
         {
             foreach (var slot in _loadedSlots)
@@ -2874,6 +2878,55 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         ApplyLoadedReplayScoreboards();
         AlignSafeC4OwnerForLoadedReplays();
     }
+
+    private void ApplyLoadedReplayMusicKits()
+    {
+        foreach (var slot in _loadedSlots)
+        {
+            if (!IsReplaySlotStillSafe(slot) ||
+                !_loadedReplays.TryGetValue(slot, out var replay) ||
+                replay.UtilityOnly ||
+                replay.MusicKitId <= 0 ||
+                _musicKitSyncedSlots.Contains(slot))
+            {
+                continue;
+            }
+
+            ApplyReplayMusicKitForSlot(slot, replay.MusicKitId);
+        }
+    }
+
+    private void ApplyReplayMusicKitForSlot(int slot, int musicKitId)
+    {
+        var player = Utilities.GetPlayerFromSlot(slot);
+        if (player is not { IsValid: true })
+            return;
+
+        try
+        {
+            ApplyReplayMusicKit(player, musicKitId);
+            _musicKitSyncedSlots.Add(slot);
+        }
+        catch (Exception ex)
+        {
+            Server.PrintToConsole($"dtr: music kit apply failed slot={slot} kit={musicKitId}: {ex.Message}");
+        }
+    }
+
+    private static void ApplyReplayMusicKit(CCSPlayerController player, int musicKitId)
+    {
+        if (musicKitId <= 0)
+            return;
+        if (player.MusicKitID != musicKitId)
+            player.MusicKitID = musicKitId;
+        Utilities.SetStateChanged(player, "CCSPlayerController", "m_iMusicKitID");
+    }
+
+    private static int NormalizeMusicKitId(uint? musicKitId)
+        => musicKitId is > 0 and <= int.MaxValue ? (int)musicKitId.Value : 0;
+
+    private static int NormalizeMusicKitId(int musicKitId)
+        => musicKitId > 0 ? musicKitId : 0;
 
     private void AlignSafeC4OwnerForLoadedReplays()
     {
@@ -3675,6 +3728,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         _replayHifiEventNextBySlot.Remove(slot);
         _queuedNadeStartTokens.Remove(slot);
         _rebuiltInventorySlots.Remove(slot);
+        _musicKitSyncedSlots.Remove(slot);
         _cosmeticSyncedSlots.Remove(slot);
         _cosmeticHeartbeatTokens.Remove(slot);
         _scoreboardSyncedSlots.Remove(slot);
@@ -3689,6 +3743,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         int manifestFirstWeaponDefIndex = -1,
         IReadOnlyList<int>? manifestPreloadWeaponDefIndices = null,
         ReplayLoadoutSnapshot? loadout = null,
+        int musicKitId = 0,
         ReplayCosmetics? cosmetics = null,
         ReplayView? view = null,
         ReplayPlayerScoreboard? scoreboard = null,
@@ -3726,6 +3781,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             preloadDefs,
             hasLoadout,
             NormalizeReplayLoadout(loadout ?? new ReplayLoadoutSnapshot()),
+            NormalizeMusicKitId(musicKitId),
             normalizedCosmetics,
             normalizedView,
             normalizedScoreboard,
@@ -3744,6 +3800,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         _replayHifiEventNextBySlot[slot] = 0;
         _rebuiltInventorySlots.Remove(slot);
         _loadoutSyncedSlots.Remove(slot);
+        _musicKitSyncedSlots.Remove(slot);
         _cosmeticSyncedSlots.Remove(slot);
         _cosmeticHeartbeatTokens.Remove(slot);
         _scoreboardSyncedSlots.Remove(slot);
@@ -4430,6 +4487,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         int[] PreloadWeaponDefIndices,
         bool HasLoadout,
         ReplayLoadoutSnapshot Loadout,
+        int MusicKitId,
         ReplayCosmetics Cosmetics,
         ReplayView View,
         ReplayPlayerScoreboard Scoreboard,
