@@ -249,6 +249,9 @@ public sealed partial class DemoTracerPlugin
         public bool IsDemoTracerBot(int slot)
             => _plugin.IsDemoTracerBot(slot);
 
+        public bool TryGetBotCosmeticState(int slot, out DemoTracerBotCosmeticState state)
+            => _plugin.TryGetBotCosmeticState(slot, out state);
+
         private static DemoTracerNadeManifest ToApiManifest(NadeManifest manifest)
         {
             var clips = new List<DemoTracerNadeClip>(manifest.Clips.Count);

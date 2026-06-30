@@ -28,6 +28,21 @@ public interface IDemoTracerApi
     bool IsSlotBusy(int slot);
 
     bool IsDemoTracerBot(int slot);
+
+    bool TryGetBotCosmeticState(int slot, out DemoTracerBotCosmeticState state);
+}
+
+public sealed class DemoTracerBotCosmeticState
+{
+    public bool IsDemoTracerBot { get; set; }
+
+    public bool IsSlotBusy { get; set; }
+
+    public bool HasCosmeticEvidence { get; set; }
+
+    public bool CosmeticWriterEnabled { get; set; }
+
+    public bool ShouldDeferInventoryWrites { get; set; }
 }
 
 public sealed class DemoTracerNadeManifest

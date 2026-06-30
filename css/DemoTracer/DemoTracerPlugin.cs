@@ -3754,6 +3754,27 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         return state.Playing;
     }
 
+    private bool TryGetBotCosmeticState(int slot, out DemoTracerBotCosmeticState state)
+    {
+        state = new DemoTracerBotCosmeticState();
+        if (slot < 0)
+            return false;
+
+        state.IsDemoTracerBot = IsDemoTracerBot(slot);
+        state.IsSlotBusy = IsReplaySlotBusy(slot);
+        state.CosmeticWriterEnabled = AnyCosmeticFeatureEnabled();
+        state.HasCosmeticEvidence =
+            _loadedReplays.TryGetValue(slot, out var replay) &&
+            !replay.UtilityOnly &&
+            HasCosmeticEvidence(replay.Cosmetics) &&
+            IsReplaySlotStillSafe(slot);
+        state.ShouldDeferInventoryWrites =
+            state.IsDemoTracerBot &&
+            state.HasCosmeticEvidence &&
+            state.CosmeticWriterEnabled;
+        return state.IsDemoTracerBot || state.IsSlotBusy || state.HasCosmeticEvidence;
+    }
+
     private void RememberLoadedSlot(int slot)
     {
         if (!_loadedSlots.Contains(slot))

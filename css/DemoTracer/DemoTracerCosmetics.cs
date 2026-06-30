@@ -373,9 +373,10 @@ public sealed partial class DemoTracerPlugin
 
     private void ApplyLoadedReplayCosmeticsForSlot(int slot, LoadedReplay replay)
     {
+        var hasCosmeticEvidence = HasCosmeticEvidence(replay.Cosmetics);
         if (!AnyCosmeticFeatureEnabled() ||
             replay.UtilityOnly ||
-            !HasCosmeticEvidence(replay.Cosmetics) ||
+            !hasCosmeticEvidence ||
             !IsReplaySlotStillSafe(slot))
         {
             return;
@@ -407,6 +408,7 @@ public sealed partial class DemoTracerPlugin
 
         if (_cosmeticKnivesEnabled && replay.Cosmetics.Knife != null)
         {
+            var appliedKnife = false;
             if (TryFindReplayKnife(pawn, out var knife) &&
                 TryApplyItemCosmetic(
                     player,
@@ -417,19 +419,31 @@ public sealed partial class DemoTracerPlugin
                     applyCustomName: _cosmeticNamesEnabled))
             {
                 applied++;
+                appliedKnife = true;
             }
             else
             {
                 skipped++;
             }
+            ScheduleReplayKnifeCosmeticRetry(slot, replay.Cosmetics.Knife, framesRemaining: appliedKnife ? 2 : 4);
         }
 
-        if (_cosmeticGlovesEnabled && replay.Cosmetics.Glove != null)
+        if (_cosmeticGlovesEnabled)
         {
-            if (TryApplyGloveCosmetic(player, pawn, replay.Cosmetics.Glove))
-                applied++;
+            if (replay.Cosmetics.Glove != null)
+            {
+                if (TryApplyGloveCosmetic(player, pawn, replay.Cosmetics.Glove))
+                    applied++;
+                else
+                    skipped++;
+            }
             else
-                skipped++;
+            {
+                if (TryClearGloveCosmetic(player, pawn))
+                    applied++;
+                else
+                    skipped++;
+            }
         }
 
         _cosmeticAppliedCount += applied;
@@ -519,11 +533,45 @@ public sealed partial class DemoTracerPlugin
                 return;
             }
 
-            if (TryFindReplayWeaponByDefIndex(refreshedPawn, cosmetic.WeaponDefIndex, out var refreshedWeapon) &&
-                TryApplyWeaponCosmetic(refreshedPlayer, refreshedWeapon, cosmetic))
+            if (TryFindReplayWeaponByDefIndex(refreshedPawn, cosmetic.WeaponDefIndex, out var refreshedWeapon))
+                _ = TryApplyWeaponCosmetic(refreshedPlayer, refreshedWeapon, cosmetic);
+
+            ScheduleReplayWeaponCosmeticRetry(slot, cosmetic, framesRemaining - 1);
+        });
+    }
+
+    private void ScheduleReplayKnifeCosmeticRetry(
+        int slot,
+        ReplayItemCosmetic cosmetic,
+        int framesRemaining)
+    {
+        if (framesRemaining <= 0)
+            return;
+
+        Server.NextFrame(() =>
+        {
+            if (!_cosmeticKnivesEnabled || !IsReplaySlotStillSafe(slot))
+                return;
+
+            var player = Utilities.GetPlayerFromSlot(slot);
+            var pawn = player?.PlayerPawn.Value;
+            if (player is not { IsValid: true, PawnIsAlive: true } || pawn is not { IsValid: true })
+                return;
+
+            if (TryFindReplayKnife(pawn, out var knife) &&
+                TryApplyItemCosmetic(
+                    player,
+                    knife,
+                    cosmetic,
+                    allowSubclassChange: true,
+                    applyPaint: true,
+                    applyCustomName: _cosmeticNamesEnabled))
             {
-                ScheduleReplayWeaponCosmeticRetry(slot, cosmetic, framesRemaining - 1);
+                if (framesRemaining <= 2)
+                    return;
             }
+
+            ScheduleReplayKnifeCosmeticRetry(slot, cosmetic, framesRemaining - 1);
         });
     }
 
@@ -966,6 +1014,42 @@ public sealed partial class DemoTracerPlugin
         }
     }
 
+    private bool TryClearGloveCosmetic(CCSPlayerController player, CCSPlayerPawn pawn)
+    {
+        try
+        {
+            ClearGloveEconItem(pawn);
+            AddTimer(0.10f, () => ClearGloveCosmeticForSlot(player.Slot), TimerFlags.STOP_ON_MAPCHANGE);
+            AddTimer(0.25f, () => ClearGloveCosmeticForSlot(player.Slot), TimerFlags.STOP_ON_MAPCHANGE);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Server.PrintToConsole($"dtr: glove cosmetic clear failed slot={player.Slot}: {ex.Message}");
+            return false;
+        }
+    }
+
+    private void ClearGloveCosmeticForSlot(int slot)
+    {
+        try
+        {
+            if (!_cosmeticGlovesEnabled || !IsReplaySlotStillSafe(slot))
+                return;
+
+            var player = Utilities.GetPlayerFromSlot(slot);
+            var pawn = player?.PlayerPawn.Value;
+            if (player is not { IsValid: true, PawnIsAlive: true } || pawn is not { IsValid: true })
+                return;
+
+            ClearGloveEconItem(pawn);
+        }
+        catch (Exception ex)
+        {
+            Server.PrintToConsole($"dtr: glove cosmetic delayed clear failed slot={slot}: {ex.Message}");
+        }
+    }
+
     private void ApplyGloveCosmeticForSlot(int slot, ReplayItemCosmetic cosmetic)
     {
         try
@@ -1014,6 +1098,19 @@ public sealed partial class DemoTracerPlugin
                 pawn.AcceptInput("SetBodygroup", value: "first_or_third_person,1");
         }, TimerFlags.STOP_ON_MAPCHANGE);
         return true;
+    }
+
+    private static void ClearGloveEconItem(CCSPlayerPawn pawn)
+    {
+        var item = pawn.EconGloves;
+        item.ItemDefinitionIndex = 0;
+        item.AccountID = 0;
+        item.Initialized = false;
+        SetReplayEconItemId(item, 0);
+        item.NetworkedDynamicAttributes.Attributes.RemoveAll();
+        item.AttributeList.Attributes.RemoveAll();
+        MarkGloveCosmeticStateChanged(pawn);
+        pawn.AcceptInput("SetBodygroup", value: "first_or_third_person,0");
     }
 
     private const ulong SteamId64AccountBase = 76_561_197_960_265_728;
