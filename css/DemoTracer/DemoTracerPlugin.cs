@@ -4,7 +4,6 @@ using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Modules.Commands;
 using CounterStrikeSharp.API.Modules.Cvars;
 using CounterStrikeSharp.API.Modules.Memory;
-using CounterStrikeSharp.API.Modules.Timers;
 using CounterStrikeSharp.API.Modules.Utils;
 using CounterStrikeSharp.API;
 using DemoTracerApi;
@@ -39,9 +38,6 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     private const float HandoffThreat360MinRange = 150.0f;
     private const float HandoffThreat360MaxRange = 800.0f;
     private const float HandoffThreat360ImmediateRange = 240.0f;
-    private const int HifiItemTransferMatchEarlyTicks = 16;
-    private const int HifiItemTransferMatchLateTicks = 96;
-    private const float HifiItemWorldPickupFallbackSeconds = 0.25f;
     private const float HandoffThreat360HoldSeconds = 0.08f;
     private const float HandoffThreat360MaxVerticalDelta = 128.0f;
     private const float HandoffThreat360ChestZScale = 0.62f;
@@ -69,7 +65,6 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     private readonly Dictionary<int, PendingWeaponAlign> _pendingWeaponAlign = new();
     private readonly Dictionary<int, int> _projectileAlignNextBySlot = new();
     private readonly Dictionary<int, int> _replayHifiEventNextBySlot = new();
-    private readonly Dictionary<int, int> _replayInventorySnapshotNextBySlot = new();
     private readonly Dictionary<uint, PendingProjectileAlign> _pendingProjectileAlign = new();
     private readonly List<TrackedDroppedReplayItem> _trackedDroppedReplayItems = new();
     private readonly Dictionary<int, int> _queuedNadeStartTokens = new();
@@ -95,7 +90,6 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     private string _utilityTracePath = string.Empty;
     private bool _utilityTraceEnabled;
     private ulong _lastReplayPovMask = ulong.MaxValue;
-    private bool _hifiItemAlignEnabled;
 
     private bool _armed;
     private bool _armedLoop;
@@ -420,20 +414,6 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                 command.ReplyToCommand("usage: dtr_match [status|off|scoreboard|scoreboard <on|off>|full]");
                 command.ReplyToCommand("hint: replay fidelity settings moved to dtr_align");
                 return;
-        }
-    }
-
-    [ConsoleCommand("dtr_hifi_items", "dtr_hifi_items <off|on>")]
-    public void HifiItemsCommand(CCSPlayerController? player, CommandInfo command)
-    {
-        if (command.ArgCount >= 2)
-            SetHifiItemAlignEnabled(ParseOnOff(command.GetArg(1), _hifiItemAlignEnabled));
-
-        command.ReplyToCommand($"[DTR OK] hifi_items={FormatOnOff(_hifiItemAlignEnabled)}");
-        if (_hifiItemAlignEnabled)
-        {
-            command.ReplyToCommand(
-                "[DTR WARN] hifi item alignment is experimental; it replays non-C4 inventory pickups, drops, and primary/secondary snapshot deltas.");
         }
     }
 
@@ -1011,14 +991,6 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         _pendingProjectileAlign.Clear();
     }
 
-    private void SetHifiItemAlignEnabled(bool enabled)
-    {
-        _hifiItemAlignEnabled = enabled;
-        _replayInventorySnapshotNextBySlot.Clear();
-        if (!_hifiItemAlignEnabled)
-            KillAllTrackedReplayDrops("hifi_items_off");
-    }
-
     private void SetCosmeticAlignEnabled(bool enabled)
     {
         if (enabled)
@@ -1487,10 +1459,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
 
             var hasLoadedReplay = _loadedReplays.TryGetValue(slot, out var replay);
             if (hasLoadedReplay)
-            {
                 ProcessReplayHifiEvents(slot, replay, state.Cursor);
-                ProcessReplayInventorySnapshots(slot, replay, state.Cursor);
-            }
 
             if (HandoffIncludesContact(_handoffMode) && ReplayHasPassedHandoffGrace(slot) &&
                 ReplayBotHasContact(slot, playerSnapshot, out var contactReason, out _))
@@ -1536,142 +1505,14 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         _replayHifiEventNextBySlot[slot] = next;
     }
 
-    private void ProcessReplayInventorySnapshots(int slot, LoadedReplay replay, int cursor)
-    {
-        if (!_hifiItemAlignEnabled || cursor < 0 || replay.InventorySnapshots.Length == 0)
-            return;
-
-        var next = _replayInventorySnapshotNextBySlot.GetValueOrDefault(slot);
-        while (next < replay.InventorySnapshots.Length && replay.InventorySnapshots[next].TickIndex <= (uint)cursor)
-        {
-            ReconcileReplayPrimarySecondarySnapshot(slot, replay.InventorySnapshots[next]);
-            next++;
-        }
-        _replayInventorySnapshotNextBySlot[slot] = next;
-    }
-
-    private void ReconcileReplayPrimarySecondarySnapshot(int slot, ReplayInventorySnapshot snapshot)
-    {
-        if (!IsReplaySlotStillSafe(slot))
-            return;
-
-        var player = Utilities.GetPlayerFromSlot(slot);
-        if (player is not { IsValid: true, PawnIsAlive: true } ||
-            player.PlayerPawn is not { IsValid: true, Value.IsValid: true })
-            return;
-
-        var pawn = player.PlayerPawn.Value;
-        var desiredCounts = SnapshotPrimarySecondaryCounts(snapshot);
-        var currentCounts = CurrentPrimarySecondaryCounts(pawn);
-
-        foreach (var (weaponDefIndex, currentCount) in currentCounts)
-        {
-            var desiredCount = desiredCounts.GetValueOrDefault(weaponDefIndex);
-            var extra = currentCount - desiredCount;
-            for (var i = 0; i < extra; i++)
-            {
-                if (ShouldMaterializeReplaySnapshotDrop(slot, weaponDefIndex, snapshot))
-                {
-                    DropOneReplayItemToWorld(
-                        slot,
-                        weaponDefIndex,
-                        snapshot.Tick,
-                        $"snapshot_transfer_drop_tick={snapshot.Tick}");
-                }
-                else
-                {
-                    DropAndKillOneReplayItem(slot, weaponDefIndex, $"snapshot_extra_cleanup_tick={snapshot.Tick}");
-                }
-            }
-        }
-
-        currentCounts = CurrentPrimarySecondaryCounts(pawn);
-        foreach (var (weaponDefIndex, desiredCount) in desiredCounts)
-        {
-            var currentCount = currentCounts.GetValueOrDefault(weaponDefIndex);
-            var missing = desiredCount - currentCount;
-            for (var i = 0; i < missing; i++)
-            {
-                if (TryDeferReplayItemGrantForWorldPickup(slot, weaponDefIndex, desiredCount, snapshot.Tick))
-                    continue;
-
-                if (!TryEnsureReplayWeapon(
-                        player,
-                        weaponDefIndex,
-                        allowGive: true,
-                        replaceConflictingSlot: true,
-                        out _))
-                {
-                    Server.PrintToConsole(
-                        $"dtr: hifi inventory grant failed slot={slot} def={weaponDefIndex} tick={snapshot.Tick}");
-                    return;
-                }
-                KillOneTrackedDroppedReplayItem(weaponDefIndex);
-            }
-        }
-
-        _lastEnsuredWeaponDef.Remove(slot);
-        _lastReplayWeaponDef.Remove(slot);
-    }
-
-    private bool ShouldMaterializeReplaySnapshotDrop(
-        int sourceSlot,
-        int weaponDefIndex,
-        ReplayInventorySnapshot sourceSnapshot)
-    {
-        if (!IsPrimaryOrSecondaryWeaponDefIndex(weaponDefIndex))
-            return false;
-
-        foreach (var (slot, replay) in _loadedReplays)
-        {
-            if (slot == sourceSlot)
-                continue;
-            if (ReplayHasNearbyInventoryGain(replay.InventorySnapshots, weaponDefIndex, sourceSnapshot.Tick))
-                return true;
-        }
-
-        return false;
-    }
-
-    private static bool ReplayHasNearbyInventoryGain(
-        ReplayInventorySnapshot[] snapshots,
-        int weaponDefIndex,
-        int sourceTick)
-    {
-        var previousCount = 0;
-        var hasPreviousSnapshot = false;
-        foreach (var snapshot in snapshots)
-        {
-            var currentCount = SnapshotPrimarySecondaryCounts(snapshot).GetValueOrDefault(weaponDefIndex);
-            var gained = hasPreviousSnapshot && currentCount > previousCount;
-            if (gained &&
-                snapshot.Tick >= sourceTick - HifiItemTransferMatchEarlyTicks &&
-                snapshot.Tick <= sourceTick + HifiItemTransferMatchLateTicks)
-            {
-                return true;
-            }
-
-            if (snapshot.Tick > sourceTick + HifiItemTransferMatchLateTicks)
-                return false;
-
-            previousCount = currentCount;
-            hasPreviousSnapshot = true;
-        }
-
-        return false;
-    }
-
     private void ExecuteReplayHifiEvent(int slot, LoadedReplay replay, ReplayHifiEvent replayEvent)
     {
         var kind = replayEvent.Kind.Trim().ToLowerInvariant();
         switch (kind)
         {
             case "item_drop":
-                if (_hifiItemAlignEnabled &&
-                    ReplayEventBelongsToSlot(replayEvent.ActorSteamId, replay.SteamId))
-                {
-                    DropReplayItemToWorld(slot, replayEvent, isBomb: false);
-                }
+                // Live replay ticks must not mutate inventory/entities. Keep item events
+                // as metadata until replay-safe transfer machinery exists.
                 break;
 
             case "bomb_drop":
@@ -1680,17 +1521,14 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                 break;
 
             case "item_pickup":
-                if (_hifiItemAlignEnabled &&
-                    ReplayEventBelongsToSlot(replayEvent.TargetSteamId, replay.SteamId))
-                {
-                    EnsureReplayEventItem(slot, replayEvent, isBomb: false);
-                }
+                // Record-only for stability. Unpaired pickups may represent world state we cannot
+                // safely prove yet.
                 break;
 
             case "item_transfer":
                 if (!ReplayEventBelongsToSlot(replayEvent.TargetSteamId, replay.SteamId))
                     return;
-                QueueReplayItemTransferGrant(slot, replayEvent);
+                QueueReplayUtilityTransferGrant(slot, replayEvent);
                 break;
 
             case "bomb_pickup":
@@ -1709,22 +1547,20 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         => !eventSteamId.HasValue || replaySteamId == 0 || eventSteamId.Value == replaySteamId;
 
     private static bool ShouldExecuteReplayEquipmentEvent(int weaponDefIndex, bool isBomb)
-        => isBomb || IsReplayItemEventWeaponDefIndex(weaponDefIndex);
+        => isBomb || IsUtilityWeaponDefIndex(weaponDefIndex);
 
-    private void QueueReplayItemTransferGrant(int slot, ReplayHifiEvent replayEvent)
+    private void QueueReplayUtilityTransferGrant(int slot, ReplayHifiEvent replayEvent)
     {
         var weaponDefIndex = ReplayEventWeaponDefIndex(replayEvent);
-        if (!IsReplayItemEventWeaponDefIndex(weaponDefIndex) ||
+        if (!IsUtilityWeaponDefIndex(weaponDefIndex) ||
             !TryGetWeaponClassByDefIndex(weaponDefIndex, out var className))
-            return;
-        if (!_hifiItemAlignEnabled && !IsUtilityWeaponDefIndex(weaponDefIndex))
             return;
 
         var targetCount = Math.Max(1, replayEvent.TargetCountAfter ?? 1);
-        Server.NextFrame(() => EnsureReplayItemTransferGrant(slot, className, targetCount, replayEvent.Tick));
+        Server.NextFrame(() => EnsureReplayUtilityTransferGrant(slot, className, targetCount, replayEvent.Tick));
     }
 
-    private void EnsureReplayItemTransferGrant(int slot, string className, int targetCount, int sourceTick)
+    private void EnsureReplayUtilityTransferGrant(int slot, string className, int targetCount, int sourceTick)
     {
         if (!IsReplaySlotStillSafe(slot))
             return;
@@ -1737,28 +1573,15 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         if (currentCount >= targetCount)
             return;
 
-        var weaponDefIndex = WeaponDefIndex(className);
-        if (TryDeferReplayItemGrantForWorldPickup(slot, weaponDefIndex, targetCount, sourceTick))
-            return;
-
         var missing = targetCount - currentCount;
         for (var i = 0; i < missing; i++)
         {
-            var ok = _hifiItemAlignEnabled && IsSlotReplaceableWeaponDef(weaponDefIndex)
-                ? TryEnsureReplayWeapon(
-                    player,
-                    weaponDefIndex,
-                    allowGive: true,
-                    replaceConflictingSlot: true,
-                    out _)
-                : TryGiveNamedItem(player, className);
-            if (!ok)
+            if (!TryGiveNamedItem(player, className))
             {
                 Server.PrintToConsole(
                     $"dtr: hifi transfer grant failed slot={slot} item={className} tick={sourceTick}");
                 return;
             }
-            KillOneTrackedDroppedReplayItem(WeaponDefIndex(className));
         }
 
         _lastEnsuredWeaponDef.Remove(slot);
@@ -1791,7 +1614,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         try
         {
             player.DropActiveWeapon();
-            _trackedDroppedReplayItems.Add(new TrackedDroppedReplayItem(slot, weaponDefIndex, weapon.Handle, replayEvent.Tick));
+            _trackedDroppedReplayItems.Add(new TrackedDroppedReplayItem(slot, weaponDefIndex, weapon.Handle));
             _lastEnsuredWeaponDef.Remove(slot);
             _lastReplayWeaponDef.Remove(slot);
         }
@@ -1799,138 +1622,6 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         {
             Server.PrintToConsole($"dtr: hifi drop failed slot={slot} item={className} tick={replayEvent.Tick}: {ex.Message}");
         }
-    }
-
-    private bool DropOneReplayItemToWorld(int slot, int weaponDefIndex, int sourceTick, string reason)
-    {
-        if (!IsReplayItemEventWeaponDefIndex(weaponDefIndex) ||
-            !TryGetWeaponClassByDefIndex(weaponDefIndex, out var className))
-            return false;
-
-        var player = Utilities.GetPlayerFromSlot(slot);
-        if (player is not { IsValid: true, PawnIsAlive: true } ||
-            player.PlayerPawn is not { IsValid: true, Value.IsValid: true })
-            return false;
-
-        var pawn = player.PlayerPawn.Value;
-        var weapon = GetReplayWeaponsByClass(pawn, className).FirstOrDefault();
-        if (weapon == null)
-            return false;
-        if (!TrySelectWeapon(player, pawn, weapon))
-            return false;
-
-        try
-        {
-            player.DropActiveWeapon();
-            _trackedDroppedReplayItems.Add(new TrackedDroppedReplayItem(slot, weaponDefIndex, weapon.Handle, sourceTick));
-            _lastEnsuredWeaponDef.Remove(slot);
-            _lastReplayWeaponDef.Remove(slot);
-            Server.PrintToConsole($"dtr: hifi inventory dropped slot={slot} def={weaponDefIndex} item={className} reason={reason}");
-            return true;
-        }
-        catch (Exception ex)
-        {
-            Server.PrintToConsole(
-                $"dtr: hifi inventory drop failed slot={slot} def={weaponDefIndex} item={className} reason={reason}: {ex.Message}");
-            return false;
-        }
-    }
-
-    private bool DropAndKillOneReplayItem(int slot, int weaponDefIndex, string reason)
-    {
-        if (!TryGetWeaponClassByDefIndex(weaponDefIndex, out var className))
-            return false;
-
-        var player = Utilities.GetPlayerFromSlot(slot);
-        if (player is not { IsValid: true, PawnIsAlive: true } ||
-            player.PlayerPawn is not { IsValid: true, Value.IsValid: true })
-            return false;
-
-        var pawn = player.PlayerPawn.Value;
-        var weapon = GetReplayWeaponsByClass(pawn, className).FirstOrDefault();
-        if (weapon == null)
-            return false;
-        if (!DropAndKillReplayWeapon(player, pawn, weapon, reason))
-            return false;
-
-        _lastEnsuredWeaponDef.Remove(slot);
-        _lastReplayWeaponDef.Remove(slot);
-        return true;
-    }
-
-    private bool TryDeferReplayItemGrantForWorldPickup(
-        int targetSlot,
-        int weaponDefIndex,
-        int targetCount,
-        int targetTick)
-    {
-        if (!HasNearbyTrackedReplayDrop(targetSlot, weaponDefIndex, targetTick))
-            return false;
-
-        AddTimer(
-            HifiItemWorldPickupFallbackSeconds,
-            () => EnsureReplayItemAfterWorldPickupWindow(targetSlot, weaponDefIndex, targetCount, targetTick),
-            TimerFlags.STOP_ON_MAPCHANGE);
-        return true;
-    }
-
-    private bool HasNearbyTrackedReplayDrop(int targetSlot, int weaponDefIndex, int targetTick)
-    {
-        foreach (var item in _trackedDroppedReplayItems)
-        {
-            if (item.SourceSlot == targetSlot || item.WeaponDefIndex != weaponDefIndex)
-                continue;
-            if (targetTick >= item.SourceTick - HifiItemTransferMatchEarlyTicks &&
-                targetTick <= item.SourceTick + HifiItemTransferMatchLateTicks)
-                return true;
-        }
-
-        return false;
-    }
-
-    private void EnsureReplayItemAfterWorldPickupWindow(
-        int targetSlot,
-        int weaponDefIndex,
-        int targetCount,
-        int sourceTick)
-    {
-        if (!IsReplaySlotStillSafe(targetSlot) ||
-            !TryGetWeaponClassByDefIndex(weaponDefIndex, out var className))
-            return;
-
-        var player = Utilities.GetPlayerFromSlot(targetSlot);
-        if (player is not { IsValid: true, PawnIsAlive: true })
-            return;
-
-        var currentCount = CountCurrentReplayItems(player, className);
-        if (currentCount >= targetCount)
-        {
-            RemoveStaleTrackedReplayDrops(weaponDefIndex);
-            return;
-        }
-
-        var missing = targetCount - currentCount;
-        for (var i = 0; i < missing; i++)
-        {
-            var ok = IsSlotReplaceableWeaponDef(weaponDefIndex)
-                ? TryEnsureReplayWeapon(
-                    player,
-                    weaponDefIndex,
-                    allowGive: true,
-                    replaceConflictingSlot: true,
-                    out _)
-                : TryGiveNamedItem(player, className);
-            if (!ok)
-            {
-                Server.PrintToConsole(
-                    $"dtr: hifi world-pickup fallback grant failed slot={targetSlot} def={weaponDefIndex} tick={sourceTick}");
-                return;
-            }
-        }
-
-        KillOneTrackedDroppedReplayItem(weaponDefIndex);
-        _lastEnsuredWeaponDef.Remove(targetSlot);
-        _lastReplayWeaponDef.Remove(targetSlot);
     }
 
     private void EnsureReplayEventItem(int slot, ReplayHifiEvent replayEvent, bool isBomb)
@@ -1957,21 +1648,10 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             return;
         }
 
-        if (TryDeferReplayItemGrantForWorldPickup(slot, weaponDefIndex, targetCount, replayEvent.Tick))
-            return;
-
         var missing = targetCount - currentCount;
         for (var i = 0; i < missing; i++)
         {
-            var ok = _hifiItemAlignEnabled && IsSlotReplaceableWeaponDef(weaponDefIndex)
-                ? TryEnsureReplayWeapon(
-                    player,
-                    weaponDefIndex,
-                    allowGive: true,
-                    replaceConflictingSlot: true,
-                    out _)
-                : TryGiveNamedItem(player, className);
-            if (!ok)
+            if (!TryGiveNamedItem(player, className))
             {
                 Server.PrintToConsole($"dtr: hifi pickup fallback failed slot={slot} item={className} tick={replayEvent.Tick}");
                 return;
@@ -2025,38 +1705,6 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         return count;
     }
 
-    private static Dictionary<int, int> SnapshotPrimarySecondaryCounts(ReplayInventorySnapshot snapshot)
-    {
-        var counts = new Dictionary<int, int>();
-        foreach (var item in snapshot.WeaponDefCounts)
-        {
-            var def = NormalizeWeaponDefIndex(item.WeaponDefIndex);
-            if (!IsPrimaryOrSecondaryWeaponDefIndex(def))
-                continue;
-            counts[def] = counts.GetValueOrDefault(def) + Math.Max(0, item.Count);
-        }
-        return counts;
-    }
-
-    private static Dictionary<int, int> CurrentPrimarySecondaryCounts(CCSPlayerPawn pawn)
-    {
-        var counts = new Dictionary<int, int>();
-        if (pawn.WeaponServices == null)
-            return counts;
-
-        foreach (var handle in pawn.WeaponServices.MyWeapons)
-        {
-            var weapon = handle.Value;
-            if (weapon == null || !weapon.IsValid)
-                continue;
-            var def = WeaponDefIndex(weapon.DesignerName);
-            if (!IsPrimaryOrSecondaryWeaponDefIndex(def))
-                continue;
-            counts[def] = counts.GetValueOrDefault(def) + 1;
-        }
-        return counts;
-    }
-
     private static IEnumerable<CBasePlayerWeapon> GetReplayWeaponsByClass(CCSPlayerPawn pawn, string className)
     {
         if (pawn.WeaponServices == null)
@@ -2083,18 +1731,6 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         KillTrackedDroppedReplayItem(item, "hifi_pickup_fallback");
     }
 
-    private void RemoveStaleTrackedReplayDrops(int weaponDefIndex)
-    {
-        for (var i = _trackedDroppedReplayItems.Count - 1; i >= 0; i--)
-        {
-            var item = _trackedDroppedReplayItems[i];
-            if (item.WeaponDefIndex != weaponDefIndex)
-                continue;
-            if (!TrackedDroppedReplayItemIsWorldWeapon(item))
-                _trackedDroppedReplayItems.RemoveAt(i);
-        }
-    }
-
     private void KillTrackedReplayDropsForSlot(int slot, string reason)
     {
         for (var i = _trackedDroppedReplayItems.Count - 1; i >= 0; i--)
@@ -2107,22 +1743,12 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         }
     }
 
-    private void KillAllTrackedReplayDrops(string reason)
-    {
-        for (var i = _trackedDroppedReplayItems.Count - 1; i >= 0; i--)
-        {
-            var item = _trackedDroppedReplayItems[i];
-            _trackedDroppedReplayItems.RemoveAt(i);
-            KillTrackedDroppedReplayItem(item, reason);
-        }
-    }
-
     private static void KillTrackedDroppedReplayItem(TrackedDroppedReplayItem item, string reason)
     {
         try
         {
             var weapon = new CBasePlayerWeapon(item.Handle);
-            if (weapon.IsValid && !AnyPlayerOwnsWeapon(weapon))
+            if (weapon.IsValid)
                 weapon.AcceptInput("Kill");
         }
         catch (Exception ex)
@@ -2130,36 +1756,6 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             Server.PrintToConsole(
                 $"dtr: failed to kill tracked hifi drop slot={item.SourceSlot} def={item.WeaponDefIndex} reason={reason}: {ex.Message}");
         }
-    }
-
-    private static bool TrackedDroppedReplayItemIsWorldWeapon(TrackedDroppedReplayItem item)
-    {
-        try
-        {
-            var weapon = new CBasePlayerWeapon(item.Handle);
-            return weapon.IsValid && !AnyPlayerOwnsWeapon(weapon);
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static bool AnyPlayerOwnsWeapon(CBasePlayerWeapon weapon)
-    {
-        foreach (var player in FindPlayerControllers())
-        {
-            if (player is not { IsValid: true } ||
-                player.PlayerPawn is not { IsValid: true, Value.IsValid: true })
-            {
-                continue;
-            }
-
-            if (PawnOwnsWeapon(player.PlayerPawn.Value, weapon))
-                return true;
-        }
-
-        return false;
     }
 
     private void UpdateReplayPovMask(TickPlayerSnapshot playerSnapshot)
@@ -3751,7 +3347,6 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                 player.Respawn();
                 _loadoutSyncedSlots.Remove(slot);
                 _rebuiltInventorySlots.Remove(slot);
-                _replayInventorySnapshotNextBySlot.Remove(slot);
                 _lastEnsuredWeaponDef.Remove(slot);
                 _lastReplayWeaponDef.Remove(slot);
                 _lastLockedWeaponTarget.Remove(slot);
@@ -3788,10 +3383,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         _lastLockedWeaponTarget.Clear();
         _pendingWeaponAlign.Clear();
         _projectileAlignNextBySlot.Clear();
-        _replayHifiEventNextBySlot.Clear();
-        _replayInventorySnapshotNextBySlot.Clear();
         _pendingProjectileAlign.Clear();
-        _trackedDroppedReplayItems.Clear();
         _queuedNadeStartTokens.Clear();
         _rebuiltInventorySlots.Clear();
         _loadoutSyncedSlots.Clear();
@@ -3866,7 +3458,6 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             _pendingWeaponAlign.Clear();
             _projectileAlignNextBySlot.Clear();
             _replayHifiEventNextBySlot.Clear();
-            _replayInventorySnapshotNextBySlot.Clear();
             _pendingProjectileAlign.Clear();
             _trackedDroppedReplayItems.Clear();
             _queuedNadeStartTokens.Clear();
@@ -3953,10 +3544,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         _lastLockedWeaponTarget.Clear();
         _pendingWeaponAlign.Clear();
         _projectileAlignNextBySlot.Clear();
-        _replayHifiEventNextBySlot.Clear();
-        _replayInventorySnapshotNextBySlot.Clear();
         _pendingProjectileAlign.Clear();
-        _trackedDroppedReplayItems.Clear();
         _queuedNadeStartTokens.Clear();
         _rebuiltInventorySlots.Clear();
         _cosmeticSyncedSlots.Clear();
@@ -4052,7 +3640,6 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         _replayStartedAt[slot] = Server.CurrentTime;
         _projectileAlignNextBySlot[slot] = 0;
         _replayHifiEventNextBySlot[slot] = 0;
-        _replayInventorySnapshotNextBySlot[slot] = 0;
     }
 
     private void ReleaseReplaySlot(int slot, string reason)
@@ -4067,7 +3654,6 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         _pendingWeaponAlign.Remove(slot);
         _projectileAlignNextBySlot.Remove(slot);
         _replayHifiEventNextBySlot.Remove(slot);
-        _replayInventorySnapshotNextBySlot.Remove(slot);
         _queuedNadeStartTokens.Remove(slot);
         _demoTracerOwnedSlots.Remove(slot);
         _rebuiltInventorySlots.Remove(slot);
@@ -4176,7 +3762,6 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         _lastLockedWeaponTarget.Remove(slot);
         _pendingWeaponAlign.Remove(slot);
         _replayHifiEventNextBySlot.Remove(slot);
-        _replayInventorySnapshotNextBySlot.Remove(slot);
         _queuedNadeStartTokens.Remove(slot);
         _rebuiltInventorySlots.Remove(slot);
         _musicKitSyncedSlots.Remove(slot);
@@ -4249,7 +3834,6 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         _lastLockedWeaponTarget.Remove(slot);
         _projectileAlignNextBySlot[slot] = 0;
         _replayHifiEventNextBySlot[slot] = 0;
-        _replayInventorySnapshotNextBySlot[slot] = 0;
         _rebuiltInventorySlots.Remove(slot);
         _loadoutSyncedSlots.Remove(slot);
         _musicKitSyncedSlots.Remove(slot);
@@ -4266,11 +3850,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
 
     private void ApplyReplayLoadoutForSlot(int slot, LoadedReplay replay)
     {
-        if (!_weaponAlignEnabled || _loadoutSyncedSlots.Contains(slot))
-            return;
-        var hifiLoadout = new ReplayLoadoutSnapshot();
-        var useHifiLoadout = _hifiItemAlignEnabled && TryGetInitialHifiLoadout(replay, out hifiLoadout);
-        if (!replay.HasLoadout && !useHifiLoadout)
+        if (!_weaponAlignEnabled || !replay.HasLoadout || _loadoutSyncedSlots.Contains(slot))
             return;
 
         var player = Utilities.GetPlayerFromSlot(slot);
@@ -4278,10 +3858,9 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         if (player is not { IsValid: true, PawnIsAlive: true } || pawn is not { IsValid: true })
             return;
 
-        var loadout = useHifiLoadout ? hifiLoadout : replay.Loadout;
-        ApplyReplayArmorAndKit(player, pawn, loadout);
+        ApplyReplayArmorAndKit(player, pawn, replay.Loadout);
 
-        var targetItems = BuildLoadoutItemCounts(loadout);
+        var targetItems = BuildLoadoutItemCounts(replay.Loadout);
         var deferredWeaponSync = false;
         deferredWeaponSync |= SyncTargetWeaponSlot(
             player,
@@ -4301,62 +3880,12 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                 and not ReplayWeaponSlot.Knife
                 and not ReplayWeaponSlot.C4);
 
-        var startWeaponDef = useHifiLoadout ? ChooseInitialHifiStartWeaponDef(replay) : ChooseStartWeaponDef(replay);
         if (deferredWeaponSync)
-            Server.NextFrame(() => Server.NextFrame(() => ApplyReplayWeaponPreset(slot, startWeaponDef, true, true)));
+            Server.NextFrame(() => Server.NextFrame(() => ApplyReplayWeaponPreset(slot, ChooseStartWeaponDef(replay), true, true)));
         else
-            ApplyReplayWeaponPreset(slot, startWeaponDef, true, true);
+            ApplyReplayWeaponPreset(slot, ChooseStartWeaponDef(replay), true, true);
 
         _loadoutSyncedSlots.Add(slot);
-    }
-
-    private static bool TryGetInitialHifiLoadout(LoadedReplay replay, out ReplayLoadoutSnapshot loadout)
-    {
-        loadout = new ReplayLoadoutSnapshot();
-        var snapshot = replay.InventorySnapshots.FirstOrDefault();
-        if (snapshot == null)
-            return false;
-
-        var weaponDefs = new List<int>();
-        foreach (var item in snapshot.WeaponDefCounts)
-        {
-            var def = NormalizeWeaponDefIndex(item.WeaponDefIndex);
-            if (!IsLoadoutWeaponDefIndex(def) || def == 31)
-                continue;
-            var count = Math.Max(0, item.Count);
-            for (var i = 0; i < count; i++)
-                weaponDefs.Add(def);
-        }
-
-        loadout = new ReplayLoadoutSnapshot
-        {
-            WeaponDefIndices = weaponDefs.ToArray(),
-            ArmorValue = (uint)Math.Clamp(snapshot.ArmorValue, 0, 100),
-            HasHelmet = snapshot.HasHelmet,
-            HasDefuser = snapshot.HasDefuser
-        };
-        return true;
-    }
-
-    private static int[] InitialHifiPreloadWeaponDefIndices(LoadedReplay replay)
-    {
-        if (!TryGetInitialHifiLoadout(replay, out var loadout))
-            return [];
-        return NormalizePreloadWeaponDefs(loadout.WeaponDefIndices ?? []);
-    }
-
-    private static int ChooseInitialHifiStartWeaponDef(LoadedReplay replay)
-    {
-        var snapshot = replay.InventorySnapshots.FirstOrDefault();
-        if (snapshot != null)
-        {
-            var active = NormalizeWeaponDefIndex(snapshot.ActiveWeaponDefIndex);
-            if (IsKnownWeaponDefIndex(active) && GetReplayLockTarget(active) != 5)
-                return active;
-        }
-
-        var preload = InitialHifiPreloadWeaponDefIndices(replay);
-        return preload.Length > 0 ? preload[0] : ChooseStartWeaponDef(replay);
     }
 
     private bool PrepareNadeClipWeapon(int slot, int weaponDefIndex, out string error)
@@ -4651,11 +4180,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     {
         if (!_rebuiltInventorySlots.Contains(slot))
         {
-            var hifiPreloadDefs = _hifiItemAlignEnabled
-                ? InitialHifiPreloadWeaponDefIndices(replay)
-                : [];
-            var preloadDefs = hifiPreloadDefs.Length > 0 ? hifiPreloadDefs : replay.PreloadWeaponDefIndices;
-            foreach (var def in preloadDefs)
+            foreach (var def in replay.PreloadWeaponDefIndices)
                 _ = EnsureReplayWeaponForSlot(
                     slot,
                     def,
@@ -4667,7 +4192,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
 
         ApplyReplayWeaponPreset(
             slot,
-            _hifiItemAlignEnabled ? ChooseInitialHifiStartWeaponDef(replay) : ChooseStartWeaponDef(replay),
+            ChooseStartWeaponDef(replay),
             allowSlotReplacement: true,
             force: true);
     }
@@ -5021,7 +4546,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
 
     private readonly record struct PendingThreat360(int EnemySlot, float FirstSeenAt);
 
-    private readonly record struct TrackedDroppedReplayItem(int SourceSlot, int WeaponDefIndex, IntPtr Handle, int SourceTick);
+    private readonly record struct TrackedDroppedReplayItem(int SourceSlot, int WeaponDefIndex, IntPtr Handle);
 
     private readonly record struct TeamEconomySnapshot(uint EquipmentValue, string Class);
 

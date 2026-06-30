@@ -805,7 +805,6 @@ public sealed partial class DemoTracerPlugin
             _lastReplayWeaponDef.Remove(slot);
             _lastLockedWeaponTarget.Remove(slot);
             _pendingWeaponAlign.Remove(slot);
-            _replayInventorySnapshotNextBySlot.Remove(slot);
             _rebuiltInventorySlots.Remove(slot);
             _pendingBulletHits.Remove(slot);
             _pendingBulletDamages.Remove(slot);

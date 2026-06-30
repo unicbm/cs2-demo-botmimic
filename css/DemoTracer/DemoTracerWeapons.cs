@@ -170,22 +170,6 @@ public sealed partial class DemoTracerPlugin
         return GetReplayWeaponSlot(className) == ReplayWeaponSlot.Utility;
     }
 
-    private static bool IsReplayItemEventWeaponDefIndex(int weaponDefIndex)
-    {
-        if (!TryGetWeaponClassByDefIndex(weaponDefIndex, out var className))
-            return false;
-        return GetReplayWeaponSlot(className) is ReplayWeaponSlot.Primary
-            or ReplayWeaponSlot.Secondary
-            or ReplayWeaponSlot.Utility;
-    }
-
-    private static bool IsPrimaryOrSecondaryWeaponDefIndex(int weaponDefIndex)
-    {
-        if (!TryGetWeaponClassByDefIndex(weaponDefIndex, out var className))
-            return false;
-        return GetReplayWeaponSlot(className) is ReplayWeaponSlot.Primary or ReplayWeaponSlot.Secondary;
-    }
-
     private static int ChooseNadeClipUtilityWeaponDefIndex(NadeClip clip)
     {
         var first = NormalizeWeaponDefIndex(clip.FirstWeaponDefIndex);
