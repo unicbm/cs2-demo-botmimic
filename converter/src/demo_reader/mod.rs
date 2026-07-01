@@ -17,7 +17,7 @@ mod demoparser_impl {
     use parser::second_pass::game_events::GameEvent;
     use parser::second_pass::parser_settings::create_huffman_lookup_table;
     use parser::second_pass::variants::{PropColumn, VarVec, Variant};
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
 
     pub fn read_demo(path: &Path) -> Result<ParsedDemo> {
@@ -135,6 +135,7 @@ mod demoparser_impl {
             wanted_ticks: vec![],
             wanted_events: vec![
                 "round_freeze_end".to_string(),
+                "round_end".to_string(),
                 "round_start".to_string(),
                 "bomb_beginplant".to_string(),
                 "bomb_planted".to_string(),
@@ -324,6 +325,15 @@ mod demoparser_impl {
             .collect::<Vec<_>>();
         round_freeze_end_ticks.sort_unstable();
         round_freeze_end_ticks.dedup();
+        let mut round_end_ticks = output
+            .game_events
+            .iter()
+            .filter(|event| event.name == "round_end")
+            .map(|event| event.tick)
+            .collect::<Vec<_>>();
+        round_end_ticks.sort_unstable();
+        round_end_ticks.dedup();
+        repair_round_phase_after_events(&mut rows, &round_freeze_end_ticks, &round_end_ticks);
         let mut bomb_beginplant_ticks = event_ticks(&output.game_events, "bomb_beginplant");
         let mut bomb_planted_ticks = event_ticks(&output.game_events, "bomb_planted");
         bomb_beginplant_ticks.sort_unstable();
@@ -879,6 +889,120 @@ mod demoparser_impl {
         (seconds * tick_rate).round() as i32
     }
 
+    fn repair_round_phase_after_events(
+        rows: &mut [ParsedPlayerTick],
+        freeze_end_ticks: &[i32],
+        round_end_ticks: &[i32],
+    ) {
+        if rows.is_empty() || freeze_end_ticks.is_empty() {
+            return;
+        }
+
+        let mut rounds: BTreeMap<u32, RoundPhaseRows> = BTreeMap::new();
+        for (idx, row) in rows.iter().enumerate() {
+            rounds
+                .entry(row.round)
+                .and_modify(|round_rows| {
+                    round_rows.min_tick = round_rows.min_tick.min(row.tick);
+                    round_rows.max_tick = round_rows.max_tick.max(row.tick);
+                    round_rows.indices.push(idx);
+                })
+                .or_insert_with(|| RoundPhaseRows {
+                    min_tick: row.tick,
+                    max_tick: row.tick,
+                    indices: vec![idx],
+                });
+        }
+
+        let mut phase_by_round = BTreeMap::new();
+        for (round, round_rows) in &rounds {
+            let candidates = freeze_end_ticks
+                .iter()
+                .copied()
+                .filter(|tick| *tick >= round_rows.min_tick && *tick <= round_rows.max_tick)
+                .collect::<Vec<_>>();
+            let freeze_end = if is_pistol_round_number(*round) {
+                candidates.into_iter().max().map(|freeze_end| {
+                    let round_end =
+                        round_end_after(round_end_ticks, freeze_end, round_rows.max_tick);
+                    (freeze_end, round_end, (0, 0))
+                })
+            } else {
+                candidates
+                    .into_iter()
+                    .map(|freeze_end| {
+                        let round_end =
+                            round_end_after(round_end_ticks, freeze_end, round_rows.max_tick);
+                        let score =
+                            round_phase_candidate_score(rows, round_rows, freeze_end, round_end);
+                        (freeze_end, round_end, score)
+                    })
+                    .max_by_key(|(freeze_end, _round_end, score)| (*score, *freeze_end))
+            };
+            if let Some((freeze_end, round_end, _score)) = freeze_end {
+                phase_by_round.insert(*round, (freeze_end, round_end));
+            }
+        }
+
+        for row in rows {
+            let Some((freeze_end, round_end)) = phase_by_round.get(&row.round).copied() else {
+                continue;
+            };
+            if row.tick >= freeze_end {
+                row.is_freeze_period = false;
+            }
+            if row.tick >= freeze_end && round_end.map_or(true, |round_end| row.tick < round_end) {
+                row.round_in_progress = true;
+            } else if round_end.is_some_and(|round_end| row.tick >= round_end) {
+                row.round_in_progress = false;
+            }
+        }
+    }
+
+    fn is_pistol_round_number(round: u32) -> bool {
+        round == 0 || round == 12
+    }
+
+    fn round_end_after(round_end_ticks: &[i32], freeze_end: i32, max_tick: i32) -> Option<i32> {
+        round_end_ticks
+            .iter()
+            .copied()
+            .filter(|tick| *tick >= freeze_end && *tick <= max_tick)
+            .min()
+    }
+
+    #[derive(Clone, Debug)]
+    struct RoundPhaseRows {
+        min_tick: i32,
+        max_tick: i32,
+        indices: Vec<usize>,
+    }
+
+    fn round_phase_candidate_score(
+        rows: &[ParsedPlayerTick],
+        round_rows: &RoundPhaseRows,
+        freeze_end: i32,
+        round_end: Option<i32>,
+    ) -> (usize, usize) {
+        let live_end = round_end.unwrap_or(round_rows.max_tick.saturating_add(1));
+        let mut players = BTreeSet::new();
+        let mut live_rows = 0_usize;
+        for idx in &round_rows.indices {
+            let row = &rows[*idx];
+            if row.tick < freeze_end
+                || row.tick >= live_end
+                || !row.is_alive
+                || row.steam_id == 0
+                || !matches!(row.team_num, 2 | 3)
+            {
+                continue;
+            }
+            players.insert(row.steam_id);
+            live_rows += 1;
+        }
+        (players.len(), live_rows)
+    }
+
     fn event_ticks(events: &[parser::second_pass::game_events::GameEvent], name: &str) -> Vec<i32> {
         events
             .iter()
@@ -1180,6 +1304,94 @@ mod demoparser_impl {
             None
         } else {
             Some(cleaned.chars().take(128).collect())
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn freeze_end_event_repairs_sticky_freeze_period_rows() {
+            let mut rows = vec![
+                row(1, 90, true),
+                row(1, 99, true),
+                row(1, 100, true),
+                row(1, 120, true),
+                row(1, 130, true),
+            ];
+
+            repair_round_phase_after_events(&mut rows, &[100], &[130]);
+
+            assert!(rows[0].is_freeze_period);
+            assert!(rows[1].is_freeze_period);
+            assert!(!rows[2].is_freeze_period);
+            assert!(!rows[3].is_freeze_period);
+            assert!(!rows[4].is_freeze_period);
+            assert!(!rows[1].round_in_progress);
+            assert!(rows[2].round_in_progress);
+            assert!(rows[3].round_in_progress);
+            assert!(!rows[4].round_in_progress);
+        }
+
+        #[test]
+        fn pistol_round_uses_latest_freeze_end_candidate() {
+            let mut rows = vec![
+                row(0, 90, true),
+                row(0, 120, true),
+                row(0, 1_490, true),
+                row(0, 1_500, true),
+                row(0, 1_520, true),
+            ];
+
+            repair_round_phase_after_events(&mut rows, &[100, 1_500], &[2_000]);
+
+            assert!(rows[0].is_freeze_period);
+            assert!(rows[1].is_freeze_period);
+            assert!(rows[2].is_freeze_period);
+            assert!(!rows[3].is_freeze_period);
+            assert!(!rows[4].is_freeze_period);
+            assert!(!rows[2].round_in_progress);
+            assert!(rows[3].round_in_progress);
+            assert!(rows[4].round_in_progress);
+        }
+
+        #[test]
+        fn phase_repair_prefers_candidate_with_live_player_rows() {
+            let mut rows = vec![
+                row(1, 110, true),
+                row(1, 120, true),
+                row(1, 190, true),
+                live_row(1, 200, true),
+                live_row(1, 220, true),
+                live_row(1, 240, true),
+            ];
+
+            repair_round_phase_after_events(&mut rows, &[100, 200], &[130, 260]);
+
+            assert!(rows[2].is_freeze_period);
+            assert!(!rows[3].is_freeze_period);
+            assert!(rows[3].round_in_progress);
+            assert!(rows[4].round_in_progress);
+            assert!(rows[5].round_in_progress);
+        }
+
+        fn row(round: u32, tick: i32, is_freeze_period: bool) -> ParsedPlayerTick {
+            ParsedPlayerTick {
+                round,
+                tick,
+                is_freeze_period,
+                ..ParsedPlayerTick::default()
+            }
+        }
+
+        fn live_row(round: u32, tick: i32, is_freeze_period: bool) -> ParsedPlayerTick {
+            ParsedPlayerTick {
+                steam_id: tick as u64,
+                team_num: 2,
+                is_alive: true,
+                ..row(round, tick, is_freeze_period)
+            }
         }
     }
 }
