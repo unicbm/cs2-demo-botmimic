@@ -1893,6 +1893,8 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     {
         if (!_projectileAlignEnabled)
             return;
+        if (kind == ReplayProjectileKind.Molotov)
+            return;
 
         var pending = new PendingProjectileAlign(projectile.Index, projectile.Handle, kind, weaponDefIndex)
         {

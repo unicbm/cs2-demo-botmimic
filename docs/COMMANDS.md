@@ -362,8 +362,9 @@ Enables or disables projectile initial-vector alignment.
 Implementation when enabled:
 
 - Requires `.dtr` v4+ projectile events from the converter.
-- Matches grenade projectile entities for smoke, flash, HE, molotov,
-  incendiary, and decoy when matching replay metadata is available.
+- Matches grenade projectile entities for smoke, flash, HE, and decoy when
+  matching replay metadata is available. Fire grenades are intentionally left to
+  CS2's native projectile and inferno behavior.
 - The bot still performs the throw action naturally. The plugin waits for CS2 to
   spawn the projectile, resolves its thrower slot, matches the next demo
   projectile event near the replay cursor, and writes:

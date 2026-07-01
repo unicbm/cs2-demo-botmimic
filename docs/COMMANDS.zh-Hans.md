@@ -324,8 +324,8 @@ Preset：
 开启后的实现方式：
 
 - 需要 converter 写出的 `.dtr` v4+ projectile events。
-- 当 replay metadata 可用时，匹配 smoke、flash、HE、molotov、incendiary 和 decoy
-  projectile entity。
+- 当 replay metadata 可用时，匹配 smoke、flash、HE 和 decoy projectile entity。
+  火（molotov/incendiary）会保留 CS2 原生 projectile 和 inferno 行为。
 - bot 仍然正常执行投掷动作。插件等待 CS2 spawn projectile 后，解析 thrower
   slot，在 replay cursor 附近匹配下一个 demo projectile event，然后写入：
   `InitialPosition`、`InitialVelocity`、`AbsOrigin`、`AbsVelocity`。
