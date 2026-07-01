@@ -394,7 +394,7 @@ public sealed partial class DemoTracerPlugin
             foreach (var cosmetic in replay.Cosmetics.Weapons)
             {
                 if (TryFindReplayWeaponByDefIndex(pawn, cosmetic.WeaponDefIndex, out var weapon) &&
-                    TryApplyWeaponCosmetic(player, weapon, cosmetic))
+                    TryApplyWeaponCosmetic(player, weapon, cosmetic, replay.SteamId))
                 {
                     applied++;
                     ScheduleReplayWeaponCosmeticRetry(slot, cosmetic, framesRemaining: 3);
@@ -414,6 +414,7 @@ public sealed partial class DemoTracerPlugin
                     player,
                     knife,
                     replay.Cosmetics.Knife,
+                    replay.SteamId,
                     allowSubclassChange: true,
                     applyPaint: true,
                     applyCustomName: _cosmeticNamesEnabled))
@@ -496,7 +497,7 @@ public sealed partial class DemoTracerPlugin
             foreach (var cosmetic in replay.Cosmetics.Weapons)
             {
                 if (TryFindReplayWeaponByDefIndex(pawn, cosmetic.WeaponDefIndex, out var weapon))
-                    _ = TryApplyWeaponCosmetic(player, weapon, cosmetic, countStickerStats: false);
+                    _ = TryApplyWeaponCosmetic(player, weapon, cosmetic, replay.SteamId, countStickerStats: false);
             }
         }
 
@@ -533,8 +534,11 @@ public sealed partial class DemoTracerPlugin
                 return;
             }
 
-            if (TryFindReplayWeaponByDefIndex(refreshedPawn, cosmetic.WeaponDefIndex, out var refreshedWeapon))
-                _ = TryApplyWeaponCosmetic(refreshedPlayer, refreshedWeapon, cosmetic);
+            if (TryFindReplayWeaponByDefIndex(refreshedPawn, cosmetic.WeaponDefIndex, out var refreshedWeapon) &&
+                _loadedReplays.TryGetValue(slot, out var replay))
+            {
+                _ = TryApplyWeaponCosmetic(refreshedPlayer, refreshedWeapon, cosmetic, replay.SteamId);
+            }
 
             ScheduleReplayWeaponCosmeticRetry(slot, cosmetic, framesRemaining - 1);
         });
@@ -550,8 +554,12 @@ public sealed partial class DemoTracerPlugin
 
         Server.NextFrame(() =>
         {
-            if (!_cosmeticKnivesEnabled || !IsReplaySlotStillSafe(slot))
+            if (!_cosmeticKnivesEnabled ||
+                !IsReplaySlotStillSafe(slot) ||
+                !_loadedReplays.TryGetValue(slot, out var replay))
+            {
                 return;
+            }
 
             var player = Utilities.GetPlayerFromSlot(slot);
             var pawn = player?.PlayerPawn.Value;
@@ -563,6 +571,7 @@ public sealed partial class DemoTracerPlugin
                     player,
                     knife,
                     cosmetic,
+                    replay.SteamId,
                     allowSubclassChange: true,
                     applyPaint: true,
                     applyCustomName: _cosmeticNamesEnabled))
@@ -597,7 +606,7 @@ public sealed partial class DemoTracerPlugin
             return;
 
         if (TryFindReplayWeaponByDefIndex(pawn, cosmetic.WeaponDefIndex, out var weapon) &&
-            TryApplyWeaponCosmetic(player, weapon, cosmetic))
+            TryApplyWeaponCosmetic(player, weapon, cosmetic, replay.SteamId))
         {
             _cosmeticAppliedCount++;
         }
@@ -708,7 +717,7 @@ public sealed partial class DemoTracerPlugin
         if (cosmetic == null)
             return false;
 
-        var ok = TryApplyWeaponCosmetic(player, weapon, cosmetic);
+        var ok = TryApplyWeaponCosmetic(player, weapon, cosmetic, replay.SteamId);
         if (countResult)
         {
             if (ok)
@@ -776,7 +785,7 @@ public sealed partial class DemoTracerPlugin
                     continue;
                 }
 
-                if (TryApplyWeaponCosmetic(player, weapon, cosmetic))
+                if (TryApplyWeaponCosmetic(player, weapon, cosmetic, replay.SteamId))
                     _cosmeticAppliedCount++;
                 else
                     _cosmeticSkippedCount++;
@@ -787,7 +796,7 @@ public sealed partial class DemoTracerPlugin
                         return;
                     var retryPlayer = Utilities.GetPlayerFromSlot(slot);
                     if (retryPlayer is { IsValid: true, PawnIsAlive: true } && weapon.IsValid)
-                        _ = TryApplyWeaponCosmetic(retryPlayer, weapon, cosmetic);
+                        _ = TryApplyWeaponCosmetic(retryPlayer, weapon, cosmetic, replay.SteamId);
                 });
                 return;
             }
@@ -881,6 +890,7 @@ public sealed partial class DemoTracerPlugin
         CCSPlayerController player,
         CBasePlayerWeapon weapon,
         ReplayWeaponCosmetic cosmetic,
+        ulong replaySteamId,
         bool countStickerStats = true)
     {
         if (!TryGetWeaponClassByDefIndex(cosmetic.WeaponDefIndex, out _))
@@ -903,6 +913,7 @@ public sealed partial class DemoTracerPlugin
                     ItemId = cosmetic.ItemId,
                     CustomName = cosmetic.CustomName
                 },
+                replaySteamId,
                 allowSubclassChange: false,
                 applyPaint: _cosmeticWeaponsEnabled,
                 applyCustomName: _cosmeticNamesEnabled);
@@ -928,6 +939,7 @@ public sealed partial class DemoTracerPlugin
         CCSPlayerController player,
         CBasePlayerWeapon weapon,
         ReplayItemCosmetic cosmetic,
+        ulong replaySteamId,
         bool allowSubclassChange,
         bool applyPaint,
         bool applyCustomName)
@@ -943,7 +955,7 @@ public sealed partial class DemoTracerPlugin
             }
 
             item.EntityQuality = allowSubclassChange ? 3 : 0;
-            ApplyReplayEconIdentity(player, weapon, item, cosmetic);
+            ApplyReplayEconIdentity(player, weapon, item, cosmetic, replaySteamId);
             if (applyPaint)
             {
                 item.AttributeList.Attributes.RemoveAll();
@@ -1152,18 +1164,31 @@ public sealed partial class DemoTracerPlugin
         CCSPlayerController player,
         CBasePlayerWeapon weapon,
         CEconItemView item,
-        ReplayItemCosmetic cosmetic)
+        ReplayItemCosmetic cosmetic,
+        ulong replaySteamId)
     {
         var ownerSteamId = NormalizeOptionalULong(cosmetic.OriginalOwnerSteamId);
-        item.AccountID = cosmetic.ItemAccountId
-                         ?? AccountIdFromSteamId(ownerSteamId)
-                         ?? (uint)player.SteamID;
+        var replayPlayerSteamId = NormalizeOptionalULong(replaySteamId);
+        var hasExternalOwner = ownerSteamId.HasValue &&
+                               (!replayPlayerSteamId.HasValue ||
+                                ownerSteamId.Value != replayPlayerSteamId.Value);
+        var playerAccountId = AccountIdForReplayPlayer(player, replayPlayerSteamId);
+        item.AccountID = hasExternalOwner
+            ? cosmetic.ItemAccountId
+              ?? AccountIdFromSteamId(ownerSteamId)
+              ?? playerAccountId
+            : playerAccountId;
         if (cosmetic.ItemId is { } itemId && itemId != 0)
             SetReplayEconItemId(item, itemId);
         else
             UpdateReplayEconItemId(item);
-        TrySetOriginalOwnerXuid(weapon, ownerSteamId);
+        TrySetOriginalOwnerXuid(weapon, hasExternalOwner ? ownerSteamId : null);
     }
+
+    private static uint AccountIdForReplayPlayer(CCSPlayerController player, ulong? replaySteamId)
+        => AccountIdFromSteamId(replaySteamId)
+           ?? AccountIdFromSteamId(NormalizeOptionalULong(player.SteamID))
+           ?? (uint)player.SteamID;
 
     private static uint? AccountIdFromSteamId(ulong? steamId)
     {
@@ -1179,9 +1204,7 @@ public sealed partial class DemoTracerPlugin
 
     private static void TrySetOriginalOwnerXuid(CBasePlayerWeapon weapon, ulong? ownerSteamId)
     {
-        if (ownerSteamId is not { } value || value == 0)
-            return;
-
+        var value = ownerSteamId.GetValueOrDefault();
         var low = (uint)(value & 0xFFFFFFFF);
         var high = (uint)(value >> 32);
         var setLow = TrySetOriginalOwnerSchemaValue(weapon, "m_OriginalOwnerXuidLow", low) ||

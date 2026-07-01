@@ -8,6 +8,8 @@ using CounterStrikeSharp.API.Modules.Utils;
 using CounterStrikeSharp.API;
 using DemoTracerApi;
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 
 namespace DemoTracer;
@@ -31,6 +33,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     };
     private static readonly object NadeManifestCacheLock = new();
     private static readonly Dictionary<string, CachedNadeManifest> NadeManifestCache = new(StringComparer.OrdinalIgnoreCase);
+    private static string _moduleDirectoryForPathResolution = string.Empty;
     private const float HandoffGraceSeconds = 0.25f;
     private const float BulletHandoffMatchSeconds = 0.25f;
     private const int BulletHandoffMinDamage = 10;
@@ -52,6 +55,9 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     private const int MaxPlayerSlots = BotControllerNative.MaxSlots;
     private const int ReplayStartHealth = 100;
     private const string AvatarOverrideCacheDirectoryName = "avatar-cache";
+    private const ulong SyntheticAvatarAccountBase = 4_200_000_000UL;
+    private const ulong SyntheticAvatarSlotStride = 100_000UL;
+    private const ulong SyntheticAvatarGenerationModulo = 100_000UL;
     private const string FreezeTimeConVarName = "mp_freezetime";
     private const string CosmeticRiskNotice = "[DTR WARN] cosmetic alignment consumes opt-in manifest cosmetics evidence and may carry Valve GSLT/server-guideline risk outside local/private replay validation.";
     private const string LeftHandDesiredFidelityNotice = "[DTR WARN] left_hand_desired=off 会降低保真度，但显著增高handoff流畅性。Reload loaded replays or plans for this setting to apply.";
@@ -65,6 +71,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     private readonly Dictionary<int, PendingWeaponAlign> _pendingWeaponAlign = new();
     private readonly Dictionary<int, int> _projectileAlignNextBySlot = new();
     private readonly Dictionary<int, int> _replayHifiEventNextBySlot = new();
+    private readonly Dictionary<int, long> _replayIdentityGenerationBySlot = new();
     private readonly Dictionary<uint, PendingProjectileAlign> _pendingProjectileAlign = new();
     private readonly List<TrackedDroppedReplayItem> _trackedDroppedReplayItems = new();
     private readonly Dictionary<int, int> _queuedNadeStartTokens = new();
@@ -145,7 +152,8 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     private float _handoffThreat360Range = HandoffThreat360DefaultRange;
     private bool _handoffThreat360LosEnabled = true;
     private bool _partialReplayEnabled = true;
-    private ReplayIdentityMode _replayIdentityMode = ReplayIdentityMode.Full;
+    private ReplayIdentityMode _replayIdentityMode = ReplayIdentityMode.Steam;
+    private long _nextReplayIdentityGeneration;
     private int _nextNadeStartToken;
     private NadeCycleState? _nadeCycle;
     private int _nextNadeCycleToken;
@@ -154,6 +162,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
 
     public override void Load(bool hotReload)
     {
+        _moduleDirectoryForPathResolution = ModuleDirectory;
         LoadRuntimeConfig(message => Server.PrintToConsole(message), announceMissing: true);
         LoadCosmeticLegacyPaints();
         HookCosmeticGiveNamedItem();
@@ -599,7 +608,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     {
         if (command.ArgCount < 3)
         {
-            command.ReplyToCommand("usage: dtr_set identity <off|name|full>");
+            command.ReplyToCommand("usage: dtr_set identity <off|name|steam|avatar|full>");
             return;
         }
 
@@ -613,17 +622,29 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             case "name":
                 _replayIdentityMode = ReplayIdentityMode.Name;
                 break;
-            case "full":
+            case "steam":
+            case "sid":
+            case "steamid":
             case "1":
             case "on":
             case "true":
+                _replayIdentityMode = ReplayIdentityMode.Steam;
+                break;
+            case "avatar":
+            case "avatars":
+            case "event_avatar":
+            case "event-avatar":
+                _replayIdentityMode = ReplayIdentityMode.Avatar;
+                break;
+            case "full":
                 _replayIdentityMode = ReplayIdentityMode.Full;
                 break;
             default:
-                command.ReplyToCommand("usage: dtr_set identity <off|name|full>");
+                command.ReplyToCommand("usage: dtr_set identity <off|name|steam|avatar|full>");
                 return;
         }
 
+        ApplyRuntimeConfigSideEffects();
         command.ReplyToCommand($"[DTR OK] identity={ReplayIdentityModeName()}");
     }
 
@@ -1050,13 +1071,19 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         command.ReplyToCommand($"dtr: partial_replay={_partialReplayEnabled}");
     }
 
-    [ConsoleCommand("dtr_replay_identity", "dtr_replay_identity <0|1>")]
+    [ConsoleCommand("dtr_replay_identity", "dtr_replay_identity <off|name|steam|avatar|full|0|1>")]
     public void ReplayIdentityCommand(CCSPlayerController? player, CommandInfo command)
     {
         if (command.ArgCount >= 2)
-            _replayIdentityMode = ParseOnOff(command.GetArg(1), false)
-                ? ReplayIdentityMode.Full
-                : ReplayIdentityMode.Off;
+        {
+            if (!TryParseReplayIdentityMode(command.GetArg(1), out var mode))
+            {
+                command.ReplyToCommand("usage: dtr_replay_identity <off|name|steam|avatar|full|0|1>");
+                return;
+            }
+            _replayIdentityMode = mode;
+            ApplyRuntimeConfigSideEffects();
+        }
 
         command.ReplyToCommand($"dtr: replay_identity={ReplayIdentityModeName()}");
     }
@@ -1066,7 +1093,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     {
         if (command.ArgCount < 2)
         {
-            command.ReplyToCommand("usage: dtr_set identity <off|name|full>");
+            command.ReplyToCommand("usage: dtr_set identity <off|name|steam|avatar|full>");
             command.ReplyToCommand("usage: dtr_set align <weapons|loadout|active_weapon|slot_lock|projectiles|cosmetics|stickers|charms|crosshair|left_hand|scoreboard> <off|on>");
             command.ReplyToCommand("usage: dtr_set handoff <off|death|contact|death_or_contact|death_contact_c4> [slot|all]");
             command.ReplyToCommand("usage: dtr_set allow_partial <off|on>");
@@ -1116,11 +1143,16 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                 ? (isControllingBot ? "1" : "0")
                 : "unknown";
             var userId = bot.UserId?.ToString(CultureInfo.InvariantCulture) ?? "unknown";
-            var kickIdHint = bot.UserId.HasValue
-                ? $" kick_hint='kickid {bot.UserId.Value.ToString(CultureInfo.InvariantCulture)}'"
+            var kickHint = bot.UserId.HasValue
+                ? $" kick_hint='dtr_kick slot {bot.Slot}'"
                 : "";
+            if (_loadedReplays.TryGetValue(bot.Slot, out var replay) &&
+                !string.IsNullOrWhiteSpace(replay.PlayerName))
+            {
+                kickHint += $" kick_name='dtr_kick \"{EscapeConsoleString(replay.PlayerName)}\"'";
+            }
             command.ReplyToCommand(
-                $"slot={bot.Slot} userid={userId} team={bot.Team} isBot={bot.IsBot} managed={managed} controllingBot={controllingBot} candidate={IsReplayTargetBot(bot)} name=\"{EscapeConsoleString(bot.PlayerName)}\"{kickIdHint}");
+                $"slot={bot.Slot} userid={userId} team={bot.Team} isBot={bot.IsBot} managed={managed} controllingBot={controllingBot} candidate={IsReplayTargetBot(bot)} name=\"{EscapeConsoleString(bot.PlayerName)}\"{kickHint}");
         }
     }
 
@@ -2380,6 +2412,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     {
         try
         {
+            var resolvedManifestPath = ResolveReadableManifestPath(manifestPath);
             if (!TryReadNadeManifest(manifestPath, out var manifest, out var readError))
                 return LoadRoundResult.Fail($"dtr: failed to read nade manifest: {readError}");
             if (!CurrentMapMatchesManifest(manifest.Map, out var currentMap))
@@ -2415,7 +2448,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             var token = ++_nextNadeCycleToken;
             _nadeCycle = new NadeCycleState(
                 token,
-                Path.GetFullPath(manifestPath),
+                resolvedManifestPath,
                 clips,
                 slot,
                 kindFilter,
@@ -2541,27 +2574,26 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         var replayStateReplaced = false;
         try
         {
-            if (!TryReadManifest(manifestPath, out var manifest, out var readError))
+            var resolvedManifestPath = ResolveReadableManifestPath(manifestPath);
+            if (!TryReadManifest(resolvedManifestPath, out var manifest, out var readError))
                 return LoadRoundResult.Fail($"dtr: failed to read manifest: {readError}");
             if (!CurrentMapMatchesManifest(manifest.Map, out var currentMap))
             {
                 return LoadRoundResult.Fail(
-                    $"dtr: map mismatch, server=\"{currentMap}\" manifest=\"{manifest.Map}\" path=\"{manifestPath}\"");
+                    $"dtr: map mismatch, server=\"{currentMap}\" manifest=\"{manifest.Map}\" path=\"{resolvedManifestPath}\"");
             }
 
-            var manifestDir = Path.GetDirectoryName(Path.GetFullPath(manifestPath)) ?? ".";
+            var manifestDir = Path.GetDirectoryName(resolvedManifestPath) ?? ".";
             var avatarOverrides = BuildAvatarOverrideMap(manifest.AvatarOverrides);
             var roundFiles = manifest.Files
                 .Where(file => file.Round == round)
-                .OrderBy(file => file.Side, StringComparer.Ordinal)
-                .ThenBy(file => file.SteamId)
                 .ToList();
             if (roundFiles.Count == 0)
                 return LoadRoundResult.Fail($"dtr: manifest has no files for round {round}");
             var roundScoreboard = manifest.Rounds.FirstOrDefault(item => item.Round == round)?.Scoreboard;
 
-            var allTFiles = roundFiles.Where(file => file.Side.Equals("t", StringComparison.OrdinalIgnoreCase)).ToList();
-            var allCtFiles = roundFiles.Where(file => file.Side.Equals("ct", StringComparison.OrdinalIgnoreCase)).ToList();
+            var allTFiles = SortReplayFilesForScoreboard(roundFiles, "t");
+            var allCtFiles = SortReplayFilesForScoreboard(roundFiles, "ct");
             var targets = FindReplayTargets();
             var tBots = targets.Where(bot => bot.Team == CsTeam.Terrorist).OrderBy(bot => bot.Slot).ToList();
             var ctBots = targets.Where(bot => bot.Team == CsTeam.CounterTerrorist).OrderBy(bot => bot.Slot).ToList();
@@ -2674,16 +2706,61 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         return assignments;
     }
 
+    private static List<ManifestFile> SortReplayFilesForScoreboard(
+        IEnumerable<ManifestFile> files,
+        string side)
+    {
+        return files
+            .Where(file => file.Side.Equals(side, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(file => ReplayPlayerColorSortOrder(file.Scoreboard?.PlayerColor))
+            .ThenBy(file => file.Scoreboard?.PlayerUserId ?? int.MaxValue)
+            .ThenBy(file => file.Scoreboard?.PlayerEntityId ?? int.MaxValue)
+            .ThenBy(file => file.SteamId)
+            .ToList();
+    }
+
     private static Dictionary<ulong, ManifestAvatarOverride> BuildAvatarOverrideMap(
         IReadOnlyList<ManifestAvatarOverride> avatarOverrides)
     {
         var map = new Dictionary<ulong, ManifestAvatarOverride>();
         foreach (var avatar in avatarOverrides)
         {
-            if (avatar.SteamId != 0)
-                map.TryAdd(avatar.SteamId, avatar);
+            if (avatar.SteamId == 0)
+                continue;
+
+            map.TryAdd(avatar.SteamId, avatar);
         }
         return map;
+    }
+
+    private static int ReplayPlayerColorSortOrder(string? playerColor)
+        => NormalizeReplayPlayerColor(playerColor) switch
+        {
+            "yellow" => 0,
+            "blue" => 1,
+            "purple" => 2,
+            "green" => 3,
+            "orange" => 4,
+            _ => 100,
+        };
+
+    private static int ReplayPlayerColorSchemaIndex(string? playerColor)
+        => NormalizeReplayPlayerColor(playerColor) switch
+        {
+            "blue" => 0,
+            "green" => 1,
+            "yellow" => 2,
+            "orange" => 3,
+            "purple" => 4,
+            _ => -1,
+        };
+
+    private static string? NormalizeReplayPlayerColor(string? playerColor)
+    {
+        var normalized = playerColor?.Trim().ToLowerInvariant();
+        return normalized is "blue" or "green" or "yellow" or "orange" or "purple"
+            ? normalized
+            : null;
     }
 
     private void TryApplyReplayIdentity(
@@ -2695,7 +2772,11 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         if (_replayIdentityMode == ReplayIdentityMode.Off)
             return;
 
-        if (_replayIdentityMode == ReplayIdentityMode.Full && file.SteamId == 0)
+        var hasAvatarOverride = file.SteamId != 0 && avatarOverrides.ContainsKey(file.SteamId);
+        var useSyntheticAvatarSteamId = _replayIdentityMode == ReplayIdentityMode.Avatar && hasAvatarOverride;
+        var writeSteamId = _replayIdentityMode is ReplayIdentityMode.Steam or ReplayIdentityMode.Full ||
+                           _replayIdentityMode == ReplayIdentityMode.Avatar && file.SteamId != 0;
+        if (_replayIdentityMode is ReplayIdentityMode.Steam or ReplayIdentityMode.Full && file.SteamId == 0)
         {
             Server.PrintToConsole(
                 $"dtr: replay identity skipped slot={slot} player={file.PlayerName}: missing steam_id");
@@ -2718,36 +2799,35 @@ public sealed partial class DemoTracerPlugin : BasePlugin
 
         if (!string.IsNullOrWhiteSpace(file.PlayerName))
             Server.ExecuteCommand($"bh_setname {slot} \"{EscapeConsoleString(file.PlayerName)}\"");
-        if (_replayIdentityMode == ReplayIdentityMode.Full)
+        if (writeSteamId)
         {
-            Server.ExecuteCommand($"bh_setsid {slot} {file.SteamId}");
-            ScheduleReplayAvatarOverride(slot, file, manifestDir, avatarOverrides);
+            var displaySteamId = useSyntheticAvatarSteamId
+                ? SyntheticAvatarSteamIdForSlot(slot, CurrentReplayIdentityGeneration(slot))
+                : file.SteamId;
+            Server.ExecuteCommand($"bh_setsid {slot} {displaySteamId}");
+            if (_replayIdentityMode == ReplayIdentityMode.Full)
+                ScheduleReplayAvatarOverride(slot, file, file.SteamId, manifestDir, avatarOverrides);
+            else if (useSyntheticAvatarSteamId)
+                ScheduleReplayAvatarOverride(slot, file, displaySteamId, manifestDir, avatarOverrides);
         }
-        Server.PrintToConsole(
-            _replayIdentityMode == ReplayIdentityMode.Full
-                ? $"dtr: replay identity queued slot={slot} player={file.PlayerName} sid={file.SteamId}"
-                : $"dtr: replay identity queued slot={slot} player={file.PlayerName}");
+        if (writeSteamId && useSyntheticAvatarSteamId)
+        {
+            Server.PrintToConsole(
+                $"dtr: replay identity queued slot={slot} player={file.PlayerName} sid={file.SteamId} avatar_sid=synthetic");
+        }
+        else
+        {
+            Server.PrintToConsole(
+                writeSteamId
+                    ? $"dtr: replay identity queued slot={slot} player={file.PlayerName} sid={file.SteamId}"
+                    : $"dtr: replay identity queued slot={slot} player={file.PlayerName}");
+        }
     }
 
     private void ScheduleReplayAvatarOverride(
         int slot,
         ManifestFile file,
-        string manifestDir,
-        IReadOnlyDictionary<ulong, ManifestAvatarOverride> avatarOverrides)
-    {
-        if (file.SteamId == 0 ||
-            !avatarOverrides.ContainsKey(file.SteamId))
-        {
-            return;
-        }
-
-        Server.NextFrame(() =>
-            TryApplyReplayAvatarOverride(slot, file, manifestDir, avatarOverrides));
-    }
-
-    private void TryApplyReplayAvatarOverride(
-        int slot,
-        ManifestFile file,
+        ulong avatarSteamId,
         string manifestDir,
         IReadOnlyDictionary<ulong, ManifestAvatarOverride> avatarOverrides)
     {
@@ -2757,9 +2837,32 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             return;
         }
 
+        var generation = CurrentReplayIdentityGeneration(slot);
+        var steamId = file.SteamId;
+        var playerName = file.PlayerName;
+        Server.NextFrame(() =>
+            TryApplyReplayAvatarOverride(slot, steamId, avatarSteamId, playerName, manifestDir, avatar, generation));
+    }
+
+    private void TryApplyReplayAvatarOverride(
+        int slot,
+        ulong steamId,
+        ulong avatarSteamId,
+        string playerName,
+        string manifestDir,
+        ManifestAvatarOverride avatar,
+        long generation)
+    {
+        if (steamId == 0 ||
+            !IsReplayIdentityGenerationCurrent(slot, generation))
+        {
+            return;
+        }
+
         if (!_loadedReplays.TryGetValue(slot, out var replay) ||
-            replay.SteamId != file.SteamId ||
-            !IsReplaySlotStillSafe(slot))
+            replay.SteamId != steamId ||
+            !IsReplaySlotStillSafe(slot) ||
+            !_botHiderProbe.IsManagedBot(slot))
         {
             return;
         }
@@ -2771,40 +2874,41 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         if (!pngFormat)
         {
             Server.PrintToConsole(
-                $"dtr: replay avatar skipped slot={slot} player={file.PlayerName} sid={file.SteamId}: unsupported format={avatar.Format}");
+                $"dtr: replay avatar skipped slot={slot} player={playerName} sid={steamId}: unsupported format={avatar.Format}");
             return;
         }
 
         if (!TryResolveChildPathUnderRoot(manifestDir, avatar.Path, out var avatarPath, out var pathError))
         {
             Server.PrintToConsole(
-                $"dtr: replay avatar skipped slot={slot} player={file.PlayerName} sid={file.SteamId}: {pathError}");
+                $"dtr: replay avatar skipped slot={slot} player={playerName} sid={steamId}: {pathError}");
             return;
         }
 
         if (!File.Exists(avatarPath))
         {
             Server.PrintToConsole(
-                $"dtr: replay avatar skipped slot={slot} player={file.PlayerName} sid={file.SteamId}: missing {avatar.Path}");
+                $"dtr: replay avatar skipped slot={slot} player={playerName} sid={steamId}: missing {avatar.Path}");
             return;
         }
 
-        if (!TryPrepareAvatarOverrideCommandPath(avatarPath, avatar.Path, out var commandPath, out var cacheError))
+        if (!TryPrepareAvatarOverrideCommandPath(steamId, avatarPath, avatar, out var commandPath, out var cacheError))
         {
             Server.PrintToConsole(
-                $"dtr: replay avatar skipped slot={slot} player={file.PlayerName} sid={file.SteamId}: {cacheError}");
+                $"dtr: replay avatar skipped slot={slot} player={playerName} sid={steamId}: {cacheError}");
             return;
         }
 
         Server.ExecuteCommand(
-            $"bc_avatar_override_probe {file.SteamId} \"{EscapeConsoleString(commandPath)}\"");
+            $"bc_avatar_override_probe {avatarSteamId} \"{EscapeConsoleString(commandPath)}\"");
         Server.PrintToConsole(
-            $"dtr: replay avatar queued slot={slot} player={file.PlayerName} sid={file.SteamId} path={avatar.Path} cache={commandPath}");
+            $"dtr: replay avatar queued slot={slot} player={playerName} sid={steamId} avatar_sid={avatarSteamId} path={avatar.Path} cache={commandPath}");
     }
 
     private bool TryPrepareAvatarOverrideCommandPath(
+        ulong steamId,
         string sourcePath,
-        string manifestPath,
+        ManifestAvatarOverride avatar,
         out string commandPath,
         out string error)
     {
@@ -2822,7 +2926,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             var cacheDir = Path.Combine(pluginDir, AvatarOverrideCacheDirectoryName);
             Directory.CreateDirectory(cacheDir);
 
-            var normalizedManifestPath = manifestPath.Replace('/', Path.DirectorySeparatorChar);
+            var normalizedManifestPath = avatar.Path.Replace('/', Path.DirectorySeparatorChar);
             var fileName = Path.GetFileName(normalizedManifestPath);
             if (string.IsNullOrWhiteSpace(fileName))
                 fileName = Path.GetFileName(sourcePath);
@@ -2832,7 +2936,11 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                 return false;
             }
 
-            var cachedPath = Path.Combine(cacheDir, fileName);
+            var contentHash = AvatarContentHashKey(sourcePath, avatar.Sha256);
+            var pathHash = ShortSha256Hex($"{steamId}\n{avatar.Path}\n{contentHash}");
+            var safeStem = SanitizeAvatarCacheStem(Path.GetFileNameWithoutExtension(fileName));
+            var cachedName = $"{steamId}_{pathHash}_{safeStem}.png";
+            var cachedPath = Path.Combine(cacheDir, cachedName);
             var sourceInfo = new FileInfo(sourcePath);
             var shouldCopy =
                 !File.Exists(cachedPath) ||
@@ -2848,6 +2956,53 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             error = $"avatar cache failed: {ex.Message}";
             return false;
         }
+    }
+
+    private static string AvatarContentHashKey(string sourcePath, string manifestSha256)
+    {
+        var normalized = NormalizeSha256(manifestSha256);
+        if (normalized.Length >= 16)
+            return normalized[..16];
+
+        using var stream = File.OpenRead(sourcePath);
+        var hash = SHA256.HashData(stream);
+        return Convert.ToHexString(hash)[..16].ToLowerInvariant();
+    }
+
+    private static string NormalizeSha256(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        var builder = new StringBuilder(value.Length);
+        foreach (var c in value.Trim())
+        {
+            if (Uri.IsHexDigit(c))
+                builder.Append(char.ToLowerInvariant(c));
+        }
+        return builder.ToString();
+    }
+
+    private static string ShortSha256Hex(string value)
+    {
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(value));
+        return Convert.ToHexString(hash)[..16].ToLowerInvariant();
+    }
+
+    private static string SanitizeAvatarCacheStem(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return "avatar";
+
+        var builder = new StringBuilder(Math.Min(value.Length, 48));
+        foreach (var c in value)
+        {
+            if (builder.Length >= 48)
+                break;
+            builder.Append(char.IsAsciiLetterOrDigit(c) || c is '-' or '_' ? c : '_');
+        }
+
+        return builder.Length == 0 ? "avatar" : builder.ToString();
     }
 
     private string PlayLoaded(bool loop)
@@ -3396,6 +3551,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         _lastLockedWeaponTarget.Clear();
         _pendingWeaponAlign.Clear();
         _projectileAlignNextBySlot.Clear();
+        _replayIdentityGenerationBySlot.Clear();
         _pendingProjectileAlign.Clear();
         _queuedNadeStartTokens.Clear();
         _rebuiltInventorySlots.Clear();
@@ -3471,6 +3627,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             _pendingWeaponAlign.Clear();
             _projectileAlignNextBySlot.Clear();
             _replayHifiEventNextBySlot.Clear();
+            _replayIdentityGenerationBySlot.Clear();
             _pendingProjectileAlign.Clear();
             _trackedDroppedReplayItems.Clear();
             _queuedNadeStartTokens.Clear();
@@ -3659,6 +3816,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     {
         if (_loadedReplays.TryGetValue(slot, out var releasedReplay) && releasedReplay.UtilityOnly)
             _pendingProjectileAlign.Clear();
+        InvalidateReplayIdentityGeneration(slot);
         _lastPlayingSlots.Remove(slot);
         _replayStartedAt.Remove(slot);
         _lastEnsuredWeaponDef.Remove(slot);
@@ -3795,8 +3953,41 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         _demoTracerOwnedSlots.Add(slot);
     }
 
+    private long BeginReplayIdentityGeneration(int slot)
+    {
+        var generation = ++_nextReplayIdentityGeneration;
+        _replayIdentityGenerationBySlot[slot] = generation;
+        return generation;
+    }
+
+    private long CurrentReplayIdentityGeneration(int slot)
+    {
+        if (_replayIdentityGenerationBySlot.TryGetValue(slot, out var generation))
+            return generation;
+
+        return BeginReplayIdentityGeneration(slot);
+    }
+
+    private bool IsReplayIdentityGenerationCurrent(int slot, long generation)
+        => _replayIdentityGenerationBySlot.TryGetValue(slot, out var current) &&
+           current == generation;
+
+    private void InvalidateReplayIdentityGeneration(int slot)
+        => _replayIdentityGenerationBySlot.Remove(slot);
+
+    private static ulong SyntheticAvatarSteamIdForSlot(int slot, long generation)
+    {
+        var safeSlot = slot < 0 ? 0UL : (ulong)Math.Min(slot, 255);
+        var safeGeneration = generation < 0 ? 0UL : (ulong)generation;
+        var accountId = SyntheticAvatarAccountBase +
+                        safeSlot * SyntheticAvatarSlotStride +
+                        safeGeneration % SyntheticAvatarGenerationModulo;
+        return SteamId64AccountBase + accountId;
+    }
+
     private void ForgetLoadedReplayMetadata(int slot)
     {
+        InvalidateReplayIdentityGeneration(slot);
         _loadedReplays.Remove(slot);
         _lastEnsuredWeaponDef.Remove(slot);
         _lastReplayWeaponDef.Remove(slot);
@@ -3834,11 +4025,13 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         if (!IsKnownWeaponDefIndex(firstDef))
             firstDef = scannedFirstDef;
 
-        var preloadDefs = NormalizePreloadWeaponDefs(
-            manifestPreloadWeaponDefIndices is { Count: > 0 }
-                ? manifestPreloadWeaponDefIndices
-                : scannedPreloadDefs);
         var hasLoadout = loadout != null;
+        var normalizedLoadout = NormalizeReplayLoadout(loadout ?? new ReplayLoadoutSnapshot());
+        var preloadDefs = BuildReplayPreloadWeaponDefs(
+            manifestPreloadWeaponDefIndices,
+            scannedPreloadDefs,
+            normalizedLoadout,
+            hasLoadout);
         var hifiEvents = (metadata.HighFidelity?.Events ?? [])
             .OrderBy(replayEvent => replayEvent.TickIndex)
             .ThenBy(replayEvent => replayEvent.Tick)
@@ -3857,7 +4050,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             firstDef,
             preloadDefs,
             hasLoadout,
-            NormalizeReplayLoadout(loadout ?? new ReplayLoadoutSnapshot()),
+            normalizedLoadout,
             NormalizeMusicKitId(musicKitId),
             normalizedCosmetics,
             normalizedView,
@@ -3870,6 +4063,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             NormalizeWeaponDefIndex(utilityWeaponDefIndex),
             metadata.TickRate,
             metadata.PlayStartTickIndex);
+        BeginReplayIdentityGeneration(slot);
         _lastEnsuredWeaponDef.Remove(slot);
         _lastReplayWeaponDef.Remove(slot);
         _lastLockedWeaponTarget.Remove(slot);
@@ -4021,7 +4215,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         {
             var extraWeapon = currentSlotWeapons.FirstOrDefault();
             return extraWeapon != null &&
-                   DropAndKillReplayWeapon(player, pawn, extraWeapon, "extra_loadout_slot");
+                   RemoveAndKillReplayWeapon(player, pawn, extraWeapon, "extra_loadout_slot");
         }
 
         if (currentSlotWeapons.Count == 0)
@@ -4040,7 +4234,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         if (fallbackItem == null || weaponToDrop == null)
             return false;
 
-        if (!DropAndKillReplayWeapon(player, pawn, weaponToDrop, "replace_loadout_slot"))
+        if (!RemoveAndKillReplayWeapon(player, pawn, weaponToDrop, "replace_loadout_slot"))
             return false;
 
         _lastEnsuredWeaponDef.Remove(player.Slot);
@@ -4140,6 +4334,28 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         catch (Exception ex)
         {
             Server.PrintToConsole($"dtr: failed to drop slot={player.Slot} item={weaponName}: {ex.Message}");
+            return false;
+        }
+
+        KillDroppedWeapon(player.Slot, weapon, weaponName, reason);
+        Server.NextFrame(() => KillDroppedWeapon(player.Slot, weapon, weaponName, reason));
+        return true;
+    }
+
+    private static bool RemoveAndKillReplayWeapon(
+        CCSPlayerController player,
+        CCSPlayerPawn pawn,
+        CBasePlayerWeapon weapon,
+        string reason)
+    {
+        var weaponName = weapon.DesignerName;
+        try
+        {
+            pawn.RemovePlayerItem(weapon);
+        }
+        catch (Exception ex)
+        {
+            Server.PrintToConsole($"dtr: failed to remove slot={player.Slot} item={weaponName}: {ex.Message}");
             return false;
         }
 
@@ -4431,7 +4647,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                 .ToList();
             foreach (var weapon in conflictingWeapons)
             {
-                if (!DropAndKillReplayWeapon(player, pawn, weapon, "replace_replay_slot"))
+                if (!RemoveAndKillReplayWeapon(player, pawn, weapon, "replace_replay_slot"))
                     return false;
             }
         }
@@ -4512,6 +4728,8 @@ public sealed partial class DemoTracerPlugin : BasePlugin
     {
         Off,
         Name,
+        Steam,
+        Avatar,
         Full,
     }
 
@@ -4578,6 +4796,13 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         uint PlayStartTickIndex);
 
     private readonly record struct ReplayAssignment(ManifestFile File, CCSPlayerController Bot);
+
+    private readonly record struct DtrKickCandidate(
+        int Slot,
+        int? UserId,
+        string LiveName,
+        string LoadedName,
+        ulong SteamId);
 
     private readonly record struct PendingWeaponAlign(int WeaponDefIndex, bool ForceSwitch);
 
@@ -4862,6 +5087,8 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         => _replayIdentityMode switch
         {
             ReplayIdentityMode.Name => "name",
+            ReplayIdentityMode.Steam => "steam",
+            ReplayIdentityMode.Avatar => "avatar",
             ReplayIdentityMode.Full => "full",
             _ => "off",
         };

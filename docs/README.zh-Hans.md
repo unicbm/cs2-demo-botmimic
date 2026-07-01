@@ -179,10 +179,10 @@ output/<demo-id>/round01/...
 `avatars/` 只会在 demo 内包含比赛服务器头像覆写时生成。`manifest.json`
 会记录 SteamID64 到头像资源的映射，播放入口仍然是 `manifest.json`。
 
-播放时，如果 replay identity 是 `full` 且目标 slot 是 BotHider 管理的 replay bot，
-DemoTracer 会应用这些 demo 提供的 PNG 头像覆写。native runtime 会启用
-`sv_reliableavatardata` 并写入 `ServerAvatarOverrides`；这只改变服务器内显示，
-不会修改玩家真实 Steam 头像。
+播放时，如果 replay identity 是 `avatar` 且目标 slot 是 BotHider 管理的 replay bot，
+DemoTracer 会用 DTR 合成 SteamID64 key 应用这些 demo 提供的 PNG 头像覆写。native
+runtime 会启用 `sv_reliableavatardata` 并写入 `ServerAvatarOverrides`；这只改变服务器内
+显示，不会修改玩家真实 Steam 头像。
 
 如果你不会写 Rust，可以看 [`examples/`](../examples/) 里的 Python 和 Node.js
 小脚本。它们只是调用 CLI、定位生成的 `manifest.json`，再打印一条 CS2 console
@@ -292,8 +292,8 @@ println!("clips={}", report.clips_written);
 server bundle 包含 `BotController`、`DemoTracer`、`DemoTracerApi.dll`、
 `skins_en.json` 和干净的示例配置；不包含 Metamod:Source、CounterStrikeSharp 或
 CS2-Bot-Hider。BotHider 是可选依赖：movement replay、武器/loadout 对齐、投掷物对齐和
-handoff 不依赖它；但 `dtr_replay_identity full` 只有在 BotHider 管理 replay bot slot
-时，才会写入 demo 名字、SteamID64 和 demo 提供的头像覆写。
+handoff 不依赖它。默认 `dtr_replay_identity steam` 只给 BotHider 管理的 replay bot
+写入 demo 名字和 SteamID64；显式 `dtr_replay_identity avatar` 才额外写 demo 头像覆写。
 
 进入服务器后，在控制台输入：
 
@@ -309,8 +309,9 @@ dtr_go seq "<输出目录>\<demo-id>\manifest.json" 0
 - 最后的 `0` 是 `from_source_round=0`，不是“只播放 round 0”。
 - 如果只想播放单个 source round，用 `dtr_go round "<manifest.json>" 0`。
 - 插件会在 `round_start` 准备 bot，在 `round_freeze_end` 开始播放。
-- replay identity 默认是 `full`；BotHider 管理 replay bot slot 时，会写入 demo
-  名字、SteamID64，以及 manifest 中匹配的 demo 头像 PNG 覆写。
+- replay identity 默认是 `steam`；BotHider 管理 replay bot slot 时，会写入 demo
+  名字和 SteamID64。只有显式 `avatar` 才会用 DTR 合成 SteamID64 key 通过
+  `ServerAvatarOverrides` 写入 demo 头像 PNG 覆写。
 
 服务器本地默认值可以放在 `DemoTracer.dll` 同目录的 `demotracer.config.json`。可以从
 `demotracer.config.example.json` 起步，编辑后执行 `dtr_config_reload`。控制台命令仍可

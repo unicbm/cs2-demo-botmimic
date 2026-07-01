@@ -39,7 +39,7 @@ only; it is not written into `.dtr` files or manifests.
 
 ```json
 {
-  "identity": "full",
+  "identity": "steam",
   "allow_partial": true,
   "handoff": {
     "mode": "death_contact_c4",
@@ -75,7 +75,7 @@ matching legacy fields.
 | `dtr_cosmetics off` | off | High-risk cosmetic evidence replay for skins, knives, gloves, names, stickers, and charms. |
 | `dtr_handoff` | `death_contact_c4 slot` | Release the contacted/dead replay slot after contact or death; C4 planted releases all active replay slots. |
 | `dtr_partial` | `1` | Allow replay with fewer bots than manifest players. |
-| `dtr_replay_identity` | `full` | Write demo name, SteamID64, and demo-provided avatar overrides through BotHider-managed replay bot slots when available. |
+| `dtr_replay_identity` | `steam` | Write demo name and SteamID64 through BotHider-managed replay bot slots when available. Team/event avatar PNGs require explicit `avatar`; `full` keeps the legacy real-SteamID avatar path. |
 | `dtr_util_trace` | `0` | Utility CSV trace disabled. |
 | `bc_replay_pov` | `spectated` | Publish expensive native first-person POV updates only for replay bots watched in-eye. |
 
@@ -293,8 +293,9 @@ dtr_match scoreboard <on|off>
 dtr_match full
 ```
 
-`dtr_match scoreboard` syncs best-effort scoreboard/KDA/MVP/team score fields.
-It is default-off.
+`dtr_match scoreboard` syncs best-effort scoreboard/KDA/MVP/team score fields,
+demo CT/T team names (`mp_teamname_1` for CT, `mp_teamname_2` for T), and
+demo player color evidence when present in the manifest. It is default-off.
 
 ## Cosmetic Evidence / Risk: `dtr_cosmetics`
 
@@ -488,15 +489,29 @@ Controls whether newly loaded `.dtr` v7 command frames keep
 The setting affects replays loaded after the command is changed. Reload the
 round, sequence, or pool plan to apply it to already loaded replay slots.
 
-### `dtr_replay_identity <0|1>`
+### `dtr_replay_identity <off|name|steam|avatar|full|0|1>`
 
 Controls BotHider identity alignment.
 
 When enabled and BotHider is available, manifest loading queues name and
 SteamID64 updates for BotHider-managed bot slots using the demo player's
-`player_name` and `steam_id`. If the manifest contains PNG `avatar_overrides`,
-`full` mode also writes the matching server avatar override and enables
-`sv_reliableavatardata`. The default mode is `full`.
+`player_name` and `steam_id`. The default mode is `steam`, which does not write
+`ServerAvatarOverrides`; `1`/`on` also means `steam`.
+
+Use `avatar` to apply manifest PNG avatar overrides, such as team/event logos,
+without using the real player SteamID64 as the avatar override key. In this
+mode DemoTracer writes a synthetic DTR SteamID64 to the replay bot and writes the
+matching PNG override to that synthetic key. If a player has no avatar override
+evidence, `avatar` falls back to the normal `steam` behavior for that slot.
+
+Use `full` only when you explicitly want the legacy path: real demo SteamID64
+plus demo-provided avatar override keyed by that real SteamID64.
+
+Avatar override application is slot-validated before the delayed write runs:
+the slot must still be loaded with the same replay SteamID64, still be a safe
+replay target, and still be BotHider-managed. CS2's `ServerAvatarOverrides`
+table is still keyed by SteamID64. `avatar` avoids real-player collisions by
+using synthetic DTR keys; `full` keeps the real-SteamID collision caveat.
 
 This is mainly for POV/spectator clarity. If BotHider is not installed or is not
 managing a replay bot slot, identity alignment skips that slot instead of
@@ -582,9 +597,26 @@ expected, or a sample pack is being checked on a new server.
 
 Prints team players, strict bot status, BotHider-managed status, native
 `controllingBot` state, replay-candidate status, slot, team, and name.
+For loaded DemoTracer replay slots it also prints `dtr_kick` hints.
 
 Use this before playback if a manifest refuses to load or assigns fewer slots
 than expected.
+
+### `dtr_kick <exact-name>|slot <slot>|sid <steamid64>`
+
+Kicks one DemoTracer replay bot after first releasing the matching replay slot.
+This is the preferred way to remove a BotHider-identity replay bot, because it
+stops native playback, unloads the replay buffer, clears DemoTracer slot state,
+invalidates pending avatar writes, then issues `kickid <userid>`.
+
+Target rules:
+
+- `dtr_kick slot <slot>` targets one exact replay slot.
+- `dtr_kick sid <steamid64>` targets the loaded replay player SteamID64.
+- `dtr_kick "<exact-name>"` matches the loaded replay player name or current
+  live display name with case-insensitive exact matching.
+- Ambiguous name or SteamID matches are refused; use `dtr_kick slot <slot>`.
+- Real players and non-DemoTracer bot slots are refused.
 
 ### `dtr_status <slot>`
 

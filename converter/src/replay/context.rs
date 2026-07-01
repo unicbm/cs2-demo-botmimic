@@ -37,7 +37,8 @@ pub(crate) fn preload_weapon_def_indices_from_refs_from_play_start(
     let start = (play_start_tick_index as usize).min(rows.len());
     let mut seen = BTreeSet::new();
     let mut defs = Vec::new();
-    for row in rows.iter().copied().skip(start) {
+    let play_start_row = rows.get(start).copied();
+    if let Some(row) = play_start_row {
         for raw_def in &row.inventory_as_ids {
             let def = normalize_weapon_def_index(*raw_def);
             if is_preload_weapon_def_index(def) && seen.insert(def) {
@@ -45,14 +46,11 @@ pub(crate) fn preload_weapon_def_indices_from_refs_from_play_start(
             }
         }
     }
-    let rec_start = (play_start_tick_index as usize).min(rec.ticks.len());
-    for tick in rec.ticks.iter().skip(rec_start) {
-        let def = normalize_weapon_def_index(tick.weapon_def_index);
-        if is_preload_weapon_def_index(def) && seen.insert(def) {
-            defs.push(def);
-        }
+    let first_def = first_weapon_def_index_from_play_start(rec, play_start_tick_index);
+    if is_preload_weapon_def_index(first_def) && seen.insert(first_def) {
+        defs.push(first_def);
     }
-    if defs.is_empty() {
+    if defs.is_empty() && play_start_row.is_none() {
         preload_weapon_def_indices_from_refs(rows, rec)
     } else {
         defs

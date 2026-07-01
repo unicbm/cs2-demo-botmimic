@@ -135,6 +135,31 @@ public sealed partial class DemoTracerPlugin
         return outDefs.ToArray();
     }
 
+    private static int[] BuildReplayPreloadWeaponDefs(
+        IReadOnlyList<int>? manifestPreloadWeaponDefIndices,
+        int[] scannedPreloadWeaponDefIndices,
+        ReplayLoadoutSnapshot normalizedLoadout,
+        bool hasManifestLoadout)
+    {
+        var preloadDefs = NormalizePreloadWeaponDefs(
+            manifestPreloadWeaponDefIndices is { Count: > 0 }
+                ? manifestPreloadWeaponDefIndices
+                : scannedPreloadWeaponDefIndices);
+        if (!hasManifestLoadout)
+            return preloadDefs;
+
+        var loadoutDefs = new HashSet<int>(
+            (normalizedLoadout.WeaponDefIndices ?? Array.Empty<int>())
+            .Select(NormalizeWeaponDefIndex)
+            .Where(IsPreloadWeaponDefIndex));
+        if (loadoutDefs.Count == 0)
+            return [];
+
+        return preloadDefs
+            .Where(loadoutDefs.Contains)
+            .ToArray();
+    }
+
     private static bool IsKnownWeaponDefIndex(int weaponDefIndex)
         => TryGetWeaponClassByDefIndex(weaponDefIndex, out _);
 

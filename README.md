@@ -461,6 +461,9 @@ At playback time, DemoTracer can apply those PNGs as server avatar overrides for
 matching BotHider-managed replay bots. The native runtime enables
 `sv_reliableavatardata` and writes `ServerAvatarOverrides`; this is only an
 in-server presentation override, not a change to any player's real Steam avatar.
+The recommended runtime mode is `dtr_replay_identity avatar`, which binds the
+PNG to a synthetic DTR SteamID64 for that replay slot instead of the real demo
+player SteamID64.
 
 For users who do not write Rust, [`examples/`](examples/) contains small Python
 and Node.js scripts that call the CLI, locate the generated `manifest.json`, and
@@ -575,9 +578,10 @@ The server bundle includes `BotController`, `DemoTracer`, `DemoTracerApi.dll`,
 `skins_en.json`, and the sanitized example config. It does not include
 Metamod:Source, CounterStrikeSharp, or CS2-Bot-Hider. BotHider is optional:
 movement replay, weapon/loadout alignment, projectile alignment, and handoff do
-not depend on it, but `dtr_replay_identity full` only writes demo names,
-SteamID64 values, and demo-provided avatar overrides for BotHider-managed bot
-slots.
+not depend on it. The default `dtr_replay_identity steam` writes demo names and
+SteamID64 values for BotHider-managed bot slots; explicit
+`dtr_replay_identity avatar` writes demo-provided team/event PNG avatar
+overrides through synthetic DTR SteamID64 keys.
 
 In the server console:
 
@@ -591,9 +595,12 @@ dtr_go seq "<output-dir>\<demo-id>\manifest.json" 0
 `0` is `from_source_round=0`, not "play only round 0". Use
 `dtr_go round "<manifest.json>" 0` for single-round playback.
 
-Replay identity is `full` by default. When BotHider is managing the replay bot
-slots, loading a manifest writes demo names, SteamID64 values, and any matching
-demo-provided avatar PNG overrides.
+Replay identity is `steam` by default. When BotHider is managing the replay bot
+slots, loading a manifest writes demo names and SteamID64 values. Use explicit
+`dtr_replay_identity avatar` when you also want demo-provided avatar PNG
+overrides, such as team/event logos, while avoiding real-player SteamID64 avatar
+key collisions. `dtr_replay_identity full` keeps the legacy real-SteamID avatar
+override path.
 
 Runtime defaults can be kept in `demotracer.config.json` next to
 `DemoTracer.dll`. Start from `demotracer.config.example.json`, then run

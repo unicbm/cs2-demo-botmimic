@@ -25,11 +25,16 @@ DemoTracer 是否适合自己的使用场景。
 - 如果用户要重玩自己原本就在场的 demo，场上会同时有一个像自己的 bot 和一个本人。
   这种情况下建议不要使用 CS2-Bot-Hider，因为会出现一个 SteamID 和头像都和你相同的
   bot，可能造成 TAB 记分板等 UI 显示异常。一般不应导致游戏崩溃，但显示会很怪。
-- 头像覆写来自 demo 元数据提供的 PNG。当前覆写逻辑还比较粗，可能出现 OB 位也被写，
-  或玩家被写成对方头像的情况。这是已知问题，也是真正需要修复的地方。
+- 头像覆写来自 demo 元数据提供的 PNG。当前 runtime 会在延迟写入头像前重新校验 replay
+  slot，因此已经 unload 的旧 slot 不应再收到旧头像写入。但 CS2 的
+  `ServerAvatarOverrides` 底层仍然按 SteamID64 生效。推荐的
+  `dtr_replay_identity avatar` 模式会使用 DTR 合成 SteamID64 key，避免真实玩家冲突；
+  旧的 `full` 模式保留真实 SteamID 冲突 caveat。有些 demo 提供的是队伍/default logo
+  PNG，而不是真正的玩家专属头像，所以 TAB、OB 和其他 UI surface 之间仍可能不一致。
 - BotHider 本质上改写可见 SteamID 和 bot 游戏内显示名，但没有改变“游戏 native 认定”
   的 bot 名字。也就是说，一个 bot 可能显示为 donk 的头像和 SteamID，但
-  `bot_kick donk` 不生效，需要用对应 kickid 类指令定向踢出。一个可能的未来方案是
+  `bot_kick donk` 不生效；DemoTracer replay bot 应使用 `dtr_kick` 定向踢出。
+  一个可能的未来方案是
   先按 botprofile 严格匹配 id 正确的 bot，再进行 BotHider 设置和对应 slot 的 DTR
   执行；但大量社区 demo 里玩家 id 可能重名或包含复杂字符，预先写 botprofile 会让
   数据库体积迅速膨胀。CS2 的 botprofile 本质上又不区分大小写，`NiKo` 和 `niko`

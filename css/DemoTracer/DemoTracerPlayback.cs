@@ -3,6 +3,7 @@ using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Modules.Commands;
 using CounterStrikeSharp.API.Modules.Utils;
 using CounterStrikeSharp.API;
+using System.Globalization;
 
 namespace DemoTracer;
 
@@ -394,7 +395,7 @@ public sealed partial class DemoTracerPlugin
         _armedManifestPath = string.Empty;
         _armedSourceRound = -1;
         InvalidateFreezePreroll();
-        _poolManifestPath = poolPath;
+        _poolManifestPath = ResolveReadableManifestPath(poolPath);
         _poolManifest = pool;
         _poolRoundIndex = startRound;
         ClearPoolRecentHistory();
@@ -434,7 +435,7 @@ public sealed partial class DemoTracerPlugin
             return false;
         }
 
-        var poolDir = Path.GetDirectoryName(Path.GetFullPath(_poolManifestPath)) ?? ".";
+        var poolDir = Path.GetDirectoryName(_poolManifestPath) ?? ".";
         if (!TryResolveChildPathUnderRoot(poolDir, candidate.Manifest, out var manifestPath, out var pathError))
         {
             Server.PrintToConsole($"dtr: pool skipped round {_poolRoundIndex}: {pathError}");
@@ -991,6 +992,174 @@ public sealed partial class DemoTracerPlugin
         }
     }
 
+    [ConsoleCommand("dtr_kick", "dtr_kick <exact-name>|slot <slot>|sid <steamid64>")]
+    public void KickCommand(CCSPlayerController? player, CommandInfo command)
+    {
+        if (!CheckAbi(command))
+            return;
+        if (command.ArgCount < 2)
+        {
+            ReplyKickUsage(command);
+            return;
+        }
+
+        var snapshot = BuildTickPlayerSnapshot();
+        var candidates = BuildKickCandidates(snapshot);
+        if (candidates.Count == 0)
+        {
+            command.ReplyToCommand("[DTR ERR] no kickable DemoTracer replay bots found");
+            return;
+        }
+
+        var mode = command.GetArg(1).Trim().ToLowerInvariant();
+        List<DtrKickCandidate> matches;
+        string label;
+        if (mode is "slot")
+        {
+            if (!TryParseSlotAt(command, 2, out var slot))
+                return;
+            matches = candidates.Where(candidate => candidate.Slot == slot).ToList();
+            label = $"slot={slot}";
+        }
+        else if (mode is "sid" or "steamid" or "steam")
+        {
+            if (command.ArgCount < 3 ||
+                !ulong.TryParse(command.GetArg(2), NumberStyles.None, CultureInfo.InvariantCulture, out var steamId) ||
+                steamId == 0)
+            {
+                command.ReplyToCommand("usage: dtr_kick sid <steamid64>");
+                return;
+            }
+            matches = candidates.Where(candidate => candidate.SteamId == steamId).ToList();
+            label = $"sid={steamId}";
+        }
+        else
+        {
+            var name = CommandArgumentsFrom(command, 1);
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                ReplyKickUsage(command);
+                return;
+            }
+            matches = candidates
+                .Where(candidate =>
+                    candidate.LoadedName.Equals(name, StringComparison.OrdinalIgnoreCase) ||
+                    candidate.LiveName.Equals(name, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            label = $"name=\"{name}\"";
+        }
+
+        if (matches.Count == 0)
+        {
+            command.ReplyToCommand($"[DTR ERR] no unique DemoTracer replay bot matched {label}");
+            return;
+        }
+        if (matches.Count > 1)
+        {
+            command.ReplyToCommand($"[DTR ERR] ambiguous dtr_kick target for {label}; choose a slot explicitly.");
+            foreach (var candidate in matches)
+                command.ReplyToCommand($"[DTR HINT] dtr_kick slot {candidate.Slot}  {FormatKickCandidate(candidate)}");
+            return;
+        }
+
+        KickReplayCandidate(command, matches[0]);
+    }
+
+    private void ReplyKickUsage(CommandInfo command)
+    {
+        command.ReplyToCommand("usage: dtr_kick <exact-name>");
+        command.ReplyToCommand("usage: dtr_kick slot <slot>");
+        command.ReplyToCommand("usage: dtr_kick sid <steamid64>");
+    }
+
+    private List<DtrKickCandidate> BuildKickCandidates(TickPlayerSnapshot snapshot)
+    {
+        var slots = new SortedSet<int>();
+        foreach (var slot in _loadedSlots)
+            slots.Add(slot);
+        foreach (var slot in _loadedReplays.Keys)
+            slots.Add(slot);
+        foreach (var slot in _demoTracerOwnedSlots)
+            slots.Add(slot);
+        foreach (var slot in _queuedNadeStartTokens.Keys)
+            slots.Add(slot);
+        if (_nadeCycle is { } cycle)
+            slots.Add(cycle.Slot);
+
+        foreach (var slot in NativeReplaySlots())
+        {
+            var state = BotControllerNative.GetReplayState(slot);
+            if (state.Playing || state.Total > 0)
+                slots.Add(slot);
+        }
+
+        var candidates = new List<DtrKickCandidate>();
+        foreach (var slot in slots)
+        {
+            if (slot is < 0 or >= MaxPlayerSlots)
+                continue;
+            if (!snapshot.TryGetSlot(slot, out var controller) ||
+                controller is not { IsValid: true } ||
+                !IsReplaySlotStillSafe(slot, snapshot))
+            {
+                continue;
+            }
+
+            _loadedReplays.TryGetValue(slot, out var replay);
+            candidates.Add(new DtrKickCandidate(
+                slot,
+                controller.UserId,
+                controller.PlayerName ?? string.Empty,
+                replay.PlayerName ?? string.Empty,
+                replay.SteamId));
+        }
+
+        return candidates;
+    }
+
+    private void KickReplayCandidate(CommandInfo command, DtrKickCandidate candidate)
+    {
+        if (!candidate.UserId.HasValue)
+        {
+            command.ReplyToCommand($"[DTR ERR] cannot kick slot {candidate.Slot}: missing userid");
+            return;
+        }
+
+        var slot = candidate.Slot;
+        var userId = candidate.UserId.Value;
+        if (IsNadeCycleSlot(slot))
+            StopNadeCycle("dtr_kick", stopCurrent: false);
+
+        var stopped = BotControllerNative.StopReplay(slot);
+        var unloaded = BotControllerNative.UnloadReplay(slot);
+        ReleaseReplaySlot(slot, "dtr_kick");
+        _loadedSlots.Remove(slot);
+        ForgetLoadedReplayMetadata(slot);
+        Server.ExecuteCommand($"kickid {userId.ToString(CultureInfo.InvariantCulture)}");
+
+        command.ReplyToCommand(
+            $"[DTR OK] kicked slot={slot} userid={userId.ToString(CultureInfo.InvariantCulture)} stopped={FormatOnOff(stopped)} unloaded={FormatOnOff(unloaded)}");
+    }
+
+    private static string CommandArgumentsFrom(CommandInfo command, int startArg)
+    {
+        var parts = new List<string>();
+        for (var i = startArg; i < command.ArgCount; i++)
+            parts.Add(command.GetArg(i));
+        return string.Join(' ', parts).Trim();
+    }
+
+    private static string FormatKickCandidate(DtrKickCandidate candidate)
+    {
+        var userId = candidate.UserId.HasValue
+            ? candidate.UserId.Value.ToString(CultureInfo.InvariantCulture)
+            : "unknown";
+        var steamId = candidate.SteamId == 0
+            ? "unknown"
+            : candidate.SteamId.ToString(CultureInfo.InvariantCulture);
+        return $"userid={userId} sid={steamId} live=\"{EscapeConsoleString(candidate.LiveName)}\" loaded=\"{EscapeConsoleString(candidate.LoadedName)}\"";
+    }
+
     [ConsoleCommand("dtr_stop_all", "dtr_stop_all")]
     public void StopAllCommand(CCSPlayerController? player, CommandInfo command)
     {
@@ -1009,15 +1178,8 @@ public sealed partial class DemoTracerPlugin
             if (IsNadeCycleSlot(slot))
                 StopNadeCycle("manual_unload", stopCurrent: false);
             _loadedSlots.Remove(slot);
-            _loadedReplays.Remove(slot);
-            _lastEnsuredWeaponDef.Remove(slot);
-            _lastReplayWeaponDef.Remove(slot);
-            _lastLockedWeaponTarget.Remove(slot);
-            _pendingWeaponAlign.Remove(slot);
-            _rebuiltInventorySlots.Remove(slot);
-            _pendingBulletHits.Remove(slot);
-            _pendingBulletDamages.Remove(slot);
             ReleaseReplaySlot(slot, "unload");
+            ForgetLoadedReplayMetadata(slot);
         }
 
         command.ReplyToCommand(ok

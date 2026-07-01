@@ -303,10 +303,25 @@ public sealed partial class DemoTracerPlugin
 
         [JsonPropertyName("ct_score")]
         public int CtScore { get; set; }
+
+        [JsonPropertyName("t_team_name")]
+        public string? TTeamName { get; set; }
+
+        [JsonPropertyName("ct_team_name")]
+        public string? CtTeamName { get; set; }
     }
 
     private sealed class ReplayPlayerScoreboard
     {
+        [JsonPropertyName("player_user_id")]
+        public int? PlayerUserId { get; set; }
+
+        [JsonPropertyName("player_entity_id")]
+        public int? PlayerEntityId { get; set; }
+
+        [JsonPropertyName("player_color")]
+        public string? PlayerColor { get; set; }
+
         [JsonPropertyName("score")]
         public int? Score { get; set; }
 
@@ -465,8 +480,9 @@ public sealed partial class DemoTracerPlugin
 
         try
         {
-            manifest = ReadManifest(manifestPath);
-            ValidateConversionManifest(manifestPath, manifest);
+            var fullPath = ResolveReadableManifestPath(manifestPath);
+            manifest = ReadManifest(fullPath);
+            ValidateConversionManifest(fullPath, manifest);
             return true;
         }
         catch (FileNotFoundException)
@@ -658,7 +674,7 @@ public sealed partial class DemoTracerPlugin
 
     private static CachedNadeManifest ReadNadeManifestCached(string manifestPath)
     {
-        var fullPath = Path.GetFullPath(manifestPath);
+        var fullPath = ResolveReadableManifestPath(manifestPath);
         var file = new FileInfo(fullPath);
         if (!file.Exists)
             throw new FileNotFoundException("nade manifest file not found", manifestPath);
@@ -722,11 +738,12 @@ public sealed partial class DemoTracerPlugin
         out string fullPath,
         out string error)
     {
-        var manifestDir = Path.GetDirectoryName(Path.GetFullPath(manifestPath)) ?? ".";
+        var resolvedManifestPath = ResolveReadableManifestPath(manifestPath);
+        var manifestDir = Path.GetDirectoryName(resolvedManifestPath) ?? ".";
         if (TryResolveRelativePathUnderRoot(manifestDir, manifestDir, childPath, out fullPath, out error))
             return true;
 
-        if (TryGetNadeLibraryRoot(manifestPath, manifestDir, out var libraryRoot) &&
+        if (TryGetNadeLibraryRoot(resolvedManifestPath, manifestDir, out var libraryRoot) &&
             TryResolveRelativePathUnderRoot(libraryRoot, manifestDir, childPath, out fullPath, out _))
         {
             error = string.Empty;
@@ -781,6 +798,74 @@ public sealed partial class DemoTracerPlugin
         return true;
     }
 
+    private static string ResolveReadableManifestPath(string manifestPath)
+    {
+        if (string.IsNullOrWhiteSpace(manifestPath))
+            throw new FileNotFoundException("manifest path is empty", manifestPath);
+
+        var normalized = manifestPath.Replace('/', Path.DirectorySeparatorChar);
+        var candidates = new List<string>();
+        if (Path.IsPathRooted(normalized))
+        {
+            candidates.Add(Path.GetFullPath(normalized));
+        }
+        else
+        {
+            candidates.Add(Path.GetFullPath(normalized));
+            foreach (var gameDir in CandidateGameDirectories())
+                candidates.Add(Path.GetFullPath(Path.Combine(gameDir, normalized)));
+        }
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var first = string.Empty;
+        foreach (var candidate in candidates)
+        {
+            if (!seen.Add(candidate))
+                continue;
+            first = string.IsNullOrEmpty(first) ? candidate : first;
+            if (File.Exists(candidate))
+                return candidate;
+        }
+
+        throw new FileNotFoundException("manifest file not found", string.IsNullOrEmpty(first) ? manifestPath : first);
+    }
+
+    private static IEnumerable<string> CandidateGameDirectories()
+    {
+        foreach (var root in CandidatePathRoots())
+        {
+            if (string.IsNullOrWhiteSpace(root))
+                continue;
+
+            var current = new DirectoryInfo(root);
+            while (current != null)
+            {
+                if (string.Equals(current.Name, "csgo", StringComparison.OrdinalIgnoreCase) &&
+                    Directory.Exists(Path.Combine(current.FullName, "addons")))
+                {
+                    yield return current.FullName;
+                    yield break;
+                }
+
+                if (string.Equals(current.Name, "addons", StringComparison.OrdinalIgnoreCase) &&
+                    current.Parent != null)
+                {
+                    yield return current.Parent.FullName;
+                    yield break;
+                }
+
+                current = current.Parent;
+            }
+        }
+    }
+
+    private static IEnumerable<string> CandidatePathRoots()
+    {
+        yield return _moduleDirectoryForPathResolution;
+        yield return AppContext.BaseDirectory;
+        yield return Directory.GetCurrentDirectory();
+    }
+
     private static bool TryGetNadeLibraryRoot(string manifestPath, string manifestDir, out string libraryRoot)
     {
         libraryRoot = string.Empty;
@@ -813,12 +898,13 @@ public sealed partial class DemoTracerPlugin
 
         try
         {
-            var json = File.ReadAllText(manifestPath);
+            var fullPath = ResolveReadableManifestPath(manifestPath);
+            var json = File.ReadAllText(fullPath);
             manifest = DeserializeManifestJson<RoundPoolManifest>(
-                manifestPath,
+                fullPath,
                 json,
                 "pool manifest");
-            ValidateRoundPoolManifest(manifestPath, manifest);
+            ValidateRoundPoolManifest(fullPath, manifest);
             return true;
         }
         catch (FileNotFoundException)

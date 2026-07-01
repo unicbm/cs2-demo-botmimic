@@ -1,6 +1,7 @@
 using CounterStrikeSharp.API.Core.Attributes.Registration;
 using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Modules.Commands;
+using CounterStrikeSharp.API;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -92,7 +93,7 @@ public sealed partial class DemoTracerPlugin
             if (TryParseReplayIdentityMode(config.Identity, out var identityMode))
                 _replayIdentityMode = identityMode;
             else
-                reply($"[DTR WARN] ignored config identity=\"{config.Identity}\"; expected off, name, or full");
+                reply($"[DTR WARN] ignored config identity=\"{config.Identity}\"; expected off, name, steam, avatar, or full");
         }
 
         if (config.AllowPartial.HasValue)
@@ -108,7 +109,7 @@ public sealed partial class DemoTracerPlugin
 
     private void ResetRuntimeConfigDefaults()
     {
-        _replayIdentityMode = ReplayIdentityMode.Full;
+        _replayIdentityMode = ReplayIdentityMode.Steam;
         _partialReplayEnabled = true;
         _handoffMode = HandoffMode.DeathContactC4;
         _handoffAllSlots = false;
@@ -333,6 +334,8 @@ public sealed partial class DemoTracerPlugin
     private void ApplyRuntimeConfigSideEffects()
     {
         BotControllerNative.WriteLeftHandDesired = _leftHandDesiredEnabled;
+        if (_replayIdentityMode is not (ReplayIdentityMode.Avatar or ReplayIdentityMode.Full))
+            Server.ExecuteCommand("sv_reliableavatardata false");
     }
 
     private void ReplyRuntimeSettings(Action<string> reply, string prefix)
@@ -350,13 +353,17 @@ public sealed partial class DemoTracerPlugin
         {
             "off" or "0" or "false" => ReplayIdentityMode.Off,
             "name" => ReplayIdentityMode.Name,
-            "full" or "1" or "on" or "true" => ReplayIdentityMode.Full,
+            "steam" or "sid" or "steamid" or "1" or "on" or "true" => ReplayIdentityMode.Steam,
+            "avatar" or "avatars" or "event_avatar" or "event-avatar" => ReplayIdentityMode.Avatar,
+            "full" => ReplayIdentityMode.Full,
             _ => ReplayIdentityMode.Off,
         };
         return value.Trim().ToLowerInvariant() is
             "off" or "0" or "false" or
             "name" or
-            "full" or "1" or "on" or "true";
+            "steam" or "sid" or "steamid" or "1" or "on" or "true" or
+            "avatar" or "avatars" or "event_avatar" or "event-avatar" or
+            "full";
     }
 
     public sealed class DemoTracerRuntimeConfig

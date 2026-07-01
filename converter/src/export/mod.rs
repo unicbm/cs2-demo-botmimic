@@ -1523,21 +1523,34 @@ fn replay_view(rows: &[&ParsedPlayerTick]) -> Option<ReplayView> {
 fn replay_round_scoreboard(round_rows: &[&ParsedPlayerTick]) -> Option<ReplayRoundScoreboard> {
     let mut t_score = None;
     let mut ct_score = None;
+    let mut t_team_name = None;
+    let mut ct_team_name = None;
 
     for &row in round_rows {
-        let Some(score) = row.team_rounds_total else {
-            continue;
-        };
         match row.team_num {
             2 => {
-                t_score.get_or_insert(score);
+                if let Some(score) = row.team_rounds_total {
+                    t_score.get_or_insert(score);
+                }
+                if t_team_name.is_none() {
+                    t_team_name = clean_replay_team_name(row);
+                }
             }
             3 => {
-                ct_score.get_or_insert(score);
+                if let Some(score) = row.team_rounds_total {
+                    ct_score.get_or_insert(score);
+                }
+                if ct_team_name.is_none() {
+                    ct_team_name = clean_replay_team_name(row);
+                }
             }
             _ => {}
         }
-        if t_score.is_some() && ct_score.is_some() {
+        if t_score.is_some()
+            && ct_score.is_some()
+            && t_team_name.is_some()
+            && ct_team_name.is_some()
+        {
             break;
         }
     }
@@ -1545,12 +1558,17 @@ fn replay_round_scoreboard(round_rows: &[&ParsedPlayerTick]) -> Option<ReplayRou
     Some(ReplayRoundScoreboard {
         t_score: t_score?,
         ct_score: ct_score?,
+        t_team_name,
+        ct_team_name,
     })
 }
 
 fn replay_player_scoreboard(rows: &[&ParsedPlayerTick]) -> Option<ReplayPlayerScoreboard> {
     for row in rows {
         let scoreboard = ReplayPlayerScoreboard {
+            player_user_id: row.player_user_id,
+            player_entity_id: row.player_entity_id,
+            player_color: clean_replay_player_color(row.player_color.as_deref()),
             score: row.scoreboard_score,
             kills: row.scoreboard_kills,
             deaths: row.scoreboard_deaths,
@@ -1563,6 +1581,28 @@ fn replay_player_scoreboard(rows: &[&ParsedPlayerTick]) -> Option<ReplayPlayerSc
     }
 
     None
+}
+
+fn clean_replay_team_name(row: &ParsedPlayerTick) -> Option<String> {
+    row.team_clan_name
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            row.team_name
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+        })
+        .map(str::trim)
+        .map(str::to_string)
+}
+
+fn clean_replay_player_color(value: Option<&str>) -> Option<String> {
+    let value = value?.trim().to_ascii_lowercase();
+    matches!(
+        value.as_str(),
+        "blue" | "green" | "yellow" | "orange" | "purple"
+    )
+    .then_some(value)
 }
 
 fn replay_cosmetics_at(
@@ -2571,7 +2611,10 @@ mod tests {
         ParsedInventoryWeaponCosmetic, ParsedWeaponSticker, ReplayTick,
     };
     use crate::rec_writer::read_rec;
-    use crate::replay::context::{first_weapon_def_index, preload_weapon_def_indices_from_refs};
+    use crate::replay::context::{
+        first_weapon_def_index, preload_weapon_def_indices_from_refs,
+        preload_weapon_def_indices_from_refs_from_play_start,
+    };
 
     #[test]
     fn preload_weapon_defs_are_normalized_and_deduped() {
@@ -2617,6 +2660,75 @@ mod tests {
         assert_eq!(
             preload_weapon_def_indices_from_refs(&row_refs, &rec),
             vec![7, 43, 44, 61]
+        );
+    }
+
+    #[test]
+    fn play_start_preload_does_not_include_later_pickups() {
+        let rec = Cs2Rec {
+            ticks: vec![
+                ReplayTick {
+                    weapon_def_index: 42,
+                    ..ReplayTick::default()
+                },
+                ReplayTick {
+                    weapon_def_index: 3,
+                    ..ReplayTick::default()
+                },
+                ReplayTick {
+                    weapon_def_index: 7,
+                    ..ReplayTick::default()
+                },
+            ],
+            ..Cs2Rec::default()
+        };
+        let rows = vec![
+            ParsedPlayerTick {
+                inventory_as_ids: vec![45, 3],
+                ..ParsedPlayerTick::default()
+            },
+            ParsedPlayerTick {
+                inventory_as_ids: vec![45, 3, 7],
+                ..ParsedPlayerTick::default()
+            },
+        ];
+        let row_refs = rows.iter().collect::<Vec<_>>();
+
+        assert_eq!(
+            preload_weapon_def_indices_from_refs_from_play_start(&row_refs, &rec, 0),
+            vec![45, 3]
+        );
+    }
+
+    #[test]
+    fn empty_play_start_inventory_does_not_fall_back_to_future_pickups() {
+        let rec = Cs2Rec {
+            ticks: vec![
+                ReplayTick {
+                    weapon_def_index: 42,
+                    ..ReplayTick::default()
+                },
+                ReplayTick {
+                    weapon_def_index: 7,
+                    ..ReplayTick::default()
+                },
+            ],
+            ..Cs2Rec::default()
+        };
+        let rows = vec![
+            ParsedPlayerTick {
+                inventory_as_ids: Vec::new(),
+                ..ParsedPlayerTick::default()
+            },
+            ParsedPlayerTick {
+                inventory_as_ids: vec![7],
+                ..ParsedPlayerTick::default()
+            },
+        ];
+        let row_refs = rows.iter().collect::<Vec<_>>();
+
+        assert!(
+            preload_weapon_def_indices_from_refs_from_play_start(&row_refs, &rec, 0).is_empty()
         );
     }
 
@@ -4354,6 +4466,9 @@ mod tests {
             desires_duck: None,
             subtick_moves: Vec::new(),
             subtick_button_truncated: 0,
+            player_user_id: None,
+            player_entity_id: None,
+            player_color: None,
             team_rounds_total: None,
             team_name: None,
             team_clan_name: None,

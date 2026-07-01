@@ -615,6 +615,9 @@ pub struct ParsedPlayerTick {
     pub desires_duck: Option<bool>,
     pub subtick_moves: Vec<SubtickMove>,
     pub subtick_button_truncated: usize,
+    pub player_user_id: Option<i32>,
+    pub player_entity_id: Option<i32>,
+    pub player_color: Option<String>,
     pub team_rounds_total: Option<u32>,
     pub team_name: Option<String>,
     pub team_clan_name: Option<String>,
@@ -944,10 +947,20 @@ impl ReplayView {
 pub struct ReplayRoundScoreboard {
     pub t_score: u32,
     pub ct_score: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub t_team_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ct_team_name: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct ReplayPlayerScoreboard {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub player_user_id: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub player_entity_id: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub player_color: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -963,6 +976,9 @@ pub struct ReplayPlayerScoreboard {
 impl ReplayPlayerScoreboard {
     pub fn is_empty(&self) -> bool {
         self.score.is_none()
+            && self.player_user_id.is_none()
+            && self.player_entity_id.is_none()
+            && self.player_color.is_none()
             && self.kills.is_none()
             && self.deaths.is_none()
             && self.assists.is_none()

@@ -1,5 +1,5 @@
 {
-  "identity": "full",
+  "identity": "steam",
   "allow_partial": true,
   "handoff": {
     "mode": "death_contact_c4",
