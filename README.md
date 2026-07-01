@@ -352,7 +352,15 @@ This layout is `92` bytes with `Pack=4`.
 - Linux may work when built from source, but packaged Linux binaries are not a
   maintained release target yet.
 - Rust only if building the converter from source.
-- A local CS2 server with Metamod and CounterStrikeSharp if you want in-game playback.
+- A local Windows x64 CS2 server if you want in-game playback.
+- Metamod:Source installed in that CS2 server.
+- CounterStrikeSharp installed in that CS2 server.
+- The DemoTracer server bundle's `BotController` Metamod runtime installed and
+  loaded with the bundled `gamedata.json`.
+- The DemoTracer CounterStrikeSharp plugin installed under
+  `addons/counterstrikesharp/plugins/DemoTracer`.
+- Optional: CS2-Bot-Hider if you want BotHider-managed replay slots, display
+  name/SteamID64 identity alignment, or demo avatar override alignment.
 
 The converter release zip contains `cs2-demotracer.exe` for CLI workflows and
 `cs2-demotracer-gui.exe` for the native single-demo Windows GUI. Python and
@@ -558,8 +566,18 @@ and Rust API examples.
 
 Make sure your local CS2 server has loaded:
 
-- the Metamod runtime plugin: `BotController`
-- the CounterStrikeSharp plugin: `DemoTracer`
+- Metamod:Source
+- CounterStrikeSharp
+- the DemoTracer Metamod runtime plugin: `BotController`
+- the DemoTracer CounterStrikeSharp plugin: `DemoTracer`
+
+The server bundle includes `BotController`, `DemoTracer`, `DemoTracerApi.dll`,
+`skins_en.json`, and the sanitized example config. It does not include
+Metamod:Source, CounterStrikeSharp, or CS2-Bot-Hider. BotHider is optional:
+movement replay, weapon/loadout alignment, projectile alignment, and handoff do
+not depend on it, but `dtr_replay_identity full` only writes demo names,
+SteamID64 values, and demo-provided avatar overrides for BotHider-managed bot
+slots.
 
 In the server console:
 

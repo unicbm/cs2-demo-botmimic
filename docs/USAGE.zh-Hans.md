@@ -244,8 +244,19 @@ write_rec_file("copy.dtr", &rec)?;
 
 ## 6. 进 CS2 播放
 
-先加载 Metamod `BotController` runtime 和 CounterStrikeSharp `DemoTracer` 插件，再使用
-[`COMMANDS.zh-Hans.md`](COMMANDS.zh-Hans.md) 里的服务器指令。
+先确保 CS2 本地服务器已经加载：
+
+- Metamod:Source
+- CounterStrikeSharp
+- DemoTracer Metamod runtime：`BotController`
+- DemoTracer CounterStrikeSharp 插件：`DemoTracer`
+
+server bundle 包含 `BotController`、`DemoTracer`、`DemoTracerApi.dll`、
+`skins_en.json` 和干净的示例配置；不包含 Metamod:Source、CounterStrikeSharp 或
+CS2-Bot-Hider。BotHider 是可选依赖，只用于 BotHider 管理的 replay slot，以及 demo
+显示名、SteamID64 对齐、demo 头像覆写这类 identity 功能。
+
+然后使用 [`COMMANDS.zh-Hans.md`](COMMANDS.zh-Hans.md) 里的服务器指令。
 
 普通回合 manifest 推荐使用高层 `dtr_go seq|round|pool` 命令。
 `dtr_run_manifest` 和 `dtr_run_pool` 是给旧脚本保留的兼容 alias，

@@ -258,8 +258,20 @@ not currently published to crates.io.
 
 ## 6. Play In CS2
 
-Load the Metamod `BotController` runtime and CounterStrikeSharp `DemoTracer`
-plugin, then use the server commands in [`COMMANDS.md`](COMMANDS.md).
+Make sure your local CS2 server has loaded:
+
+- Metamod:Source
+- CounterStrikeSharp
+- the DemoTracer Metamod runtime plugin: `BotController`
+- the DemoTracer CounterStrikeSharp plugin: `DemoTracer`
+
+The server bundle includes `BotController`, `DemoTracer`, `DemoTracerApi.dll`,
+`skins_en.json`, and the sanitized example config. It does not include
+Metamod:Source, CounterStrikeSharp, or CS2-Bot-Hider. BotHider is optional and
+only needed for BotHider-managed replay slots plus identity features such as
+demo display names, SteamID64 alignment, and demo avatar override alignment.
+
+Then use the server commands in [`COMMANDS.md`](COMMANDS.md).
 
 Round manifests should use the high-level `dtr_go seq|round|pool` commands.
 `dtr_run_manifest` and `dtr_run_pool` are compatibility aliases for old scripts,

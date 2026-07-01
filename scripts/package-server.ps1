@@ -145,10 +145,12 @@ matching ABI set.
 ## Install
 
 1. Stop the CS2 server.
-2. Copy this package's `addons` directory into the server `game/csgo` directory
+2. Make sure the server already has Metamod:Source and CounterStrikeSharp
+   installed. They are prerequisites and are not included in this bundle.
+3. Copy this package's `addons` directory into the server `game/csgo` directory
    so it merges with the existing `addons` directory.
-3. Start the server.
-4. In the server console, run:
+4. Start the server.
+5. In the server console, run:
 
 ```text
 dtr_runtime
@@ -184,6 +186,27 @@ from this package.
 - Supported `.dtr` reader versions: 3..7
 - DemoTracer companion API: 3
 - Maintained runtime platform: Windows x64
+
+## Dependencies
+
+Required external server prerequisites:
+
+- Metamod:Source
+- CounterStrikeSharp
+
+Included in this bundle:
+
+- `BotController` Metamod runtime
+- `DemoTracer` CounterStrikeSharp plugin
+- `DemoTracerApi.dll`
+- `skins_en.json`
+- `demotracer.config.example.json`
+
+Optional:
+
+- CS2-Bot-Hider, only for BotHider-managed replay slots and identity alignment
+  features such as demo display names, SteamID64 alignment, and demo avatar
+  override alignment.
 '@
 $readme = $readme.Replace("__VERSION__", $Version)
 Set-Content -LiteralPath (Join-Path $stageRoot "README.md") -Value $readme -Encoding UTF8

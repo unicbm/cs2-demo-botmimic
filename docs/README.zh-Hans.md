@@ -80,7 +80,15 @@ demo 长度、存储和导出范围。
 - Windows x64，用来运行主要维护的打包转换器。
 - Linux 可以尝试从源码构建，但目前不维护 Linux 二进制发布包。
 - 如果从源码构建转换器，需要 Rust。
-- 如果要在游戏里播放，需要本地 CS2 服务器、Metamod 和 CounterStrikeSharp。
+- 如果要在游戏里播放，需要本地 Windows x64 CS2 服务器。
+- 这个 CS2 服务器需要先安装 Metamod:Source。
+- 这个 CS2 服务器需要先安装 CounterStrikeSharp。
+- 需要安装并加载 DemoTracer server bundle 里的 `BotController` Metamod runtime，
+  包括随包的 `gamedata.json`。
+- 需要把 DemoTracer CounterStrikeSharp 插件放到
+  `addons/counterstrikesharp/plugins/DemoTracer`。
+- 可选：如果需要 BotHider 管理的 replay slot、显示名/SteamID64 identity 对齐或 demo
+  头像覆写对齐，再安装 CS2-Bot-Hider。
 
 converter release zip 里包含 `cs2-demotracer.exe` CLI 和
 `cs2-demotracer-gui.exe` 原生单 demo Windows GUI。正常转换不需要 Python 或
@@ -276,8 +284,16 @@ println!("clips={}", report.clips_written);
 
 先确保 CS2 本地服务器已经加载：
 
-- Metamod runtime：`BotController`
-- CounterStrikeSharp 插件：`DemoTracer`
+- Metamod:Source
+- CounterStrikeSharp
+- DemoTracer Metamod runtime：`BotController`
+- DemoTracer CounterStrikeSharp 插件：`DemoTracer`
+
+server bundle 包含 `BotController`、`DemoTracer`、`DemoTracerApi.dll`、
+`skins_en.json` 和干净的示例配置；不包含 Metamod:Source、CounterStrikeSharp 或
+CS2-Bot-Hider。BotHider 是可选依赖：movement replay、武器/loadout 对齐、投掷物对齐和
+handoff 不依赖它；但 `dtr_replay_identity full` 只有在 BotHider 管理 replay bot slot
+时，才会写入 demo 名字、SteamID64 和 demo 提供的头像覆写。
 
 进入服务器后，在控制台输入：
 

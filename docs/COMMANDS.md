@@ -5,6 +5,12 @@ These commands are entered in the CS2 server console after the Metamod
 loaded. Add semicolons only when you want to paste several commands as one
 console line.
 
+Server prerequisites are Metamod:Source and CounterStrikeSharp. The DemoTracer
+server bundle supplies `BotController`, `DemoTracer`, `DemoTracerApi.dll`,
+`skins_en.json`, and the example config. CS2-Bot-Hider is optional and only
+needed for BotHider-managed replay slots plus identity features such as demo
+display names, SteamID64 alignment, and demo avatar override alignment.
+
 ## Recommended Baseline
 
 ```text
