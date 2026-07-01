@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "0.3.3",
+    [string]$Version = "0.3.4",
     [string]$Configuration = "Release",
     [string]$OutputRoot = "dist",
     [string]$RuntimePackage = "runtime\BotController\build\package",
