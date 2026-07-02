@@ -2595,8 +2595,8 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             var allTFiles = SortReplayFilesForScoreboard(roundFiles, "t");
             var allCtFiles = SortReplayFilesForScoreboard(roundFiles, "ct");
             var targets = FindReplayTargets();
-            var tBots = targets.Where(bot => bot.Team == CsTeam.Terrorist).OrderBy(bot => bot.Slot).ToList();
-            var ctBots = targets.Where(bot => bot.Team == CsTeam.CounterTerrorist).OrderBy(bot => bot.Slot).ToList();
+            var tBots = targets.Where(bot => bot.Team == CsTeam.Terrorist).ToList();
+            var ctBots = targets.Where(bot => bot.Team == CsTeam.CounterTerrorist).ToList();
 
             if (!_partialReplayEnabled && (tBots.Count < allTFiles.Count || ctBots.Count < allCtFiles.Count))
             {
@@ -4215,7 +4215,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         {
             var extraWeapon = currentSlotWeapons.FirstOrDefault();
             return extraWeapon != null &&
-                   RemoveAndKillReplayWeapon(player, pawn, extraWeapon, "extra_loadout_slot");
+                   DropAndKillReplayWeapon(player, pawn, extraWeapon, "extra_loadout_slot");
         }
 
         if (currentSlotWeapons.Count == 0)
@@ -4234,7 +4234,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         if (fallbackItem == null || weaponToDrop == null)
             return false;
 
-        if (!RemoveAndKillReplayWeapon(player, pawn, weaponToDrop, "replace_loadout_slot"))
+        if (!DropAndKillReplayWeapon(player, pawn, weaponToDrop, "replace_loadout_slot"))
             return false;
 
         _lastEnsuredWeaponDef.Remove(player.Slot);
@@ -4337,30 +4337,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
             return false;
         }
 
-        KillDroppedWeapon(player.Slot, weapon, weaponName, reason);
-        Server.NextFrame(() => KillDroppedWeapon(player.Slot, weapon, weaponName, reason));
-        return true;
-    }
-
-    private static bool RemoveAndKillReplayWeapon(
-        CCSPlayerController player,
-        CCSPlayerPawn pawn,
-        CBasePlayerWeapon weapon,
-        string reason)
-    {
-        var weaponName = weapon.DesignerName;
-        try
-        {
-            pawn.RemovePlayerItem(weapon);
-        }
-        catch (Exception ex)
-        {
-            Server.PrintToConsole($"dtr: failed to remove slot={player.Slot} item={weaponName}: {ex.Message}");
-            return false;
-        }
-
-        KillDroppedWeapon(player.Slot, weapon, weaponName, reason);
-        Server.NextFrame(() => KillDroppedWeapon(player.Slot, weapon, weaponName, reason));
+        ScheduleDroppedWeaponKill(player.Slot, weapon, weaponName, reason);
         return true;
     }
 
@@ -4379,6 +4356,15 @@ public sealed partial class DemoTracerPlugin : BasePlugin
         {
             Server.PrintToConsole($"dtr: failed to kill dropped weapon slot={slot} item={weaponName} reason={reason}: {ex.Message}");
         }
+    }
+
+    private static void ScheduleDroppedWeaponKill(
+        int slot,
+        CBasePlayerWeapon weapon,
+        string weaponName,
+        string reason)
+    {
+        Server.NextFrame(() => Server.NextFrame(() => KillDroppedWeapon(slot, weapon, weaponName, reason)));
     }
 
     private static bool TryGiveNamedItem(CCSPlayerController player, string itemName)
@@ -4647,7 +4633,7 @@ public sealed partial class DemoTracerPlugin : BasePlugin
                 .ToList();
             foreach (var weapon in conflictingWeapons)
             {
-                if (!RemoveAndKillReplayWeapon(player, pawn, weapon, "replace_replay_slot"))
+                if (!DropAndKillReplayWeapon(player, pawn, weapon, "replace_replay_slot"))
                     return false;
             }
         }

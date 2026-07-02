@@ -1196,7 +1196,12 @@ public sealed partial class DemoTracerPlugin
     private List<CCSPlayerController> FindReplayTargets()
     {
         var players = FindTeamPlayers();
-        return players.Where(IsReplayTargetBot).ToList();
+        var targets = players
+            .Where(IsReplayTargetBot)
+            .OrderBy(player => player.IsBot ? 0 : 1)
+            .ThenBy(player => player.Slot)
+            .ToList();
+        return targets;
     }
 
     private bool IsReplayTargetBot(CCSPlayerController player)
